@@ -1,0 +1,71 @@
+{
+    "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
+    "manifestVersion": "1.27",
+    "version": "1.0.0",
+    "id": "${{TEAMS_APP_ID}}",
+    "developer": {
+        "name": "Equipo de desarrollo",
+        "websiteUrl": "https://chat-salvador.example.com",
+        "privacyUrl": "https://chat-salvador.example.com/privacy",
+        "termsOfUseUrl": "https://chat-salvador.example.com/terms"
+    },
+    "icons": {
+        "color": "color.png",
+        "outline": "outline.png"
+    },
+    "name": {
+        "short": "Chat-Salvador${{APP_NAME_SUFFIX}}",
+        "full": "Asistente de Base de Conocimiento y Resolucion de Errores"
+    },
+    "description": {
+        "short": "Bot de IA para consultar soluciones a errores, estados de hotfixes y documentacion tecnica.",
+        "full": "Un espacio de conocimiento inteligente disenado para los equipos de operaciones y soporte. Permite verificar de forma inmediata si un error ya esta resuelto en algun setup, si esta reportado y en progreso, o encontrar soluciones a casos similares del pasado. El bot se alimenta de documentos de actualizacion, Click, historico de Jira y diferencias de codigo fuente para evitar escalamientos innecesarios."
+    },
+    "accentColor": "#008f39",
+    "supportsChannelFeatures": "tier1",
+    "bots": [
+        {
+            "botId": "${{BOT_ID}}",
+            "scopes": [
+                "team",
+                "groupChat",
+                "personal"
+            ],
+            "supportsFiles": false,
+            "isNotificationOnly": false,
+            "commandLists": [
+                {
+                    "scopes": [
+                        "personal"
+                    ],
+                    "commands": [
+                        {
+                            "title": "revisar_error",
+                            "description": "Verifica si un problema ya esta resuelto en el setup de un producto o si ya esta reportado y en progreso."
+                        },
+                        {
+                            "title": "buscar_antecedentes",
+                            "description": "Busca casos similares o historicos en Jira y en errores pasados de otros modulos."
+                        },
+                        {
+                            "title": "consultar_actualizacion",
+                            "description": "Revisa advertencias y notas de actualizacion de hotfixes recientes para evitar errores de instalacion."
+                        },
+                        {
+                            "title": "ayuda_fuentes",
+                            "description": "Muestra las fuentes de datos que el bot consulta: Readmes, Click, Jira y diffs de codigo."
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "composeExtensions": [],
+    "configurableTabs": [],
+    "staticTabs": [],
+    "permissions": [
+        "identity",
+        "messageTeamMembers"
+    ],
+    "validDomains": []
+}
