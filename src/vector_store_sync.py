@@ -63,11 +63,13 @@ def sync_knowledge_base() -> None:
             print(f"Subiendo archivo nuevo: {file_path.name}")
 
         with file_path.open("rb") as file_handle:
+            is_setup_document = file_path.name.startswith("setup__")
             client.vector_stores.files.upload_and_poll(
                 vector_store_id=config.openai_vector_store_id,
                 file=file_handle,
                 attributes={
-                    "source": "knowledge-base",
+                    "source": "setup_hotfix" if is_setup_document else "knowledge-base",
+                    "document_type": "setup_document" if is_setup_document else "technical_document",
                     "path": f"docs/knowledge-base/{file_path.name}",
                 },
             )

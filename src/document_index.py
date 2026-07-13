@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from pathlib import Path
 
 from models import EvidenceSource
@@ -34,11 +35,13 @@ STOP_WORDS = {
 
 
 def _normalize_token(token: str) -> str:
-    return token.strip().lower()
+    normalized = unicodedata.normalize("NFKD", token.strip().lower())
+    return "".join(char for char in normalized if not unicodedata.combining(char))
 
 
 def tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    normalized_text = _normalize_token(text)
+    tokens = re.findall(r"[a-zA-Z0-9_]+", normalized_text)
     return [token for token in tokens if token not in STOP_WORDS and len(token) > 2]
 
 

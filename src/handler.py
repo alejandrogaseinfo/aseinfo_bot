@@ -31,4 +31,4 @@ async def process_user_message(user_message: str, client, config) -> str:
         )
         decision = fallback_decision
 
-    return format_user_response(decision)
+    return format_user_response(decision, config=config)

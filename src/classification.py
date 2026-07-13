@@ -38,6 +38,10 @@ def _combined_evidence_text(evidence: list[EvidenceSource]) -> str:
     )
 
 
+def _has_clickup_evidence(evidence: list[EvidenceSource]) -> bool:
+    return any(source.tipo == "clickup" for source in evidence)
+
+
 def classify_case_by_rules(
     user_message: str,
     evidence: list[EvidenceSource],
@@ -96,6 +100,26 @@ def classify_case_by_rules(
             resumen="La evidencia indica que el caso ya fue reportado y tiene seguimiento activo.",
             fuentes=evidence,
             siguiente_accion="Valide si su caso coincide con la evidencia encontrada y de seguimiento al ticket activo.",
+            requiere_escalamiento=False,
+        )
+
+    if _has_clickup_evidence(evidence):
+        if any(marker in evidence_text for marker in ["completado", "complete", "closed", "cerrado"]):
+            return BotDecision(
+                estado="similar_del_pasado",
+                confianza="media",
+                resumen="Se encontro una tarea relacionada en ClickUp, pero aparece como antecedente ya cerrado y no confirma por si sola una resolucion vigente para el caso actual.",
+                fuentes=evidence,
+                siguiente_accion="Revise la tarea relacionada encontrada en ClickUp y confirme si su contexto coincide antes de reutilizar esa referencia.",
+                requiere_escalamiento=True,
+            )
+
+        return BotDecision(
+            estado="en_progreso",
+            confianza="media",
+            resumen="Se encontro una tarea relacionada en ClickUp que sugiere seguimiento operativo del tema consultado.",
+            fuentes=evidence,
+            siguiente_accion="Revise la tarea encontrada en ClickUp y valide si corresponde exactamente al caso actual antes de escalar.",
             requiere_escalamiento=False,
         )
 
