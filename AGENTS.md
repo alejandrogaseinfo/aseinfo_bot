@@ -103,6 +103,10 @@ El Playground espera el bot en:
 
 - `http://127.0.0.1:3978/api/messages`
 
+Procedimiento operativo de arranque local:
+
+- ver [README.md](C:/aseinfo_bot/Aseinfo_bot/README.md:40), seccion `Levantar El Bot Localmente`
+
 Si el Playground sigue mostrando respuestas viejas:
 
 1. verificar que el proceso correcto este escuchando en `3978`,
