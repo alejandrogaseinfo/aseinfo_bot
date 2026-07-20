@@ -1,5 +1,6 @@
 import json
 
+from document_index import tokenize
 from models import BotDecision, EvidenceSource
 
 
@@ -23,7 +24,8 @@ Debe devolver un JSON valido con esta estructura exacta:
 }
 
 Reglas:
-- Use "resuelto" solo si la evidencia muestra una solucion o instruccion documentada.
+- Para preguntas factuales sobre políticas, procedimientos o manuales, use "resuelto" cuando la evidencia responda directamente a la pregunta. En ese caso, el campo "resumen" debe responder la pregunta con los valores, condiciones o fórmulas explícitamente documentados.
+- Use "resuelto" para incidentes solo si la evidencia muestra una solucion o instruccion documentada.
 - Use "en_progreso" solo si la evidencia muestra seguimiento activo.
 - Use "similar_del_pasado" solo si la evidencia es historica o analogica.
 - Use "sin_evidencia" si la evidencia es insuficiente o inexistente.
@@ -42,6 +44,45 @@ def _has_clickup_evidence(evidence: list[EvidenceSource]) -> bool:
     return any(source.tipo == "clickup" for source in evidence)
 
 
+def _is_direct_document_question(user_message: str, evidence: list[EvidenceSource]) -> bool:
+    """Identify a factual question directly covered by a retrieved document.
+
+    This prevents a policy/manual from being treated as a historical incident
+    merely because it is not a bug fix. It intentionally does not require the
+    user to say "manual" or "política": normal users ask the factual question
+    directly.
+    """
+    query_tokens = set(tokenize(user_message or ""))
+    if not query_tokens:
+        return False
+
+    normalized_question = (user_message or "").strip().lower()
+    question_markers = (
+        "?",
+        "cuál",
+        "cual",
+        "cómo",
+        "como",
+        "qué",
+        "que ",
+        "cuánt",
+        "cuant",
+        "dónde",
+        "donde",
+    )
+    if not any(marker in normalized_question for marker in question_markers):
+        return False
+
+    for source in evidence:
+        if source.tipo not in {"sharepoint", "azure_ai_search", "documento", "setup"}:
+            continue
+        source_tokens = set(tokenize(f"{source.titulo} {source.fragmento}"))
+        required_overlap = 2 if len(query_tokens) <= 4 else 3
+        if len(query_tokens.intersection(source_tokens)) >= required_overlap:
+            return True
+    return False
+
+
 def classify_case_by_rules(
     user_message: str,
     evidence: list[EvidenceSource],
@@ -57,6 +98,19 @@ def classify_case_by_rules(
             fuentes=[],
             siguiente_accion="Escale el caso al equipo de desarrollo para una revision manual.",
             requiere_escalamiento=True,
+        )
+
+    if _is_direct_document_question(user_message, evidence):
+        return BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen=(
+                "Se encontró documentación que responde directamente a la consulta. "
+                "La respuesta se fundamenta en los fragmentos citados a continuación."
+            ),
+            fuentes=evidence,
+            siguiente_accion="Revise el documento citado para validar el detalle aplicable a su caso.",
+            requiere_escalamiento=False,
         )
 
     resolved_markers = [
@@ -178,9 +232,14 @@ def classify_case(
     content = response.choices[0].message.content or "{}"
     payload = json.loads(content)
 
+    estado = payload.get("estado", "sin_evidencia")
+    confianza = payload.get("confianza", "baja")
+    if estado == "sin_evidencia":
+        confianza = "baja"
+
     return BotDecision(
-        estado=payload.get("estado", "sin_evidencia"),
-        confianza=payload.get("confianza", "baja"),
+        estado=estado,
+        confianza=confianza,
         resumen=payload.get("resumen", "No fue posible clasificar el caso con confianza."),
         fuentes=evidence,
         siguiente_accion=payload.get(

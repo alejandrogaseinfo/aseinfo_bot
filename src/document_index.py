@@ -9,9 +9,16 @@ STOP_WORDS = {
     "a",
     "al",
     "ante",
+    "como",
     "con",
+    "cual",
+    "cuales",
+    "cuando",
+    "cuanto",
+    "cuantos",
     "de",
     "del",
+    "donde",
     "el",
     "en",
     "es",
@@ -36,13 +43,26 @@ STOP_WORDS = {
 
 def _normalize_token(token: str) -> str:
     normalized = unicodedata.normalize("NFKD", token.strip().lower())
-    return "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    # A lightweight normalization lets "empleado" match "empleados" without
+    # changing acronyms such as ISSS.
+    if len(normalized) > 7 and normalized.endswith("mente"):
+        return normalized[:-5]
+    if len(normalized) > 5 and normalized.endswith("es"):
+        return normalized[:-2]
+    if len(normalized) > 4 and normalized.endswith("s") and not normalized.endswith("ss"):
+        return normalized[:-1]
+    return normalized
 
 
 def tokenize(text: str) -> list[str]:
     normalized_text = _normalize_token(text)
-    tokens = re.findall(r"[a-zA-Z0-9_]+", normalized_text)
-    return [token for token in tokens if token not in STOP_WORDS and len(token) > 2]
+    tokens = [_normalize_token(token) for token in re.findall(r"[a-zA-Z0-9_]+", normalized_text)]
+    return [
+        token
+        for token in tokens
+        if token not in STOP_WORDS and (len(token) > 2 or token.isdigit())
+    ]
 
 
 def split_into_chunks(content: str) -> list[str]:
