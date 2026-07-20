@@ -1,42 +1,30 @@
-# Ingesta de documentación de setups y hotfixes
+# Incorporación de documentación técnica
 
-## Objetivo
+Este documento es una instrucción operativa de apoyo. El mapa del MVP está en [plan-mvp-presentacion-lunes.md](plan-mvp-presentacion-lunes.md).
 
-Los READMEs no se mantienen en una ubicación operativa separada. Se generan como parte de los setups y hotfixes, por lo que la fuente principal del bot debe ser la documentación incluida en esas entregas.
+## Fuente principal
 
-Los changelogs y notas técnicas de las entregas también pueden incorporarse como documentos de conocimiento.
+La documentación debe provenir primero de DownloadAseinfo.net, porque allí se concentran releases, readmes, hotfixes, changelogs y presentaciones relacionadas con las entregas.
 
-## Estructura esperada
+El MCP de DownloadAseinfo.net debería devolver:
 
-Los archivos normalizados se guardarán en:
+- identificador estable;
+- nombre y tipo de documento;
+- producto y versión;
+- fecha de actualización;
+- contenido o descarga;
+- URL de origen;
+- indicación de actualización o eliminación.
+
+## Staging local
+
+Mientras se habilita el MCP, los documentos pueden prepararse en:
 
 ```text
 docs/knowledge-base/
 ```
 
-Convención de nombres:
-
-```text
-NombreRepositorio_README.md
-```
-
-Ejemplos:
-
-```text
-Nomina_README.md
-Facturacion_README.md
-PortalOperaciones_README.md
-```
-
-Otros documentos técnicos pueden conservar un nombre descriptivo, por ejemplo:
-
-```text
-changelog_evolution_connect_2026_07_08.md
-```
-
-## Importación de un setup o hotfix
-
-Se puede importar una carpeta o un ZIP de setup/hotfix:
+Para importar una carpeta o ZIP de setup/hotfix:
 
 ```powershell
 .venv\Scripts\python.exe src\setup_ingest.py `
@@ -45,9 +33,7 @@ Se puede importar una carpeta o un ZIP de setup/hotfix:
   --source C:\entregas\evolution-connect-2.8.0.zip
 ```
 
-El comando extrae documentos `.md`, `.markdown` y `.txt`, agrega metadatos de la entrega y los prepara como evidencia primaria.
-
-## Importación local de un README aislado
+Para importar un README local:
 
 ```powershell
 .venv\Scripts\python.exe src\repo_sync.py `
@@ -55,56 +41,23 @@ El comando extrae documentos `.md`, `.markdown` y `.txt`, agrega metadatos de la
   --repo Facturacion=C:\codigo\Facturacion
 ```
 
-También se puede indicar directamente el archivo:
+## Destino del índice
 
-```powershell
-.venv\Scripts\python.exe src\repo_sync.py `
-  --repo Nomina=C:\documentos\Nomina\README.md
-```
+El staging local debe utilizarse como fallback de desarrollo o como entrada temporal para Azure AI Search. El objetivo del MVP no es mantener una colección manual de archivos como fuente definitiva.
 
-El script copia los archivos a `docs/knowledge-base` y los renombra de forma consistente.
+Cada documento debe conservar, cuando exista:
 
-## Sincronización al Vector Store
+- producto;
+- módulo;
+- release;
+- versión;
+- fecha;
+- tipo de documento;
+- fuente original;
+- URL o identificador.
 
-Después de agregar o actualizar documentos de setups, hotfixes o READMEs:
+## Otras fuentes
 
-```powershell
-.venv\Scripts\python.exe src\vector_store_sync.py
-```
-
-El sincronizador actual ya detecta todos los archivos `.md` de `docs/knowledge-base`, por lo que no se necesita una ruta especial para los READMEs.
-
-## Prioridad de fuentes
-
-```text
-Documentación del setup/hotfix
-        ↓
-ClickUp para casos activos
-        ↓
-Jira para antecedentes históricos
-        ↓
-Diffs y cambios de código como evidencia secundaria
-```
-
-## Pendientes
-
-- Recibir los READMEs reales de los equipos.
-- Confirmar dónde se almacenan actualmente los setups y hotfixes.
-- Definir el mecanismo de entrega o carpeta compartida.
-- Implementar la sincronización automática cuando exista acceso a esa ubicación.
-- Agregar metadatos de repositorio, rama y fecha de actualización.
-
-## Criterio de aceptación de esta fase
-
-La base queda preparada para recibir documentos reales desde un setup o hotfix mediante un comando reproducible, y esos archivos pueden pasar al Vector Store usando el sincronizador existente.
-
-## Documento disponible actualmente
-
-Se incorporó:
-
-- `docs/knowledge-base/changelog_evolution_connect_2026_07_08.md`
-- Fuente: `Changelog - Evolution Connect-20260708100224.md`
-- Tipo: changelog técnico
-- Fecha más reciente documentada: 26/MAR/2026, versión 2.8.0
-
-Este documento permite demostrar conocimiento real del producto aunque todavía no se cuente con los READMEs individuales ni con acceso a Jira.
+- ClickUp y Jira se consultan en modo de solo lectura para información operativa.
+- GitHub se limita inicialmente a árbol, readmes, changelogs y documentación seleccionada.
+- SharePoint requiere una biblioteca piloto y validación de permisos antes de ampliar la indexación.

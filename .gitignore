@@ -4,11 +4,15 @@ env/.env.*
 env/.env.local
 env/.env.playground
 .env
+data/sharepoint/
 appPackage/build
 
 # python virtual environment
 .venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
 
 # others
 .deployment/

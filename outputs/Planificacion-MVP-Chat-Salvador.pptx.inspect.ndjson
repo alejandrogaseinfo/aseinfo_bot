@@ -1,0 +1,223 @@
+{"kind":"deck","id":"pr/6p8lgp","name":"Deck"}
+{"kind":"layout","layoutId":"ba276337-e0b1-452e-a45d-1508e095a5fa","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"c221c0cf-347f-4ffc-901a-130c36314436","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/663fkj","slide":1,"title":"MVP · SOPORTE Y OPERACIONES","textShapes":5}
+{"kind":"textbox","id":"sh/mpkri1ov","slide":1,"name":"cover-kicker","text":"MVP · SOPORTE Y OPERACIONES","textPreview":"MVP · SOPORTE Y OPERACIONES","textChars":27,"textLines":1,"bbox":[41,41,500,30]}
+{"kind":"textbox","id":"sh/9svatw7m","slide":1,"name":"cover-title","text":"Planificación del MVP\nde Chat-Salvador","textPreview":"Planificación del MVP | de Chat-Salvador","textChars":38,"textLines":2,"bbox":[41,180,980,200]}
+{"kind":"textbox","id":"sh/8rm9kr61","slide":1,"name":"cover-subtitle","text":"Un punto de consulta trazable en Teams para reducir interrupciones y acelerar el escalamiento correcto.","textPreview":"Un punto de consulta trazable en Teams para reducir interrupciones y acelerar el escalamiento correcto.","textChars":103,"textLines":1,"bbox":[41,468,760,85]}
+{"kind":"shape","id":"sh/zmt8nmpk","slide":1,"name":"cover-rule","bbox":[41,620,480,0]}
+{"kind":"textbox","id":"sh/ylkrehoz","slide":1,"name":"cover-meta","text":"Base actual + evidencia autorizada + piloto controlado","textPreview":"Base actual + evidencia autorizada + piloto controlado","textChars":54,"textLines":1,"bbox":[41,640,680,24]}
+{"kind":"textbox","id":"sh/lobapw7a","slide":1,"name":"cover-status","text":"Estado actual: diseño y preparación del MVP","textPreview":"Estado actual: diseño y preparación del MVP","textChars":43,"textLines":1,"bbox":[950,640,288,24]}
+{"kind":"notes","id":"nt/663fkj","slide":1,"text":""}
+{"kind":"slide","id":"sl/t8g9e8","slide":2,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":14}
+{"kind":"textbox","id":"sh/h0j2p4f2","slide":2,"name":"eyebrow-2","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/uds3epwb","slide":2,"name":"title-2","text":"El problema no es la falta de información: es encontrar evidencia confiable a tiempo","textPreview":"El problema no es la falta de información: es encontrar evidencia confiable a tiempo","textChars":84,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"textbox","id":"sh/vy1knuxw","slide":2,"name":"s2-intro","text":"Hoy las respuestas están repartidas entre documentos, tickets, personas y sistemas. Sin una ruta clara, soporte y operaciones escalan incluso preguntas repetitivas.","textPreview":"Hoy las respuestas están repartidas entre documentos, tickets, personas y sistemas. Sin una ruta clara, soporte y operaciones escalan inc...","textChars":164,"textLines":1,"bbox":[41,148,1080,72]}
+{"kind":"shape","id":"sh/43ulkjed","slide":2,"name":"s2-panel-0","bbox":[41,298,375,295]}
+{"kind":"textbox","id":"sh/5432t4fy","slide":2,"name":"s2-stat-0","text":"≈50","textPreview":"≈50","textChars":3,"textLines":1,"bbox":[72,339,305,80]}
+{"kind":"textbox","id":"sh/i1s3i9w7","slide":2,"name":"s2-caption-0","text":"consultas repetidas sobre un mismo problema","textPreview":"consultas repetidas sobre un mismo problema","textChars":43,"textLines":1,"bbox":[72,435,310,62]}
+{"kind":"textbox","id":"sh/32lkrexs","slide":2,"name":"s2-detail-0","text":"El conocimiento queda concentrado en el referente funcional.","textPreview":"El conocimiento queda concentrado en el referente funcional.","textChars":60,"textLines":1,"bbox":[72,520,310,52]}
+{"kind":"shape","id":"sh/s7ulojep","slide":2,"name":"s2-panel-1","bbox":[452,298,375,295]}
+{"kind":"textbox","id":"sh/d832xofa","slide":2,"name":"s2-stat-1","text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[483,339,305,80]}
+{"kind":"textbox","id":"sh/lwvexs72","slide":2,"name":"s2-caption-1","text":"familias de consulta que requieren tratamiento distinto","textPreview":"familias de consulta que requieren tratamiento distinto","textChars":55,"textLines":1,"bbox":[483,435,310,62]}
+{"kind":"textbox","id":"sh/kvmd4n6h","slide":2,"name":"s2-detail-1","text":"Error, comportamiento, validación/configuración e instalación/personalización.","textPreview":"Error, comportamiento, validación/configuración e instalación/personalización.","textChars":78,"textLines":1,"bbox":[483,520,310,52]}
+{"kind":"shape","id":"sh/judwvipw","slide":2,"name":"s2-panel-2","bbox":[864,298,375,295]}
+{"kind":"textbox","id":"sh/yt4v2xob","slide":2,"name":"s2-stat-2","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[895,339,305,80]}
+{"kind":"textbox","id":"sh/tkfe1c7y","slide":2,"name":"s2-caption-2","text":"regla que evita respuestas riesgosas","textPreview":"regla que evita respuestas riesgosas","textChars":36,"textLines":1,"bbox":[895,435,310,62]}
+{"kind":"textbox","id":"sh/8j6d876d","slide":2,"name":"s2-detail-2","text":"Sin evidencia suficiente, el bot pide contexto o escala; no adivina.","textPreview":"Sin evidencia suficiente, el bot pide contexto o escala; no adivina.","textChars":68,"textLines":1,"bbox":[895,520,310,52]}
+{"kind":"shape","id":"sh/7ydwz2ps","slide":2,"name":"footer-rule-2","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/6x4v6xon","slide":2,"name":"footer-label-2","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/pobep87u","slide":2,"name":"footer-number-2","text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/t8g9e8","slide":2,"text":""}
+{"kind":"slide","id":"sl/5ixcmi","slide":3,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":14}
+{"kind":"textbox","id":"sh/xwfmh83i","slide":3,"name":"eyebrow-3","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/atonmtkr","slide":3,"name":"title-3","text":"La demostración del lunes valida una experiencia completa, no un chat genérico","textPreview":"La demostración del lunes valida una experiencia completa, no un chat genérico","textChars":78,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"shape","id":"sh/vux4fylc","slide":3,"name":"s3-rule","bbox":[41,235,1198,0]}
+{"kind":"textbox","id":"sh/kzq5c329","slide":3,"name":"s3-num-0","text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[41,270,100,38]}
+{"kind":"textbox","id":"sh/5kzml83e","slide":3,"name":"s3-head-0","text":"Consulta en Teams","textPreview":"Consulta en Teams","textChars":17,"textLines":1,"bbox":[41,330,320,65]}
+{"kind":"textbox","id":"sh/ixonadk3","slide":3,"name":"s3-body-0","text":"La persona formula una duda sobre un release, un error o un antecedente.","textPreview":"La persona formula una duda sobre un release, un error o un antecedente.","textChars":72,"textLines":1,"bbox":[41,430,330,110]}
+{"kind":"textbox","id":"sh/jyx4jilo","slide":3,"name":"s3-num-1","text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[452,270,100,38]}
+{"kind":"textbox","id":"sh/snq5gn25","slide":3,"name":"s3-head-1","text":"Evidencia trazable","textPreview":"Evidencia trazable","textChars":18,"textLines":1,"bbox":[452,330,320,65]}
+{"kind":"textbox","id":"sh/toz6ps3q","slide":3,"name":"s3-body-1","text":"El bot recupera fuente, fragmento, versión, fecha o ticket cuando existen.","textPreview":"El bot recupera fuente, fragmento, versión, fecha o ticket cuando existen.","textChars":74,"textLines":1,"bbox":[452,430,330,110]}
+{"kind":"textbox","id":"sh/9o3m50vm","slide":3,"name":"s3-num-2","text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[864,270,100,38]}
+{"kind":"textbox","id":"sh/83u5cveh","slide":3,"name":"s3-head-2","text":"Decisión prudente","textPreview":"Decisión prudente","textChars":17,"textLines":1,"bbox":[864,330,320,65]}
+{"kind":"textbox","id":"sh/n2l43qdw","slide":3,"name":"s3-body-2","text":"Resuelto, en progreso, similar del pasado o sin evidencia; siempre con siguiente paso.","textPreview":"Resuelto, en progreso, similar del pasado o sin evidencia; siempre con siguiente paso.","textChars":86,"textLines":1,"bbox":[864,430,330,110]}
+{"kind":"textbox","id":"sh/m1c3alwb","slide":3,"name":"s3-note","text":"Condición mínima: lote real aprobado, respuesta verificable y una matriz reproducible de al menos 8 casos validados.","textPreview":"Condición mínima: lote real aprobado, respuesta verificable y una matriz reproducible de al menos 8 casos validados.","textChars":116,"textLines":1,"bbox":[41,585,940,34]}
+{"kind":"shape","id":"sh/xsnm90vy","slide":3,"name":"footer-rule-3","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/wre5gved","slide":3,"name":"footer-label-3","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/vql47ads","slide":3,"name":"footer-number-3","text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/5ixcmi","slide":3,"text":""}
+{"kind":"slide","id":"sl/0ul25c","slide":4,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":24}
+{"kind":"textbox","id":"sh/5kbeh0jy","slide":4,"name":"eyebrow-4","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/ixkfm507","slide":4,"name":"title-4","text":"La autoridad de cada fuente define cómo se usa","textPreview":"La autoridad de cada fuente define cómo se usa","textChars":46,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"textbox","id":"sh/3ytwfa1s","slide":4,"name":"s4-col-0","text":"Tipo de evidencia","textPreview":"Tipo de evidencia","textChars":17,"textLines":1,"bbox":[41,145,270,25]}
+{"kind":"textbox","id":"sh/sn2xsfi9","slide":4,"name":"s4-col-1","text":"Fuente","textPreview":"Fuente","textChars":6,"textLines":1,"bbox":[365,145,300,25]}
+{"kind":"textbox","id":"sh/dobelkzu","slide":4,"name":"s4-col-2","text":"Responde mejor","textPreview":"Responde mejor","textChars":14,"textLines":1,"bbox":[705,145,330,25]}
+{"kind":"textbox","id":"sh/qlkfq50j","slide":4,"name":"s4-col-3","text":"Uso en MVP","textPreview":"Uso en MVP","textChars":10,"textLines":1,"bbox":[1080,145,135,25]}
+{"kind":"shape","id":"sh/rmtwja1o","slide":4,"name":"s4-band-0","bbox":[41,177,1198,82]}
+{"kind":"textbox","id":"sh/0rmxwfil","slide":4,"name":"s4-type-0","text":"Documentación oficial","textPreview":"Documentación oficial","textChars":21,"textLines":1,"bbox":[57,199,280,30]}
+{"kind":"textbox","id":"sh/1svepkz6","slide":4,"name":"s4-source-0","text":"DownloadAseinfo.net + Azure AI Search","textPreview":"DownloadAseinfo.net + Azure AI Search","textChars":37,"textLines":1,"bbox":[365,198,300,35]}
+{"kind":"textbox","id":"sh/hw72pk7a","slide":4,"name":"s4-answer-0","text":"Release, hotfix, instalación y versión exacta","textPreview":"Release, hotfix, instalación y versión exacta","textChars":45,"textLines":1,"bbox":[705,197,330,42]}
+{"kind":"textbox","id":"sh/gvylwz65","slide":4,"name":"s4-use-0","text":"Principal","textPreview":"Principal","textChars":9,"textLines":1,"bbox":[1080,199,130,26]}
+{"kind":"shape","id":"sh/vupknupk","slide":4,"name":"s4-band-1","bbox":[41,282,1198,82]}
+{"kind":"textbox","id":"sh/utg3up8z","slide":4,"name":"s4-type-1","text":"Estado operativo","textPreview":"Estado operativo","textChars":16,"textLines":1,"bbox":[57,304,280,30]}
+{"kind":"textbox","id":"sh/pkrmt47m","slide":4,"name":"s4-source-1","text":"ClickUp · solo lectura","textPreview":"ClickUp · solo lectura","textChars":22,"textLines":1,"bbox":[365,303,300,35]}
+{"kind":"textbox","id":"sh/4zil0z61","slide":4,"name":"s4-answer-1","text":"Incidente actual, mensaje/log y seguimiento","textPreview":"Incidente actual, mensaje/log y seguimiento","textChars":43,"textLines":1,"bbox":[705,302,330,42]}
+{"kind":"textbox","id":"sh/3y94rupg","slide":4,"name":"s4-use-1","text":"Principal","textPreview":"Principal","textChars":9,"textLines":1,"bbox":[1080,304,130,26]}
+{"kind":"shape","id":"sh/2xg3ypov","slide":4,"name":"s4-band-2","bbox":[41,387,1198,82]}
+{"kind":"textbox","id":"sh/l4n2h07i","slide":4,"name":"s4-type-2","text":"Contexto histórico","textPreview":"Contexto histórico","textChars":18,"textLines":1,"bbox":[57,409,280,30]}
+{"kind":"textbox","id":"sh/k3elofqx","slide":4,"name":"s4-source-2","text":"Jira · solo lectura","textPreview":"Jira · solo lectura","textChars":19,"textLines":1,"bbox":[365,408,300,35]}
+{"kind":"textbox","id":"sh/wj2tkz2p","slide":4,"name":"s4-answer-2","text":"Antecedentes técnicos y decisiones previas","textPreview":"Antecedentes técnicos y decisiones previas","textChars":42,"textLines":1,"bbox":[705,407,330,42]}
+{"kind":"textbox","id":"sh/xkbut4ja","slide":4,"name":"s4-use-2","text":"Complementaria","textPreview":"Complementaria","textChars":14,"textLines":1,"bbox":[1080,409,130,26]}
+{"kind":"shape","id":"sh/ahkbi9kz","slide":4,"name":"s4-band-3","bbox":[41,492,1198,82]}
+{"kind":"textbox","id":"sh/bitcru1k","slide":4,"name":"s4-type-3","text":"Procedimiento corporativo","textPreview":"Procedimiento corporativo","textChars":25,"textLines":1,"bbox":[57,514,280,30]}
+{"kind":"textbox","id":"sh/kn2doj21","slide":4,"name":"s4-source-3","text":"SharePoint · fase posterior","textPreview":"SharePoint · fase posterior","textChars":27,"textLines":1,"bbox":[365,513,300,35]}
+{"kind":"textbox","id":"sh/lovuxojm","slide":4,"name":"s4-answer-3","text":"Documentos con permisos verificados","textPreview":"Documentos con permisos verificados","textChars":35,"textLines":1,"bbox":[705,512,330,42]}
+{"kind":"textbox","id":"sh/ylkvm9kv","slide":4,"name":"s4-use-3","text":"Condicionada","textPreview":"Condicionada","textChars":12,"textLines":1,"bbox":[1080,514,130,26]}
+{"kind":"shape","id":"sh/jmtcve1g","slide":4,"name":"footer-rule-4","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/sbmdsj2x","slide":4,"name":"footer-label-4","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/tcvu1oji","slide":4,"name":"footer-number-4","text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/0ul25c","slide":4,"text":""}
+{"kind":"slide","id":"sl/xd8l3b","slide":5,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":17}
+{"kind":"textbox","id":"sh/xgf6lcna","slide":5,"name":"eyebrow-5","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/ad47qx4j","slide":5,"name":"title-5","text":"La evidencia, no el modelo, define la respuesta","textPreview":"La evidencia, no el modelo, define la respuesta","textChars":47,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"shape","id":"sh/vedoj254","slide":5,"name":"s5-connector-0","bbox":[260,370,120,0]}
+{"kind":"shape","id":"sh/8bm5onmd","slide":5,"name":"s5-connector-1","bbox":[500,370,120,0]}
+{"kind":"shape","id":"sh/9cv6hsny","slide":5,"name":"s5-connector-2","bbox":[740,370,120,0]}
+{"kind":"shape","id":"sh/m94nmx4n","slide":5,"name":"s5-connector-3","bbox":[980,370,120,0]}
+{"kind":"shape","id":"sh/nadofi5s","slide":5,"name":"s5-node-0","bbox":[41,310,198,125]}
+{"kind":"textbox","id":"sh/0725kn6h","slide":5,"name":"s5-node-title-0","text":"Consulta","textPreview":"Consulta","textChars":8,"textLines":1,"bbox":[59,340,165,30]}
+{"kind":"textbox","id":"sh/l8v6dsn2","slide":5,"name":"s5-node-sub-0","text":"Teams","textPreview":"Teams","textChars":5,"textLines":1,"bbox":[59,382,165,35]}
+{"kind":"shape","id":"sh/lc3y5wn6","slide":5,"name":"s5-node-1","bbox":[281,310,198,125]}
+{"kind":"textbox","id":"sh/kbuhwr6l","slide":5,"name":"s5-node-title-1","text":"Interpretar","textPreview":"Interpretar","textChars":11,"textLines":1,"bbox":[299,340,165,30]}
+{"kind":"textbox","id":"sh/jqlg3m50","slide":5,"name":"s5-node-sub-1","text":"intención + contexto","textPreview":"intención + contexto","textChars":20,"textLines":1,"bbox":[299,382,165,35]}
+{"kind":"shape","id":"sh/ypczuhof","slide":5,"name":"s5-node-2","bbox":[521,310,198,125]}
+{"kind":"textbox","id":"sh/xo3y1cna","slide":5,"name":"s5-node-title-2","text":"Recuperar","textPreview":"Recuperar","textChars":9,"textLines":1,"bbox":[539,340,165,30]}
+{"kind":"textbox","id":"sh/wnuhs76p","slide":5,"name":"s5-node-sub-2","text":"solo fuentes necesarias","textPreview":"solo fuentes necesarias","textChars":23,"textLines":1,"bbox":[539,382,165,35]}
+{"kind":"shape","id":"sh/bm1gzm54","slide":5,"name":"s5-node-3","bbox":[761,310,198,125]}
+{"kind":"textbox","id":"sh/alsfqhoj","slide":5,"name":"s5-node-title-3","text":"Validar","textPreview":"Validar","textChars":7,"textLines":1,"bbox":[779,340,165,30]}
+{"kind":"textbox","id":"sh/9kjyxcny","slide":5,"name":"s5-node-sub-3","text":"política de evidencia","textPreview":"política de evidencia","textChars":21,"textLines":1,"bbox":[779,382,165,35]}
+{"kind":"shape","id":"sh/ojaxo76d","slide":5,"name":"s5-node-4","bbox":[1001,310,198,125]}
+{"kind":"textbox","id":"sh/03ehk7e9","slide":5,"name":"s5-node-title-4","text":"Responder","textPreview":"Responder","textChars":9,"textLines":1,"bbox":[1019,340,165,30]}
+{"kind":"textbox","id":"sh/14nydcvu","slide":5,"name":"s5-node-sub-4","text":"fuente + acción + escalamiento","textPreview":"fuente + acción + escalamiento","textChars":30,"textLines":1,"bbox":[1019,382,165,35]}
+{"kind":"textbox","id":"sh/e1wzixw3","slide":5,"name":"s5-guardrail-label","text":"Regla de seguridad","textPreview":"Regla de seguridad","textChars":18,"textLines":1,"bbox":[41,512,210,25]}
+{"kind":"textbox","id":"sh/f25gb2do","slide":5,"name":"s5-guardrail","text":"El backend determina el estado permitido; OpenAI solo interpreta ambigüedades y sintetiza la evidencia recuperada.","textPreview":"El backend determina el estado permitido; OpenAI solo interpreta ambigüedades y sintetiza la evidencia recuperada.","textChars":114,"textLines":1,"bbox":[41,548,1090,48]}
+{"kind":"textbox","id":"sh/szuhg7ed","slide":5,"name":"s5-states","text":"Estados: resuelto · en progreso · similar del pasado · sin evidencia","textPreview":"Estados: resuelto · en progreso · similar del pasado · sin evidencia","textChars":68,"textLines":1,"bbox":[41,608,920,24]}
+{"kind":"shape","id":"sh/d03y9svy","slide":5,"name":"footer-rule-5","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/qxczexw7","slide":5,"name":"footer-label-5","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/rylg72ds","slide":5,"name":"footer-number-5","text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/xd8l3b","slide":5,"text":""}
+{"kind":"slide","id":"sl/119hpa","slide":6,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":17}
+{"kind":"textbox","id":"sh/e14rahkf","slide":6,"name":"eyebrow-6","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/14vq5w36","slide":6,"name":"title-6","text":"El orden de implementación reduce riesgo y permite demostrar valor aunque falten accesos","textPreview":"El orden de implementación reduce riesgo y permite demostrar valor aunque falten accesos","textChars":88,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"shape","id":"sh/03m9cr2l","slide":6,"name":"s6-time-line","bbox":[41,350,1110,0]}
+{"kind":"shape","id":"sh/ryt8zml4","slide":6,"name":"s6-dot-0","bbox":[41,342,16,16]}
+{"kind":"textbox","id":"sh/6xkr6hkj","slide":6,"name":"s6-phase-0","text":"Fase 0","textPreview":"Fase 0","textChars":6,"textLines":1,"bbox":[41,273,210,26]}
+{"kind":"textbox","id":"sh/d0vq1c3u","slide":6,"name":"s6-head-0","text":"Base y seguridad","textPreview":"Base y seguridad","textChars":16,"textLines":1,"bbox":[41,390,230,50]}
+{"kind":"textbox","id":"sh/szm9872p","slide":6,"name":"s6-body-0","text":"Teams, evidencia común, índice local y reglas.","textPreview":"Teams, evidencia común, índice local y reglas.","textChars":46,"textLines":1,"bbox":[41,465,235,90]}
+{"kind":"shape","id":"sh/buxsb618","slide":6,"name":"s6-dot-1","bbox":[319,342,16,16]}
+{"kind":"textbox","id":"sh/atori1kn","slide":6,"name":"s6-phase-1","text":"Fase 1","textPreview":"Fase 1","textChars":6,"textLines":1,"bbox":[319,273,210,26]}
+{"kind":"textbox","id":"sh/g765onid","slide":6,"name":"s6-head-1","text":"Documentación oficial","textPreview":"Documentación oficial","textChars":21,"textLines":1,"bbox":[319,390,230,50]}
+{"kind":"textbox","id":"sh/18zmxsjy","slide":6,"name":"s6-body-1","text":"Lote real de DownloadAseinfo.net y Azure AI Search activable.","textPreview":"Lote real de DownloadAseinfo.net y Azure AI Search activable.","textChars":61,"textLines":1,"bbox":[319,465,235,90]}
+{"kind":"shape","id":"sh/e5o3md07","slide":6,"name":"s6-dot-2","bbox":[597,342,16,16]}
+{"kind":"textbox","id":"sh/f6x4vi1s","slide":6,"name":"s6-phase-2","text":"Fase 2","textPreview":"Fase 2","textChars":6,"textLines":1,"bbox":[597,273,210,26]}
+{"kind":"textbox","id":"sh/sj6lk3i1","slide":6,"name":"s6-head-2","text":"Operación activa","textPreview":"Operación activa","textChars":16,"textLines":1,"bbox":[597,390,230,50]}
+{"kind":"textbox","id":"sh/t4fmt8jm","slide":6,"name":"s6-body-2","text":"ClickUp de solo lectura para estado, incidentes y logs autorizados.","textPreview":"ClickUp de solo lectura para estado, incidentes y logs autorizados.","textChars":67,"textLines":1,"bbox":[597,465,235,90]}
+{"kind":"shape","id":"sh/6ho3it0b","slide":6,"name":"s6-dot-3","bbox":[875,342,16,16]}
+{"kind":"textbox","id":"sh/rix4ry1g","slide":6,"name":"s6-phase-3","text":"Fase 3+","textPreview":"Fase 3+","textChars":7,"textLines":1,"bbox":[875,273,210,26]}
+{"kind":"textbox","id":"sh/4fmlg325","slide":6,"name":"s6-head-3","text":"Contexto y gobierno","textPreview":"Contexto y gobierno","textChars":19,"textLines":1,"bbox":[875,390,230,50]}
+{"kind":"textbox","id":"sh/5gvmp8jq","slide":6,"name":"s6-body-3","text":"Jira, SharePoint y sincronización solo tras validar permisos y piloto.","textPreview":"Jira, SharePoint y sincronización solo tras validar permisos y piloto.","textChars":70,"textLines":1,"bbox":[875,465,235,90]}
+{"kind":"textbox","id":"sh/l0nax072","slide":6,"name":"s6-bridge","text":"Principio de continuidad: el índice local conserva el mismo contrato de evidencia y funciona como respaldo mientras Azure o conectores están pendientes.","textPreview":"Principio de continuidad: el índice local conserva el mismo contrato de evidencia y funciona como respaldo mientras Azure o conectores es...","textChars":152,"textLines":1,"bbox":[41,595,1120,40]}
+{"kind":"shape","id":"sh/kzet4vqh","slide":6,"name":"footer-rule-6","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/zylsvqpc","slide":6,"name":"footer-label-6","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/yxcb2l8r","slide":6,"name":"footer-number-6","text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/119hpa","slide":6,"text":""}
+{"kind":"slide","id":"sl/zf1kzg","slide":7,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":31}
+{"kind":"textbox","id":"sh/7m5ov6xk","slide":7,"name":"eyebrow-7","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/s7ep4bep","slide":7,"name":"title-7","text":"La demo se evalúa con preguntas reales y resultados explicables","textPreview":"La demo se evalúa con preguntas reales y resultados explicables","textChars":63,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"textbox","id":"sh/t8n6xgfa","slide":7,"name":"s7-intro","text":"La matriz de evaluación evita validar solo ejemplos favorables y mide tanto utilidad como seguridad.","textPreview":"La matriz de evaluación evita validar solo ejemplos favorables y mide tanto utilidad como seguridad.","textChars":100,"textLines":1,"bbox":[41,142,980,32]}
+{"kind":"shape","id":"sh/ihcny1wn","slide":7,"name":"s7-h-0","bbox":[41,210,210,45]}
+{"kind":"textbox","id":"sh/jilor6x8","slide":7,"name":"s7-ht-0","text":"Caso","textPreview":"Caso","textChars":4,"textLines":1,"bbox":[53,223,186,18]}
+{"kind":"shape","id":"sh/kje50bet","slide":7,"name":"s7-h-1","bbox":[270,210,280,45]}
+{"kind":"textbox","id":"sh/5kn6twfe","slide":7,"name":"s7-ht-1","text":"Pregunta / condición","textPreview":"Pregunta / condición","textChars":20,"textLines":1,"bbox":[282,223,256,18]}
+{"kind":"shape","id":"sh/2dg7alw7","slide":7,"name":"s7-h-2","bbox":[570,210,220,45]}
+{"kind":"textbox","id":"sh/3epo3qdc","slide":7,"name":"s7-ht-2","text":"Evidencia esperada","textPreview":"Evidencia esperada","textChars":18,"textLines":1,"bbox":[582,223,196,18]}
+{"kind":"shape","id":"sh/bmp4bqds","slide":7,"name":"s7-h-3","bbox":[815,210,210,45]}
+{"kind":"textbox","id":"sh/qlgn2lw7","slide":7,"name":"s7-ht-3","text":"Resultado permitido","textPreview":"Resultado permitido","textChars":19,"textLines":1,"bbox":[827,223,186,18]}
+{"kind":"shape","id":"sh/do7md0vy","slide":7,"name":"s7-h-4","bbox":[1045,210,194,45]}
+{"kind":"textbox","id":"sh/cny54ved","slide":7,"name":"s7-ht-4","text":"Se revisa","textPreview":"Se revisa","textChars":9,"textLines":1,"bbox":[1057,223,170,18]}
+{"kind":"shape","id":"sh/zq94fad4","slide":7,"name":"s7-row-bg-0","bbox":[41,255,1198,76]}
+{"kind":"textbox","id":"sh/ypgn65wj","slide":7,"name":"s7-0-0","text":"Hotfix","textPreview":"Hotfix","textChars":6,"textLines":1,"bbox":[53,274,188,41]}
+{"kind":"textbox","id":"sh/lsr6h0vu","slide":7,"name":"s7-0-1","text":"Advertencia de instalación","textPreview":"Advertencia de instalación","textChars":26,"textLines":1,"bbox":[282,274,258,41]}
+{"kind":"textbox","id":"sh/0ri58fep","slide":7,"name":"s7-0-2","text":"Documento oficial","textPreview":"Documento oficial","textChars":17,"textLines":1,"bbox":[582,274,198,41]}
+{"kind":"textbox","id":"sh/ne9ojad0","slide":7,"name":"s7-0-3","text":"Resuelto","textPreview":"Resuelto","textChars":8,"textLines":1,"bbox":[827,274,188,41]}
+{"kind":"textbox","id":"sh/md0na5wf","slide":7,"name":"s7-0-4","text":"Versión + enlace","textPreview":"Versión + enlace","textChars":16,"textLines":1,"bbox":[1057,274,172,41]}
+{"kind":"shape","id":"sh/i9k7i9gn","slide":7,"name":"s7-row-bg-1","bbox":[41,331,1198,76]}
+{"kind":"textbox","id":"sh/jad8bex8","slide":7,"name":"s7-1-0","text":"Incidente","textPreview":"Incidente","textChars":9,"textLines":1,"bbox":[53,350,188,41]}
+{"kind":"textbox","id":"sh/4bmpkjyt","slide":7,"name":"s7-1-1","text":"Mensaje de error exacto","textPreview":"Mensaje de error exacto","textChars":23,"textLines":1,"bbox":[282,350,258,41]}
+{"kind":"textbox","id":"sh/5cvqdofe","slide":7,"name":"s7-1-2","text":"ClickUp autorizado","textPreview":"ClickUp autorizado","textChars":18,"textLines":1,"bbox":[582,350,198,41]}
+{"kind":"textbox","id":"sh/ulk7e9gr","slide":7,"name":"s7-1-3","text":"En progreso","textPreview":"En progreso","textChars":11,"textLines":1,"bbox":[827,350,188,41]}
+{"kind":"textbox","id":"sh/vmt87exc","slide":7,"name":"s7-1-4","text":"Ticket + estado","textPreview":"Ticket + estado","textChars":15,"textLines":1,"bbox":[1057,350,172,41]}
+{"kind":"shape","id":"sh/w72pgzyx","slide":7,"name":"s7-row-bg-2","bbox":[41,407,1198,76]}
+{"kind":"textbox","id":"sh/h8bq94f2","slide":7,"name":"s7-2-0","text":"Histórico","textPreview":"Histórico","textChars":9,"textLines":1,"bbox":[53,426,188,41]}
+{"kind":"textbox","id":"sh/ehorqtwv","slide":7,"name":"s7-2-1","text":"Caso parecido","textPreview":"Caso parecido","textChars":13,"textLines":1,"bbox":[282,426,258,41]}
+{"kind":"textbox","id":"sh/fix8jyxg","slide":7,"name":"s7-2-2","text":"Jira / ticket cerrado","textPreview":"Jira / ticket cerrado","textChars":21,"textLines":1,"bbox":[582,426,198,41]}
+{"kind":"textbox","id":"sh/pcza9szi","slide":7,"name":"s7-2-3","text":"Similar del pasado","textPreview":"Similar del pasado","textChars":18,"textLines":1,"bbox":[827,426,188,41]}
+{"kind":"textbox","id":"sh/obqtgnix","slide":7,"name":"s7-2-4","text":"Aclaración de vigencia","textPreview":"Aclaración de vigencia","textChars":22,"textLines":1,"bbox":[1057,426,172,41]}
+{"kind":"shape","id":"sh/3ahs7ihs","slide":7,"name":"s7-row-bg-3","bbox":[41,483,1198,76]}
+{"kind":"textbox","id":"sh/298bex07","slide":7,"name":"s7-3-0","text":"Límite","textPreview":"Límite","textChars":6,"textLines":1,"bbox":[53,502,188,41]}
+{"kind":"textbox","id":"sh/18fa5szm","slide":7,"name":"s7-3-1","text":"No hay coincidencia o falta versión","textPreview":"No hay coincidencia o falta versión","textChars":35,"textLines":1,"bbox":[282,502,258,41]}
+{"kind":"textbox","id":"sh/g76tcni1","slide":7,"name":"s7-3-2","text":"Sin respaldo","textPreview":"Sin respaldo","textChars":12,"textLines":1,"bbox":[582,502,198,41]}
+{"kind":"textbox","id":"sh/f6xs3ihg","slide":7,"name":"s7-3-3","text":"Sin evidencia","textPreview":"Sin evidencia","textChars":13,"textLines":1,"bbox":[827,502,188,41]}
+{"kind":"textbox","id":"sh/e5obad0v","slide":7,"name":"s7-3-4","text":"Pregunta mínima / escala","textPreview":"Pregunta mínima / escala","textChars":24,"textLines":1,"bbox":[1057,502,172,41]}
+{"kind":"textbox","id":"sh/l4juhczq","slide":7,"name":"s7-criteria","text":"Criterios: al menos 8 casos reproducibles · sin versiones/tickets/soluciones inventadas · trazabilidad de la ruta de investigación.","textPreview":"Criterios: al menos 8 casos reproducibles · sin versiones/tickets/soluciones inventadas · trazabilidad de la ruta de investigación.","textChars":131,"textLines":1,"bbox":[41,591,1150,28]}
+{"kind":"shape","id":"sh/03ato7y5","slide":7,"name":"footer-rule-7","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/s7y187y1","slide":7,"name":"footer-label-7","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/t872hczm","slide":7,"name":"footer-number-7","text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/zf1kzg","slide":7,"text":""}
+{"kind":"slide","id":"sl/3a5554","slide":8,"title":"PLANIFICACIÓN EJECUTIVA","textShapes":17}
+{"kind":"textbox","id":"sh/j21g3e9c","slide":8,"name":"eyebrow-8","text":"PLANIFICACIÓN EJECUTIVA","textPreview":"PLANIFICACIÓN EJECUTIVA","textChars":23,"textLines":1,"bbox":[41,35,430,24]}
+{"kind":"textbox","id":"sh/knahwjax","slide":8,"name":"title-8","text":"Los bloqueos se muestran: no se simulan resultados","textPreview":"Los bloqueos se muestran: no se simulan resultados","textChars":50,"textLines":1,"bbox":[41,71,1160,61]}
+{"kind":"shape","id":"sh/lojy5ori","slide":8,"name":"s8-mark-0","bbox":[41,177,9,58]}
+{"kind":"textbox","id":"sh/6pszyts3","slide":8,"name":"s8-source-0","text":"MCP de DownloadAseinfo.net","textPreview":"MCP de DownloadAseinfo.net","textChars":26,"textLines":1,"bbox":[76,165,315,32]}
+{"kind":"textbox","id":"sh/7qlg7y98","slide":8,"name":"s8-block-0","text":"Acceso estable no confirmado","textPreview":"Acceso estable no confirmado","textChars":28,"textLines":1,"bbox":[423,165,345,36]}
+{"kind":"textbox","id":"sh/8ruh03at","slide":8,"name":"s8-fallback-0","text":"Lote real preparado y trazable","textPreview":"Lote real preparado y trazable","textChars":30,"textLines":1,"bbox":[805,165,385,42]}
+{"kind":"shape","id":"sh/ts3y9ore","slide":8,"name":"s8-line-0","bbox":[76,243,1115,0]}
+{"kind":"shape","id":"sh/mt8fmpsj","slide":8,"name":"s8-mark-1","bbox":[41,281,9,58]}
+{"kind":"textbox","id":"sh/nuhgvu94","slide":8,"name":"s8-source-1","text":"ClickUp","textPreview":"ClickUp","textChars":7,"textLines":1,"bbox":[76,269,315,32]}
+{"kind":"textbox","id":"sh/nmxwrqlw","slide":8,"name":"s8-block-1","text":"Lista piloto o permisos pendientes","textPreview":"Lista piloto o permisos pendientes","textChars":34,"textLines":1,"bbox":[423,269,345,36]}
+{"kind":"textbox","id":"sh/mlofyl4b","slide":8,"name":"s8-fallback-1","text":"Excluir el caso de incidente de la demo","textPreview":"Excluir el caso de incidente de la demo","textChars":39,"textLines":1,"bbox":[805,269,385,42]}
+{"kind":"shape","id":"sh/9ozet03m","slide":8,"name":"s8-line-1","bbox":[76,347,1115,0]}
+{"kind":"shape","id":"sh/8n6x0vmh","slide":8,"name":"s8-mark-2","bbox":[41,385,9,58]}
+{"kind":"textbox","id":"sh/zyxwnqlk","slide":8,"name":"s8-source-2","text":"Azure AI Search","textPreview":"Azure AI Search","textChars":15,"textLines":1,"bbox":[76,373,315,32]}
+{"kind":"textbox","id":"sh/yxovul4z","slide":8,"name":"s8-block-2","text":"Índice aún no provisionado","textPreview":"Índice aún no provisionado","textChars":26,"textLines":1,"bbox":[423,373,345,36]}
+{"kind":"textbox","id":"sh/l0fepg3q","slide":8,"name":"s8-fallback-2","text":"Índice local con el mismo contrato","textPreview":"Índice local con el mismo contrato","textChars":34,"textLines":1,"bbox":[805,373,385,42]}
+{"kind":"shape","id":"sh/0z6xwbm5","slide":8,"name":"s8-line-2","bbox":[76,451,1115,0]}
+{"kind":"shape","id":"sh/budwj6lo","slide":8,"name":"s8-mark-3","bbox":[41,489,9,58]}
+{"kind":"textbox","id":"sh/qt4vq143","slide":8,"name":"s8-source-3","text":"SharePoint","textPreview":"SharePoint","textChars":10,"textLines":1,"bbox":[76,477,315,32]}
+{"kind":"textbox","id":"sh/epkf21ov","slide":8,"name":"s8-block-3","text":"ACL por usuario/grupo sin validar","textPreview":"ACL por usuario/grupo sin validar","textChars":33,"textLines":1,"bbox":[423,477,345,36]}
+{"kind":"textbox","id":"sh/fqdgv65g","slide":8,"name":"s8-fallback-3","text":"Fuera de la demo hasta confirmar permisos","textPreview":"Fuera de la demo hasta confirmar permisos","textChars":41,"textLines":1,"bbox":[805,477,385,42]}
+{"kind":"shape","id":"sh/grmx4b61","slide":8,"name":"s8-line-3","bbox":[76,555,1115,0]}
+{"kind":"textbox","id":"sh/1svyxgnm","slide":8,"name":"s8-note","text":"Una fuente no disponible no significa “no existen datos”: la respuesta debe explicar si falta acceso, configuración o evidencia.","textPreview":"Una fuente no disponible no significa “no existen datos”: la respuesta debe explicar si falta acceso, configuración o evidencia.","textChars":128,"textLines":1,"bbox":[41,590,1130,35]}
+{"kind":"shape","id":"sh/2t4f6lo7","slide":8,"name":"footer-rule-8","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/3udgz65c","slide":8,"name":"footer-label-8","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/ovmx8b6x","slide":8,"name":"footer-number-8","text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/3a5554","slide":8,"text":""}
+{"kind":"slide","id":"sl/4r9lc0","slide":9,"title":"CIERRE · DECISIÓN PROPUESTA","textShapes":14}
+{"kind":"textbox","id":"sh/m94n2t4j","slide":9,"name":"s9-kicker","text":"CIERRE · DECISIÓN PROPUESTA","textPreview":"CIERRE · DECISIÓN PROPUESTA","textChars":27,"textLines":1,"bbox":[41,41,540,25]}
+{"kind":"textbox","id":"sh/9cv6x83u","slide":9,"name":"s9-title","text":"Aprobar un MVP que priorice\nconfianza antes que cobertura","textPreview":"Aprobar un MVP que priorice | confianza antes que cobertura","textChars":57,"textLines":2,"bbox":[41,135,1040,150]}
+{"kind":"shape","id":"sh/8bm543m9","slide":9,"name":"s9-rule","bbox":[41,340,1198,0]}
+{"kind":"textbox","id":"sh/z6doryls","slide":9,"name":"s9-n-0","text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[41,395,40,36]}
+{"kind":"textbox","id":"sh/y5knyt47","slide":9,"name":"s9-a-0","text":"Confirmar lote documental y 8+ preguntas reales","textPreview":"Confirmar lote documental y 8+ preguntas reales","textChars":47,"textLines":1,"bbox":[95,395,660,30]}
+{"kind":"textbox","id":"sh/l8v6t83y","slide":9,"name":"s9-detail-0","text":"Base para evaluar valor con evidencia verificable.","textPreview":"Base para evaluar valor con evidencia verificable.","textChars":50,"textLines":1,"bbox":[780,395,410,34]}
+{"kind":"textbox","id":"sh/07m503md","slide":9,"name":"s9-n-1","text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[41,463,40,36]}
+{"kind":"textbox","id":"sh/b2t4nelw","slide":9,"name":"s9-a-1","text":"Asignar responsables para ClickUp, Azure y validación funcional","textPreview":"Asignar responsables para ClickUp, Azure y validación funcional","textChars":63,"textLines":1,"bbox":[95,463,660,30]}
+{"kind":"textbox","id":"sh/q1knu94b","slide":9,"name":"s9-detail-1","text":"Los accesos y la revisión no deben quedar implícitos.","textPreview":"Los accesos y la revisión no deben quedar implícitos.","textChars":53,"textLines":1,"bbox":[780,463,410,34]}
+{"kind":"textbox","id":"sh/w7edo7ax","slide":9,"name":"s9-n-2","text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[41,531,40,36]}
+{"kind":"textbox","id":"sh/h8nehcri","slide":9,"name":"s9-a-2","text":"Ejecutar piloto controlado antes de ampliar fuentes","textPreview":"Ejecutar piloto controlado antes de ampliar fuentes","textChars":51,"textLines":1,"bbox":[95,531,660,30]}
+{"kind":"textbox","id":"sh/u5wvmxs7","slide":9,"name":"s9-detail-2","text":"Medir utilidad, calidad, latencia y vacíos documentales.","textPreview":"Medir utilidad, calidad, latencia y vacíos documentales.","textChars":56,"textLines":1,"bbox":[780,531,410,34]}
+{"kind":"textbox","id":"sh/v65wf2tc","slide":9,"name":"s9-close","text":"Resultado buscado: soporte y operaciones podrán consultar, verificar y escalar con mejor contexto; desarrollo interviene donde realmente aporta valor.","textPreview":"Resultado buscado: soporte y operaciones podrán consultar, verificar y escalar con mejor contexto; desarrollo interviene donde realmente ...","textChars":150,"textLines":1,"bbox":[41,615,1120,30]}
+{"kind":"shape","id":"sh/83edkna1","slide":9,"name":"footer-rule-9","bbox":[41,656,1198,0]}
+{"kind":"textbox","id":"sh/94nedsbm","slide":9,"name":"footer-label-9","text":"Chat-Salvador · planificación MVP","textPreview":"Chat-Salvador · planificación MVP","textChars":33,"textLines":1,"bbox":[41,667,420,22]}
+{"kind":"textbox","id":"sh/m1wvidsv","slide":9,"name":"footer-number-9","text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1180,665,58,22]}
+{"kind":"notes","id":"nt/4r9lc0","slide":9,"text":""}

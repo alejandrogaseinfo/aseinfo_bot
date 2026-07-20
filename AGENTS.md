@@ -2,150 +2,101 @@
 
 ## Proyecto
 
-`Chat-Salvador` es un bot de autoservicio para Microsoft Teams orientado a soporte tecnico y operaciones. El objetivo del MVP es responder preguntas con evidencia trazable sobre:
+`Chat-Salvador` es un bot de autoservicio para Microsoft Teams orientado a soporte y operaciones. Su objetivo es consultar conocimiento técnico existente, reducir preguntas repetitivas y escalar los casos que no tengan evidencia suficiente.
 
-- errores posteriores a actualizaciones o hotfixes,
-- advertencias documentadas en readmes o setups,
-- limites tecnicos de personalizaciones,
-- y antecedentes de errores similares.
+## Mapa rector
 
-## Estado Actual
+El único mapa vigente del MVP es:
 
-El proyecto ya no es una plantilla generica. Hoy existe un MVP funcional con:
+- [docs/plan-mvp-presentacion-lunes.md](docs/plan-mvp-presentacion-lunes.md)
 
-- identidad real del bot en Teams,
-- arquitectura modular en Python,
-- base documental local en Markdown,
-- retrieval documental local,
-- clasificacion estructurada,
-- fallback por reglas si OpenAI falla,
-- y respuesta formateada para Teams.
+Ese documento define el alcance, la arquitectura, las fuentes, las prioridades, el plan de trabajo, los criterios de aceptación y el backlog posterior. No crear roadmaps paralelos sin actualizar primero ese archivo.
 
-Documentacion de referencia:
+## Estado técnico actual
 
-- [README.md](C:/aseinfo_bot/Aseinfo_bot/README.md:1)
-- [docs/estado-actual-demo-chat-salvador.md](C:/aseinfo_bot/Aseinfo_bot/docs/estado-actual-demo-chat-salvador.md:1)
-- [docs/fase-0-alcance-mvp.md](C:/aseinfo_bot/Aseinfo_bot/docs/fase-0-alcance-mvp.md:1)
-- [docs/politica-respuesta-escalamiento.md](C:/aseinfo_bot/Aseinfo_bot/docs/politica-respuesta-escalamiento.md:1)
+El proyecto ya tiene:
 
-## Flujo Tecnico
+- integración funcional con Microsoft Teams / Microsoft 365 Agents Playground;
+- backend Python con `microsoft-agents-hosting-aiohttp`;
+- flujo modular en `agent.py`, `handler.py`, `retrieval.py`, `classification.py` y `formatting.py`;
+- índice documental local en Markdown;
+- clasificación estructurada;
+- fallback de clasificación por reglas;
+- respuesta con estado, confianza, evidencia, siguiente acción y escalamiento;
+- integración opcional de lectura con ClickUp y Jira mediante código existente.
 
-El flujo principal actual es:
+La evolución inmediata es convertir la recuperación en un `EvidenceProvider` sencillo: Azure AI Search para documentación del MVP, índice local como fallback y Jira o ClickUp como fuente operativa opcional. DownloadAseinfo.net alimentará el índice mediante su MCP o, mientras este no esté disponible, mediante staging real controlado. GitHub y SharePoint quedan como proveedores posteriores.
 
-1. Teams entrega el mensaje al agente.
-2. [src/agent.py](C:/aseinfo_bot/Aseinfo_bot/src/agent.py:1) recibe el evento y delega.
-3. [src/handler.py](C:/aseinfo_bot/Aseinfo_bot/src/handler.py:1) orquesta retrieval, clasificacion y formato.
-4. [src/retrieval.py](C:/aseinfo_bot/Aseinfo_bot/src/retrieval.py:1) obtiene evidencia documental local.
-5. [src/document_index.py](C:/aseinfo_bot/Aseinfo_bot/src/document_index.py:1) carga, fragmenta y puntua documentos `.md`.
-6. [src/classification.py](C:/aseinfo_bot/Aseinfo_bot/src/classification.py:1) intenta clasificar con OpenAI y tiene reglas locales de respaldo.
-7. [src/formatting.py](C:/aseinfo_bot/Aseinfo_bot/src/formatting.py:1) arma la respuesta final para Teams.
+## Decisiones importantes
 
-## Archivos Clave
+1. No rehacer el proyecto ni la integración con Teams.
+2. Mantener la clasificación por reglas como red de seguridad.
+3. Usar Azure AI Search como índice documental del MVP y conservar el índice local como fallback.
+4. Mantener OpenAI para generación durante el MVP, salvo que exista una restricción corporativa explícita.
+5. Consultar Jira o ClickUp como fuente operativa de solo lectura cuando exista acceso; no son condición para demostrar el núcleo documental.
+6. Tratar MCP como mecanismo de acceso a fuentes, no como almacenamiento central.
+7. No indexar todo el código de GitHub durante el MVP; GitHub y SharePoint son extensiones posteriores.
+8. Responder solo con evidencia y escalar ante la duda.
 
-- [src/agent.py](C:/aseinfo_bot/Aseinfo_bot/src/agent.py:1): punto de entrada del bot
-- [src/app.py](C:/aseinfo_bot/Aseinfo_bot/src/app.py:1): host aiohttp en `localhost:3978`
-- [src/config.py](C:/aseinfo_bot/Aseinfo_bot/src/config.py:1): configuracion base
-- [src/models.py](C:/aseinfo_bot/Aseinfo_bot/src/models.py:1): `EvidenceSource` y `BotDecision`
-- [appPackage/manifest.json](C:/aseinfo_bot/Aseinfo_bot/appPackage/manifest.json:1): identidad y comandos del bot
-- [docs/knowledge-base](C:/aseinfo_bot/Aseinfo_bot/docs/knowledge-base:1): base documental actual del MVP
+## Contrato de respuesta
 
-## Contrato De Respuesta
+La respuesta visible debe incluir:
 
-El bot debe responder con esta estructura visible:
+- Estado: `resuelto`, `en_progreso`, `similar_del_pasado` o `sin_evidencia`.
+- Confianza: `alta`, `media` o `baja`.
+- Resumen.
+- Ruta de investigación.
+- Evidencia con fuente, fragmento y ubicación.
+- Versión o fecha cuando exista.
+- Siguiente acción.
+- Escalamiento cuando corresponda.
 
-- `Estado`
-- `Confianza`
-- `Resumen`
-- `Evidencia`
-- `Siguiente accion`
-- `Escalamiento`
+No inventar tickets, estados, causas, fechas, versiones, permisos ni soluciones.
 
-Estados internos soportados:
+## Reglas de implementación
 
-- `resuelto`
-- `en_progreso`
-- `similar_del_pasado`
-- `sin_evidencia`
+- Mantener la lógica de orquestación fuera de `agent.py`.
+- Evitar que `retrieval.py` llame todas las fuentes en cada consulta; usar routing por intención.
+- Normalizar todas las fuentes a un modelo común de evidencia.
+- No clasificar como `resuelto` solo porque aparezca la palabra `hotfix`.
+- Aplicar límites y timeouts a llamadas externas.
+- No guardar secretos en el código ni en logs.
+- Preservar el índice local como fallback de desarrollo.
+- No mostrar documentos o enlaces que el usuario no pueda consultar.
 
-## Reglas Importantes
+## Trabajo multiplataforma y con Codex
 
-1. No eliminar la clasificacion por reglas.
-   Es una red de seguridad deliberada. No depender solo del modelo.
+- El repositorio debe funcionar tanto en Windows como en macOS. Usar rutas relativas con `pathlib` en Python y comandos documentados para ambos sistemas.
+- No cambiar el alcance del MVP ni rehacer la integración con Teams para probar IA local. La IA local es una configuración del cliente OpenAI-compatible.
+- La configuración del modelo se lee de `OPENAI_API_KEY`, `OPENAI_MODEL` y, opcionalmente, `OPENAI_BASE_URL`. Si se define la URL base, se puede usar Ollama local (`http://127.0.0.1:11434/v1`).
+- Los archivos `.env`, `env/.env.*` y cualquier secreto son locales. Nunca pedirlos, imprimirlos, copiarlos al repositorio ni sustituirlos por valores inventados.
+- Antes de modificar código, leer este archivo, el `README.md` y el documento rector. Para el arranque en Mac, seguir [docs/desarrollo-macos.md](docs/desarrollo-macos.md).
 
-2. No mover toda la logica de nuevo a `agent.py`.
-   La modularidad actual es parte del diseno del MVP.
+## Archivos clave
 
-3. No usar `/.env` como fuente manual de secretos.
-   `/.env` se trata como archivo runtime/generado.
+- `src/agent.py`: entrada y eventos de Teams.
+- `src/app.py`: host HTTP.
+- `src/handler.py`: orquestación.
+- `src/retrieval.py`: recuperación y futura capa de adaptadores.
+- `src/document_index.py`: índice local de respaldo.
+- `src/classification.py`: decisión estructurada y reglas de seguridad.
+- `src/formatting.py`: respuesta visible.
+- `src/models.py`: modelos de evidencia y decisión.
+- `src/config.py`: configuración por entorno.
+- `docs/knowledge-base`: documentos locales de prueba o staging.
 
-4. Mantener respuestas prudentes.
-   Si no hay evidencia fuerte, debe preferirse `sin_evidencia` o escalamiento.
+## Documentos vigentes
 
-5. No integrar ClickUp, Jira o Azure AI Search de forma improvisada.
-   Primero deben definirse bien la fuente, el contrato y el criterio de confianza.
+- [docs/incorporacion-readmes.md](docs/incorporacion-readmes.md): proceso de incorporación documental.
+- [docs/requerimientos-mcp-downloadaseinfo-mvp.md](docs/requerimientos-mcp-downloadaseinfo-mvp.md): contrato técnico del MCP de DownloadAseinfo.net.
+- [docs/estado-actual-demo-chat-salvador.md](docs/estado-actual-demo-chat-salvador.md): estado y evidencia de avance.
 
-## Secretos Y Entornos
+## Pruebas mínimas antes de una demo
 
-Los secretos deben vivir en:
-
-- `env/.env.local.user`
-- `env/.env.dev.user`
-- `env/.env.playground.user`
-
-`src/agent.py` ya carga esos archivos. `src/config.py` acepta:
-
-- `OPENAI_API_KEY`
-- `SECRET_OPENAI_API_KEY`
-
-## Como Probar El Bot
-
-El Playground espera el bot en:
-
-- `http://127.0.0.1:3978/api/messages`
-
-Procedimiento operativo de arranque local:
-
-- ver [README.md](C:/aseinfo_bot/Aseinfo_bot/README.md:40), seccion `Levantar El Bot Localmente`
-
-Si el Playground sigue mostrando respuestas viejas:
-
-1. verificar que el proceso correcto este escuchando en `3978`,
-2. reiniciar el proceso Python que ejecuta `src/app.py`,
-3. recargar el Playground o abrir una conversacion nueva.
-
-Consulta de prueba recomendada:
-
-```text
-Despues de instalar un hotfix de nomina, el sistema fallo al guardar movimientos. Ya existe una advertencia o solucion documentada?
-```
-
-Resultado esperado actual:
-
-- `Estado: resuelto`
-- evidencia desde `docs/knowledge-base/readme_hotfix_nomina_2026_07_01.md`
-
-## Pendientes Del Proyecto
-
-Pendiente inmediato:
-
-- cargar documentos reales del negocio,
-- incorporar changelogs reales,
-- ampliar base documental mas alla de documentos de ejemplo.
-
-Pendiente posterior:
-
-- integracion ClickUp,
-- integracion Jira,
-- integracion Azure AI Search,
-- flujo de curacion de respuestas.
-
-## Forma Correcta De Continuar
-
-La siguiente evolucion recomendada es:
-
-1. fortalecer Fase 4 con documentos reales,
-2. validar mas consultas reales,
-3. luego integrar fuentes operativas externas,
-4. y despues endurecer observabilidad y politicas de confianza.
-
-No conviene saltar directamente a infraestructura adicional sin antes mejorar la calidad de la evidencia documental.
+- Probar una consulta con evidencia documental real.
+- Probar una consulta con ticket activo.
+- Probar una consulta histórica.
+- Probar una consulta sin evidencia.
+- Verificar que cada afirmación tenga fuente.
+- Verificar que un fallo de una fuente no derribe el bot.
+- Revisar que no se impriman tokens ni secretos.

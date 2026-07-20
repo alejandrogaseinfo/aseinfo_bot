@@ -23,9 +23,13 @@ async def process_user_message(user_message: str, client, config) -> str:
         logger.exception("Fallo la clasificacion del caso con OpenAI. Se aplicara clasificacion por reglas.")
         decision = fallback_decision
 
-    if decision.estado == "sin_evidencia" and fallback_decision.estado != "sin_evidencia":
+    if (
+        decision.estado == "sin_evidencia" and fallback_decision.estado != "sin_evidencia"
+    ) or (
+        decision.estado == "similar_del_pasado" and fallback_decision.estado == "resuelto"
+    ):
         logger.info(
-            "Se sustituye clasificacion del modelo por clasificacion local. estado_modelo=%s estado_reglas=%s",
+            "Se sustituye clasificación del modelo por la política local. estado_modelo=%s estado_reglas=%s",
             decision.estado,
             fallback_decision.estado,
         )
