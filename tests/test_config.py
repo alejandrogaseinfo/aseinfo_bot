@@ -22,6 +22,8 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual("text-embedding-3-small", config.openai_embedding_model)
         self.assertEqual(1536, config.openai_embedding_dimensions)
+        self.assertEqual(12, config.retrieval_timeout_seconds)
+        self.assertEqual(12, config.classification_timeout_seconds)
 
 
 if __name__ == "__main__":

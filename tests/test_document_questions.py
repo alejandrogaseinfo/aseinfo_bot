@@ -1,20 +1,144 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from azure_search import _document_relevance_score, _excerpt_around_query, _rerank_records
+from azure_search import (
+    _clear_deletion_manifest,
+    _deletion_document_ids,
+    _document_records,
+    _document_relevance_score,
+    _excerpt_around_query,
+    _rerank_records,
+)
 from classification import classify_case_by_rules
 from document_index import tokenize
 from formatting import format_user_response
 from models import EvidenceSource
 from models import BotDecision
+from sharepoint_sync import DELETION_MANIFEST_NAME, sync_pdfs
 
 
 class DocumentQuestionTests(unittest.TestCase):
+    def test_evidence_source_preserves_optional_document_metadata(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Manual",
+            ubicacion="https://contoso.example/manual.pdf",
+            fragmento="Texto de prueba.",
+            document_id="drive-item-123",
+            document_version='"etag-2"',
+            last_modified="2026-07-22T12:00:00Z",
+            document_type="pdf",
+            folder_path="Operaciones/Manuales",
+        )
+
+        self.assertEqual("drive-item-123", source.document_id)
+        self.assertEqual("pdf", source.document_type)
+        self.assertEqual("Operaciones/Manuales", source.folder_path)
+
+    def test_deletion_manifest_is_read_and_cleared_after_indexing(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            manifest = source_dir / DELETION_MANIFEST_NAME
+            manifest.write_text(
+                '{"deleted_document_ids": ["one", "two", "one"]}', encoding="utf-8"
+            )
+
+            self.assertEqual({"one", "two"}, _deletion_document_ids(source_dir))
+            _clear_deletion_manifest(source_dir)
+            self.assertEqual(set(), _deletion_document_ids(source_dir))
+
+    def test_pdf_records_include_stable_sharepoint_metadata(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            pdf_path = source_dir / "manual.pdf"
+            pdf_path.write_bytes(b"placeholder")
+            pdf_path.with_suffix(".pdf.metadata.json").write_text(
+                """{
+                  "source_system": "sharepoint",
+                  "document_id": "drive-item-123",
+                  "etag": "etag-2",
+                  "last_modified": "2026-07-22T12:00:00Z",
+                  "web_url": "https://contoso.example/manual.pdf",
+                  "folder_path": "Operaciones/Manuales"
+                }""",
+                encoding="utf-8",
+            )
+            with patch(
+                "azure_search._document_pages",
+                return_value=[(1, "Procedimiento para instalar el hotfix de nómina.")],
+            ):
+                records = _document_records(source_dir)
+
+        self.assertEqual(1, len(records))
+        record = records[0]
+        self.assertEqual("drive-item-123", record["document_id"])
+        self.assertEqual("etag-2", record["document_version"])
+        self.assertEqual("pdf", record["document_type"])
+        self.assertEqual("Operaciones/Manuales", record["folder_path"])
+        self.assertTrue(record["content_hash"])
+        self.assertTrue(record["indexed_at"])
+
+    def test_sync_reuses_unchanged_pdf_and_preserves_pending_deletion(self):
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def __init__(self):
+                self.files = [
+                    {
+                        "id": "document-1",
+                        "name": "manual.pdf",
+                        "eTag": '"etag-1"',
+                        "webUrl": "https://contoso.example/manual.pdf",
+                        "lastModifiedDateTime": "2026-07-22T12:00:00Z",
+                    }
+                ]
+                self.download_calls = 0
+
+            def list_pdfs(self):
+                return self.files
+
+            def download(self, _item, destination):
+                self.download_calls += 1
+                destination.write_bytes(b"placeholder PDF")
+
+        fake_client = FakeSharePointClient()
+        config = SimpleNamespace(
+            sharepoint_site_id="site-1",
+            sharepoint_folder_path="Operaciones",
+        )
+
+        with TemporaryDirectory() as directory, patch(
+            "sharepoint_sync.SharePointDelegatedClient", return_value=fake_client
+        ):
+            source_dir = Path(directory)
+            sync_pdfs(config, source_dir)
+            sync_pdfs(config, source_dir)
+            self.assertEqual(1, fake_client.download_calls)
+
+            fake_client.files[0]["name"] = "manual-renombrado.pdf"
+            sync_pdfs(config, source_dir)
+            self.assertEqual(2, fake_client.download_calls)
+            self.assertFalse((source_dir / "document_manual.pdf").exists())
+            self.assertTrue((source_dir / "document_manual-renombrado.pdf").exists())
+
+            fake_client.files = []
+            sync_pdfs(config, source_dir)
+            self.assertEqual({"document-1"}, _deletion_document_ids(source_dir))
+            self.assertFalse((source_dir / "document_manual-renombrado.pdf").exists())
+
+            # If Azure ingestion has not yet acknowledged the deletion, a
+            # subsequent sync must retain the tombstone instead of losing it.
+            sync_pdfs(config, source_dir)
+            self.assertEqual({"document-1"}, _deletion_document_ids(source_dir))
+
     def test_excerpt_prefers_matching_sentence_over_chunk_start(self):
         content = (
             "Página 3 Información general de la planilla y parámetros administrativos. "

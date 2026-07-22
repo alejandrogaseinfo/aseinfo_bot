@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -41,12 +42,16 @@ from document_index import tokenize
 from models import EvidenceSource
 
 
-SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf"}
+# La primera fuente productiva aprobada contiene únicamente PDFs. El índice
+# local de Markdown sigue existiendo como fallback de desarrollo, pero no se
+# carga mediante este proceso de ingesta.
+SUPPORTED_EXTENSIONS = {".pdf"}
 CONTENT_FIELD = "content"
 CONTEXT_FIELD = "document_context"
 CONTENT_VECTOR_FIELD = "content_vector"
 SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
+DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 
 
 def _credential(config):
@@ -274,7 +279,17 @@ def retrieve_azure_search_evidence(
     search_args = {
         "top": MAX_CANDIDATES,
         "select": [
-            "id", "title", "source_url", "source_system", CONTEXT_FIELD, CONTENT_FIELD
+            "id",
+            "title",
+            "source_url",
+            "source_system",
+            CONTEXT_FIELD,
+            CONTENT_FIELD,
+            "document_id",
+            "document_version",
+            "last_modified",
+            "document_type",
+            "folder_path",
         ],
         "connection_timeout": SEARCH_TIMEOUT_SECONDS,
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
@@ -357,6 +372,12 @@ def retrieve_azure_search_evidence(
                 titulo=record.get("title") or "Documento sin título",
                 ubicacion=record.get("source_url") or "Azure AI Search",
                 fragmento=fragment,
+                source_system=source_system,
+                document_id=str(record.get("document_id") or ""),
+                document_version=str(record.get("document_version") or ""),
+                last_modified=str(record.get("last_modified") or ""),
+                document_type=str(record.get("document_type") or ""),
+                folder_path=str(record.get("folder_path") or ""),
             )
         )
     return sources
@@ -425,25 +446,35 @@ def _document_records(source_dir: Path) -> list[dict]:
         source_url = metadata.get("web_url") or str(document_path.resolve())
         title = metadata.get("name") or document_path.stem
         source_system = metadata.get("source_system", "local")
+        document_id = str(metadata.get("document_id") or source_url)
+        document_version = str(metadata.get("etag") or metadata.get("document_version") or "")
+        last_modified = str(metadata.get("last_modified") or "")
+        folder_path = str(metadata.get("folder_path") or "")
         # Later pages frequently omit the country/product named on the cover.
         # Store a compact document-level context with every chunk so retrieval
         # can keep that context without merging documents or pages.
         document_context = _clean_text(full_text, limit=900)
-        document_hash = hashlib.sha256(
-            f"{source_url}|{full_text}".encode("utf-8")
-        ).hexdigest()
+        content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+        document_key = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         sequence = 0
         for page_number, page_text in pages:
             for chunk in _chunks(page_text):
                 page_label = f"Página {page_number}" if page_number else "Documento"
                 records.append(
                     {
-                        "id": f"{document_hash}-{sequence}",
+                        "id": f"{document_key}-{sequence}",
                         "title": f"{title} — {page_label}",
                         "content": f"{page_label}\n{chunk}",
                         CONTEXT_FIELD: document_context,
                         "source_url": source_url,
                         "source_system": source_system,
+                        "document_id": document_id,
+                        "document_version": document_version,
+                        "last_modified": last_modified,
+                        "content_hash": content_hash,
+                        "document_type": "pdf",
+                        "folder_path": folder_path,
+                        "indexed_at": datetime.now(timezone.utc).isoformat(),
                         "chunk_number": sequence,
                         "content_tokens": " ".join(tokenize(chunk)),
                     }
@@ -452,14 +483,14 @@ def _document_records(source_dir: Path) -> list[dict]:
     return records
 
 
-def _existing_record_ids(client: SearchClient, source_urls: set[str]) -> set[str]:
-    """Find prior chunks so a re-ingest removes stale larger chunks."""
+def _existing_record_ids(client: SearchClient, document_ids: set[str]) -> set[str]:
+    """Find prior chunks so updates and deletions remove stale fragments."""
     existing_ids: set[str] = set()
-    for source_url in source_urls:
-        escaped_url = source_url.replace("'", "''")
+    for document_id in document_ids:
+        escaped_id = document_id.replace("'", "''")
         results = client.search(
             search_text="*",
-            filter=f"source_url eq '{escaped_url}'",
+            filter=f"document_id eq '{escaped_id}'",
             select=["id"],
             top=1_000,
         )
@@ -493,6 +524,13 @@ def ensure_index(config) -> None:
         ),
         SimpleField(name="source_url", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="source_system", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="document_id", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="document_version", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="last_modified", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="content_hash", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="document_type", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="folder_path", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="indexed_at", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="chunk_number", type=SearchFieldDataType.Int32, filterable=True),
         SearchableField(name="content_tokens", type=SearchFieldDataType.String, searchable=True),
     ]
@@ -538,23 +576,61 @@ def reset_index(config) -> None:
     ensure_index(config)
 
 
+def _deletion_document_ids(source_dir: Path) -> set[str]:
+    """Read idempotent SharePoint deletion notices written by the sync step."""
+    manifest_path = source_dir / DELETION_MANIFEST_NAME
+    if not manifest_path.exists():
+        return set()
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"El manifiesto de eliminaciones no es válido: {manifest_path}") from error
+    deletions = payload.get("deleted_document_ids", [])
+    if not isinstance(deletions, list) or not all(isinstance(item, str) for item in deletions):
+        raise RuntimeError("El manifiesto de eliminaciones debe contener deleted_document_ids.")
+    return {item for item in deletions if item}
+
+
+def _delete_record_ids(client: SearchClient, record_ids: set[str]) -> None:
+    for offset in range(0, len(record_ids), 500):
+        batch = list(record_ids)[offset : offset + 500]
+        results = client.delete_documents(documents=[{"id": record_id} for record_id in batch])
+        failures = [result.key for result in results if not result.succeeded]
+        if failures:
+            raise RuntimeError(f"Azure AI Search no eliminó {len(failures)} fragmentos.")
+
+
+def _clear_deletion_manifest(source_dir: Path) -> None:
+    manifest_path = source_dir / DELETION_MANIFEST_NAME
+    if manifest_path.exists():
+        manifest_path.write_text(
+            json.dumps({"deleted_document_ids": []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
 def index_directory(source_dir: Path, config, create_index: bool = False) -> int:
     """Upload Markdown, text and PDFs from a controlled staging directory."""
     if not getattr(config, "azure_search_configured", False):
         raise RuntimeError("Falta configurar AZURE_SEARCH_ENDPOINT y AZURE_SEARCH_API_KEY.")
     if create_index:
         ensure_index(config)
-    records = _document_records(source_dir)
-    if not records:
-        return 0
-    _attach_embeddings(records, config)
     client = SearchClient(
         endpoint=config.azure_search_endpoint,
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
+    deleted_document_ids = _deletion_document_ids(source_dir)
+    if deleted_document_ids:
+        _delete_record_ids(client, _existing_record_ids(client, deleted_document_ids))
+        _clear_deletion_manifest(source_dir)
+
+    records = _document_records(source_dir)
+    if not records:
+        return 0
+    _attach_embeddings(records, config)
     previous_ids = _existing_record_ids(
-        client, {str(record["source_url"]) for record in records}
+        client, {str(record["document_id"]) for record in records}
     )
     for offset in range(0, len(records), 500):
         results = client.merge_or_upload_documents(documents=records[offset : offset + 500])
@@ -563,8 +639,5 @@ def index_directory(source_dir: Path, config, create_index: bool = False) -> int
             raise RuntimeError(f"Azure AI Search rechazó {len(failures)} fragmentos.")
 
     stale_ids = previous_ids.difference(str(record["id"]) for record in records)
-    for offset in range(0, len(stale_ids), 500):
-        client.delete_documents(
-            documents=[{"id": record_id} for record_id in list(stale_ids)[offset : offset + 500]]
-        )
+    _delete_record_ids(client, stale_ids)
     return len(records)

@@ -31,6 +31,12 @@ class Config:
         self.openai_embedding_dimensions = int(
             env.get("OPENAI_EMBEDDING_DIMENSIONS", "1536")
         )
+        self.retrieval_timeout_seconds = float(
+            env.get("RETRIEVAL_TIMEOUT_SECONDS", "12")
+        )
+        self.classification_timeout_seconds = float(
+            env.get("CLASSIFICATION_TIMEOUT_SECONDS", "12")
+        )
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
         self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "chat-salvador-docs").strip()
         self.azure_search_api_key = env.get("AZURE_SEARCH_API_KEY", "").strip()
