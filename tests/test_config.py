@@ -25,6 +25,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(12, config.retrieval_timeout_seconds)
         self.assertEqual(12, config.classification_timeout_seconds)
 
+    def test_application_sharepoint_mode_requires_an_explicit_approved_location(self):
+        config = Config(
+            {
+                "SHAREPOINT_AUTH_MODE": "application",
+                "SHAREPOINT_TENANT_ID": "tenant",
+                "SHAREPOINT_CLIENT_ID": "client",
+                "SHAREPOINT_CLIENT_SECRET": "secret",
+            }
+        )
+
+        self.assertFalse(config.sharepoint_configured)
+        self.assertFalse(config.sharepoint_application_configured)
+
 
 if __name__ == "__main__":
     unittest.main()

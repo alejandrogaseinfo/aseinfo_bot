@@ -1,9 +1,8 @@
-"""Download an approved SharePoint PDF folder with delegated user access.
+"""Synchronize approved SharePoint PDFs for Azure AI Search ingestion.
 
-This script intentionally does not use an application secret. The person who
-runs it authenticates with device code and Graph only returns files that person
-can already read. It creates local staging files plus safe metadata for the
-Azure AI Search ingestion command.
+Local development uses delegated device authentication. Production uses the
+corporate App Registration with application permissions restricted to the
+approved SharePoint site through ``Sites.Selected``.
 """
 
 from __future__ import annotations
@@ -21,7 +20,8 @@ from config import Config, load_project_environment
 
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
-GRAPH_SCOPE = ["https://graph.microsoft.com/Files.Read.All"]
+GRAPH_DELEGATED_SCOPE = ["https://graph.microsoft.com/Files.Read.All"]
+GRAPH_APPLICATION_SCOPE = ["https://graph.microsoft.com/.default"]
 SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 
@@ -30,36 +30,20 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "documento.pdf"
 
 
-class SharePointDelegatedClient:
-    def __init__(self, config: Config):
-        if not config.sharepoint_configured:
-            raise RuntimeError(
-                "Faltan SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, "
-                "para iniciar Microsoft Graph."
-            )
+class SharePointGraphClient:
+    """Common Graph operations for the approved document library."""
+
+    def __init__(self, config: Config, access_token: str, drive_id: str):
         self.config = config
-        application = msal.PublicClientApplication(
-            client_id=config.sharepoint_client_id,
-            authority=f"https://login.microsoftonline.com/{config.sharepoint_tenant_id}",
-        )
-        flow = application.initiate_device_flow(scopes=GRAPH_SCOPE)
-        if "message" not in flow:
-            raise RuntimeError("No se pudo iniciar el inicio de sesión de Microsoft Graph.")
-        print(flow["message"])
-        token_result = application.acquire_token_by_device_flow(flow)
-        access_token = token_result.get("access_token")
-        if not access_token:
-            description = token_result.get("error_description", "sin detalle")
-            raise RuntimeError(f"Microsoft Graph no autorizó el acceso: {description}")
         self.headers = {"Authorization": f"Bearer {access_token}"}
-        # For a personal OneDrive the caller can omit the drive id; Graph
-        # resolves it from the same delegated user that authorized the script.
-        self.drive_id = config.sharepoint_drive_id or self._get(f"{GRAPH_ROOT}/me/drive")["id"]
+        self.drive_id = drive_id
 
     def _get(self, url: str) -> dict:
         response = requests.get(url, headers=self.headers, timeout=30)
         if response.status_code >= 400:
-            raise RuntimeError(f"Microsoft Graph devolvió HTTP {response.status_code}: {response.text[:300]}")
+            raise RuntimeError(
+                f"Microsoft Graph devolvió HTTP {response.status_code}: {response.text[:300]}"
+            )
         return response.json()
 
     def _children_url(self, folder_path: str) -> str:
@@ -84,9 +68,69 @@ class SharePointDelegatedClient:
 
     def download(self, item: dict, destination: Path) -> None:
         content_url = f"{GRAPH_ROOT}/drives/{self.drive_id}/items/{item['id']}/content"
-        response = requests.get(content_url, headers=self.headers, timeout=90, allow_redirects=True)
+        response = requests.get(
+            content_url, headers=self.headers, timeout=90, allow_redirects=True
+        )
         response.raise_for_status()
         destination.write_bytes(response.content)
+
+
+class SharePointDelegatedClient(SharePointGraphClient):
+    def __init__(self, config: Config):
+        if not config.sharepoint_tenant_id or not config.sharepoint_client_id:
+            raise RuntimeError(
+                "Faltan SHAREPOINT_TENANT_ID y SHAREPOINT_CLIENT_ID para Microsoft Graph."
+            )
+        application = msal.PublicClientApplication(
+            client_id=config.sharepoint_client_id,
+            authority=f"https://login.microsoftonline.com/{config.sharepoint_tenant_id}",
+        )
+        flow = application.initiate_device_flow(scopes=GRAPH_DELEGATED_SCOPE)
+        if "message" not in flow:
+            raise RuntimeError("No se pudo iniciar el inicio de sesión de Microsoft Graph.")
+        print(flow["message"])
+        token_result = application.acquire_token_by_device_flow(flow)
+        access_token = token_result.get("access_token")
+        if not access_token:
+            description = token_result.get("error_description", "sin detalle")
+            raise RuntimeError(f"Microsoft Graph no autorizó el acceso: {description}")
+        # For a personal OneDrive the caller can omit the drive id; Graph
+        # resolves it from the same delegated user that authorized the script.
+        drive_id = config.sharepoint_drive_id
+        if not drive_id:
+            # Device flow is strictly a local-development convenience.
+            provisional = SharePointGraphClient(config, access_token, "")
+            drive_id = provisional._get(f"{GRAPH_ROOT}/me/drive")["id"]
+        super().__init__(config, access_token, drive_id)
+
+
+class SharePointApplicationClient(SharePointGraphClient):
+    """Corporate production client using the approved App Registration."""
+
+    def __init__(self, config: Config):
+        if not config.sharepoint_application_configured:
+            raise RuntimeError(
+                "El modo application requiere tenant, client ID, secreto, site ID, drive ID y carpeta aprobada."
+            )
+        application = msal.ConfidentialClientApplication(
+            client_id=config.sharepoint_client_id,
+            authority=f"https://login.microsoftonline.com/{config.sharepoint_tenant_id}",
+            client_credential=config.sharepoint_client_secret,
+        )
+        token_result = application.acquire_token_for_client(scopes=GRAPH_APPLICATION_SCOPE)
+        access_token = token_result.get("access_token")
+        if not access_token:
+            description = token_result.get("error_description", "sin detalle")
+            raise RuntimeError(f"Microsoft Graph no autorizó la aplicación: {description}")
+        super().__init__(config, access_token, config.sharepoint_drive_id)
+
+
+def create_sharepoint_client(config: Config) -> SharePointGraphClient:
+    if config.sharepoint_auth_mode == "delegated":
+        return SharePointDelegatedClient(config)
+    if config.sharepoint_auth_mode == "application":
+        return SharePointApplicationClient(config)
+    raise RuntimeError("SHAREPOINT_AUTH_MODE debe ser delegated o application.")
 
 
 def sync_pdfs(config: Config, output_dir: Path) -> int:
@@ -97,7 +141,7 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     versions and deletion contract that the production job will use.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    client = SharePointDelegatedClient(config)
+    client = create_sharepoint_client(config)
     files = client.list_pdfs()
     state_path = output_dir / SYNC_STATE_NAME
     previous_state = _load_json(state_path)

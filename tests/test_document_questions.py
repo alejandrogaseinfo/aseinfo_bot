@@ -116,7 +116,7 @@ class DocumentQuestionTests(unittest.TestCase):
         )
 
         with TemporaryDirectory() as directory, patch(
-            "sharepoint_sync.SharePointDelegatedClient", return_value=fake_client
+            "sharepoint_sync.create_sharepoint_client", return_value=fake_client
         ):
             source_dir = Path(directory)
             sync_pdfs(config, source_dir)

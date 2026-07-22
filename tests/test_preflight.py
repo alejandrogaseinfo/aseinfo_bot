@@ -20,6 +20,8 @@ def _config(**overrides):
         "azure_search_endpoint": "https://libras.search.windows.net",
         "sharepoint_tenant_id": "tenant-id",
         "sharepoint_client_id": "client-id",
+        "sharepoint_auth_mode": "application",
+        "sharepoint_client_secret": "secret",
         "sharepoint_site_id": "site-id",
         "sharepoint_drive_id": "drive-id",
         "sharepoint_folder_path": "Operaciones/Piloto",

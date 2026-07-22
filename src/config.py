@@ -51,6 +51,11 @@ class Config:
         self.azure_search_use_semantic = env.get("AZURE_SEARCH_USE_SEMANTIC", "false").lower() == "true"
         self.sharepoint_tenant_id = env.get("SHAREPOINT_TENANT_ID", "").strip()
         self.sharepoint_client_id = env.get("SHAREPOINT_CLIENT_ID", "").strip()
+        self.sharepoint_auth_mode = env.get("SHAREPOINT_AUTH_MODE", "delegated").strip().lower()
+        self.sharepoint_client_secret = (
+            env.get("SHAREPOINT_CLIENT_SECRET")
+            or env.get("SECRET_SHAREPOINT_CLIENT_SECRET", "")
+        ).strip()
         self.sharepoint_site_id = env.get("SHAREPOINT_SITE_ID", "").strip()
         self.sharepoint_drive_id = env.get("SHAREPOINT_DRIVE_ID", "").strip()
         self.sharepoint_folder_path = env.get("SHAREPOINT_FOLDER_PATH", "").strip("/")
@@ -76,8 +81,22 @@ class Config:
 
     @property
     def sharepoint_configured(self) -> bool:
-        """SharePoint sync deliberately uses delegated (user) authentication."""
+        """Report whether the selected SharePoint authentication mode is usable."""
+        if self.sharepoint_auth_mode == "application":
+            return self.sharepoint_application_configured
         return bool(
             self.sharepoint_tenant_id
             and self.sharepoint_client_id
+        )
+
+    @property
+    def sharepoint_application_configured(self) -> bool:
+        """Production sync requires an explicit approved SharePoint location."""
+        return bool(
+            self.sharepoint_tenant_id
+            and self.sharepoint_client_id
+            and self.sharepoint_client_secret
+            and self.sharepoint_site_id
+            and self.sharepoint_drive_id
+            and self.sharepoint_folder_path
         )
