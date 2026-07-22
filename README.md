@@ -57,6 +57,17 @@ Ejecutar las pruebas:
 python -m unittest discover -s tests -v
 ```
 
+Antes de desplegar o solicitar permisos, ejecutar el preflight. No imprime
+secretos; devuelve código 1 si falta algún requisito de la etapa elegida:
+
+```bash
+# Solicitud A: plataforma, modelo, Azure AI Search y paquete de Teams
+python src/preflight.py --stage platform
+
+# Solicitud B: datos mínimos de la biblioteca/carpeta SharePoint aprobada
+python src/preflight.py --stage data-access
+```
+
 Iniciar el backend:
 
 ```bash
