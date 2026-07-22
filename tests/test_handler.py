@@ -56,6 +56,36 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Se encontró documentación", response)
         self.assertIn("Manual de nómina", response)
 
+    async def test_query_telemetry_omits_the_user_message_and_evidence_text(self):
+        self.config.retrieval_timeout_seconds = 0.2
+        self.config.classification_timeout_seconds = 0.2
+        question = "Clave confidencial: no debe aparecer en los registros"
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual de nómina",
+                ubicacion="https://contoso.example/manual.pdf",
+                fragmento="Texto interno que tampoco debe aparecer en los registros.",
+            )
+        ]
+        decision = BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen="La documentación responde la consulta.",
+            fuentes=evidence,
+        )
+
+        with patch("handler.retrieve_evidence", return_value=evidence), patch(
+            "handler.classify_case", return_value=decision
+        ), self.assertLogs("chat_salvador", level="INFO") as captured:
+            await process_user_message(question, None, self.config)
+
+        telemetry = "\n".join(captured.output)
+        self.assertIn("query_completed", telemetry)
+        self.assertIn("evidence_count=1", telemetry)
+        self.assertNotIn(question, telemetry)
+        self.assertNotIn(evidence[0].fragmento, telemetry)
+
 
 if __name__ == "__main__":
     unittest.main()

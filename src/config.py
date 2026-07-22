@@ -22,6 +22,10 @@ class Config:
 
     def __init__(self, env):
         self.port = int(env.get("PORT", 3978))
+        self.environment = env.get("LIBRAS_ENV", env.get("TEAMSFX_ENV", "local")).strip().lower()
+        self.require_azure_search = env.get(
+            "REQUIRE_AZURE_SEARCH", "true" if self.environment == "production" else "false"
+        ).lower() == "true"
         self.openai_api_key = env.get("OPENAI_API_KEY") or env.get("SECRET_OPENAI_API_KEY", "")
         self.openai_model_name = env.get("OPENAI_MODEL", "gpt-4o")
         self.openai_base_url = env.get("OPENAI_BASE_URL", "").strip().rstrip("/")

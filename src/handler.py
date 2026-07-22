@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from time import perf_counter
 
 from classification import classify_case, classify_case_by_rules
 from formatting import format_user_response
@@ -24,6 +25,7 @@ async def _run_blocking_with_timeout(
 
 
 async def process_user_message(user_message: str, client, config) -> str:
+    started_at = perf_counter()
     try:
         evidence = await _run_blocking_with_timeout(
             retrieve_evidence,
@@ -76,4 +78,13 @@ async def process_user_message(user_message: str, client, config) -> str:
         )
         decision = fallback_decision
 
+    source_types = sorted({source.tipo for source in decision.fuentes})
+    logger.info(
+        "query_completed duration_ms=%s evidence_count=%s source_types=%s decision_state=%s escalated=%s",
+        round((perf_counter() - started_at) * 1000),
+        len(decision.fuentes),
+        ",".join(source_types) or "none",
+        decision.estado,
+        decision.requiere_escalamiento,
+    )
     return format_user_response(decision, config=config)
