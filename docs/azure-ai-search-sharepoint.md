@@ -43,9 +43,15 @@ Después, iniciar el bot como ya está configurado:
 python src\app.py
 ```
 
-El primer comando de ingesta crea el índice `chat-salvador-docs` si falta. Para cargas posteriores omite `--create-index`. Los PDFs se fragmentan por página (y, si una página es extensa, en segmentos cortos con solapamiento), para que una coincidencia no oculte la respuesta dentro de un documento completo. El índice conserva título, URL de SharePoint, sistema de origen y fragmentos de texto; el bot enlaza a la URL original, por lo que SharePoint sigue aplicando sus permisos al abrirla.
+El primer comando de ingesta crea el índice `chat-salvador-docs` si falta. Para cargas posteriores omite `--create-index`. Los PDFs se fragmentan por página (y, si una página es extensa, en segmentos cortos con solapamiento), para que una coincidencia no oculte la respuesta dentro de un documento completo. Cada fragmento recibe un *embedding* y Azure AI Search compara el significado de la pregunta con esos fragmentos; no hace falta consolidar temas en un PDF gigante ni mantener reglas por documento. El índice conserva título, URL de SharePoint, sistema de origen y fragmentos de texto; el bot enlaza a la URL original, por lo que SharePoint sigue aplicando sus permisos al abrirla.
 
 Si cambias la estrategia de fragmentación, vuelve a ejecutar la ingesta. El proceso reemplaza los fragmentos anteriores del mismo documento y elimina los que ya no correspondan, por lo que no es necesario borrar ni dividir físicamente los PDFs.
+
+Si previamente cargaste copias manuales de los mismos PDFs, o si actualizas una versión anterior del índice que no tenía el campo vectorial, ejecuta una única carga limpia con `--reset-index`. Esa opción elimina sólo `AZURE_SEARCH_INDEX_NAME` y lo reconstruye desde las copias sincronizadas que incluyen metadata de OneDrive:
+
+```powershell
+python src\azure_search_ingest.py --source-dir data\sharepoint --reset-index
+```
 
 ## Crear el servicio, sólo si tienes Azure Contributor
 

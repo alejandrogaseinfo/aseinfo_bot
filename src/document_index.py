@@ -19,6 +19,7 @@ STOP_WORDS = {
     "de",
     "del",
     "donde",
+    "dime",
     "el",
     "en",
     "es",
@@ -56,7 +57,12 @@ def _normalize_token(token: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    normalized_text = _normalize_token(text)
+    # PDFs and application manuals often join technical names in camel case
+    # (for example ``BaseCalculoISSS``). Preserve their individual concepts so
+    # a natural-language query can match them without per-document aliases.
+    separated_text = re.sub(r"(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ])", " ", text)
+    separated_text = re.sub(r"(?<=[A-ZÁÉÍÓÚÑ])(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])", " ", separated_text)
+    normalized_text = _normalize_token(separated_text)
     tokens = [_normalize_token(token) for token in re.findall(r"[a-zA-Z0-9_]+", normalized_text)]
     return [
         token

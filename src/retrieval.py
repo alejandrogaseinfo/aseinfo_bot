@@ -45,14 +45,19 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
 
     if getattr(config, "azure_search_configured", False):
         try:
-            evidence = retrieve_azure_search_evidence(user_message, config=config)
+            evidence = retrieve_azure_search_evidence(
+                user_message, config=config, client=client
+            )
             logger.info(
                 "Consulta resuelta con Azure AI Search. index_name=%s evidencias=%s",
                 config.azure_search_index_name,
                 len(evidence),
             )
             if evidence:
-                return _dedupe_evidence(sources + evidence, limit=4)
+                # During the document-retrieval flow, Azure is the source of
+                # truth. Operational sources are consulted only when Azure has
+                # no documentary evidence.
+                return _dedupe_evidence(evidence, limit=4)
         except Exception:
             logger.exception(
                 "Falló Azure AI Search. Se usará el índice documental local."

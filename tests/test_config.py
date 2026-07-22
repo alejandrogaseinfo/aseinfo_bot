@@ -17,6 +17,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:11434/v1", config.openai_base_url)
         self.assertEqual("", config.openai_api_key)
 
+    def test_embedding_configuration_has_safe_defaults(self):
+        config = Config({})
+
+        self.assertEqual("text-embedding-3-small", config.openai_embedding_model)
+        self.assertEqual(1536, config.openai_embedding_dimensions)
+
 
 if __name__ == "__main__":
     unittest.main()

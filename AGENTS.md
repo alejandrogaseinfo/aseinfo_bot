@@ -24,8 +24,10 @@ El proyecto ya tiene:
 - fallback de clasificación por reglas;
 - respuesta con estado, confianza, evidencia, siguiente acción y escalamiento;
 - integración opcional de lectura con ClickUp y Jira mediante código existente.
+- sincronización delegada de PDFs desde una carpeta piloto de OneDrive hacia staging local;
+- ingesta de esos PDFs en Azure AI Search, con el índice local como fallback.
 
-La evolución inmediata es convertir la recuperación en un `EvidenceProvider` sencillo: Azure AI Search para documentación del MVP, índice local como fallback y Jira o ClickUp como fuente operativa opcional. DownloadAseinfo.net alimentará el índice mediante su MCP o, mientras este no esté disponible, mediante staging real controlado. GitHub y SharePoint quedan como proveedores posteriores.
+Azure AI Search es el índice documental del MVP. OneDrive/SharePoint alimenta una biblioteca piloto mediante Microsoft Graph y autenticación delegada; tras agregar o modificar documentos se ejecutan `sharepoint_sync.py` y `azure_search_ingest.py`. La eliminación automática de documentos retirados de OneDrive sigue pendiente. DownloadAseinfo.net alimentará el índice mediante su MCP o, mientras este no esté disponible, mediante staging real controlado. GitHub queda como proveedor posterior.
 
 ## Decisiones importantes
 
@@ -35,7 +37,7 @@ La evolución inmediata es convertir la recuperación en un `EvidenceProvider` s
 4. Mantener OpenAI para generación durante el MVP, salvo que exista una restricción corporativa explícita.
 5. Consultar Jira o ClickUp como fuente operativa de solo lectura cuando exista acceso; no son condición para demostrar el núcleo documental.
 6. Tratar MCP como mecanismo de acceso a fuentes, no como almacenamiento central.
-7. No indexar todo el código de GitHub durante el MVP; GitHub y SharePoint son extensiones posteriores.
+7. No indexar todo el código de GitHub durante el MVP; OneDrive/SharePoint se limita a una carpeta piloto autorizada y GitHub queda como extensión posterior.
 8. Responder solo con evidencia y escalar ante la duda.
 
 ## Contrato de respuesta
@@ -83,6 +85,8 @@ No inventar tickets, estados, causas, fechas, versiones, permisos ni soluciones.
 - `src/formatting.py`: respuesta visible.
 - `src/models.py`: modelos de evidencia y decisión.
 - `src/config.py`: configuración por entorno.
+- `src/sharepoint_sync.py`: sincronización manual de PDFs desde OneDrive/SharePoint con Microsoft Graph.
+- `src/azure_search_ingest.py`: carga de staging hacia Azure AI Search.
 - `docs/knowledge-base`: documentos locales de prueba o staging.
 
 ## Documentos vigentes

@@ -25,6 +25,12 @@ class Config:
         self.openai_api_key = env.get("OPENAI_API_KEY") or env.get("SECRET_OPENAI_API_KEY", "")
         self.openai_model_name = env.get("OPENAI_MODEL", "gpt-4o")
         self.openai_base_url = env.get("OPENAI_BASE_URL", "").strip().rstrip("/")
+        self.openai_embedding_model = env.get(
+            "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
+        ).strip()
+        self.openai_embedding_dimensions = int(
+            env.get("OPENAI_EMBEDDING_DIMENSIONS", "1536")
+        )
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
         self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "chat-salvador-docs").strip()
         self.azure_search_api_key = env.get("AZURE_SEARCH_API_KEY", "").strip()

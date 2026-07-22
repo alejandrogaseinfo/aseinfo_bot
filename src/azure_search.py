@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Iterable
@@ -19,7 +20,9 @@ from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
+    HnswAlgorithmConfiguration,
     SearchFieldDataType,
+    SearchField,
     SearchIndex,
     SearchableField,
     SemanticConfiguration,
@@ -27,8 +30,11 @@ from azure.search.documents.indexes.models import (
     SemanticPrioritizedFields,
     SemanticSearch,
     SimpleField,
+    VectorSearch,
+    VectorSearchProfile,
 )
-from azure.search.documents.models import QueryType
+from azure.search.documents.models import VectorizedQuery
+from openai import OpenAI
 from pypdf import PdfReader
 
 from document_index import tokenize
@@ -37,12 +43,10 @@ from models import EvidenceSource
 
 SUPPORTED_EXTENSIONS = {".md", ".markdown", ".txt", ".pdf"}
 CONTENT_FIELD = "content"
+CONTEXT_FIELD = "document_context"
+CONTENT_VECTOR_FIELD = "content_vector"
 SEARCH_TIMEOUT_SECONDS = 10
-COUNTRY_ALIASES = {
-    "guatemala": {"guatemala"},
-    "mexico": {"mexico"},
-    "salvador": {"salvador", "sv"},
-}
+MAX_CANDIDATES = 30
 
 
 def _credential(config):
@@ -52,6 +56,35 @@ def _credential(config):
     if config.azure_search_use_entra_id:
         return DefaultAzureCredential(exclude_interactive_browser_credential=False)
     raise RuntimeError("Falta AZURE_SEARCH_API_KEY o AZURE_SEARCH_USE_ENTRA_ID=true.")
+
+
+def _embedding_client(config) -> OpenAI:
+    return OpenAI(
+        api_key=config.openai_api_key,
+        base_url=getattr(config, "openai_base_url", "") or None,
+    )
+
+
+def _embed_texts(texts: list[str], config, client=None) -> list[list[float]]:
+    embedding_client = client or _embedding_client(config)
+    response = embedding_client.embeddings.create(
+        model=config.openai_embedding_model,
+        input=texts,
+    )
+    return [item.embedding for item in response.data]
+
+
+def _attach_embeddings(records: list[dict], config) -> None:
+    """Add one embedding per chunk before it is sent to Azure AI Search."""
+    for offset in range(0, len(records), 100):
+        batch = records[offset : offset + 100]
+        embeddings = _embed_texts(
+            [str(record[CONTENT_FIELD]) for record in batch], config
+        )
+        if len(embeddings) != len(batch):
+            raise RuntimeError("No se recibió un embedding para cada fragmento.")
+        for record, embedding in zip(batch, embeddings):
+            record[CONTENT_VECTOR_FIELD] = embedding
 
 
 def _clean_text(text: str, limit: int = 500) -> str:
@@ -136,9 +169,10 @@ def _query_phrases(user_message: str) -> set[str]:
 def _document_relevance_score(
     record: dict,
     user_message: str,
+    token_weights: dict[str, float] | None = None,
     phrase_weights: dict[str, float] | None = None,
 ) -> float:
-    """Prefer a page that contains the user's specific phrase over broad matches."""
+    """Score evidence with generic token coverage, phrase matches and structure."""
     query_tokens = tokenize(user_message)
     document_tokens = tokenize(
         f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}"
@@ -147,7 +181,8 @@ def _document_relevance_score(
         return 0.0
 
     document_token_set = set(document_tokens)
-    token_overlap = len(set(query_tokens).intersection(document_token_set))
+    token_overlap = set(query_tokens).intersection(document_token_set)
+    coverage_score = sum((token_weights or {}).get(token, 1) for token in token_overlap)
     document_text = " ".join(document_tokens)
     phrase_matches = {
         phrase for phrase in _query_phrases(user_message) if phrase in document_text
@@ -156,42 +191,68 @@ def _document_relevance_score(
         (phrase_weights or {}).get(phrase, 4) for phrase in phrase_matches
     )
 
-    raw_document_text = f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}".lower()
-    country_adjustment = 0
-    for country, aliases in COUNTRY_ALIASES.items():
-        if country not in query_tokens:
-            continue
-        if any(alias in raw_document_text for alias in aliases):
-            country_adjustment += 40
-        else:
-            country_adjustment -= 20
-
     azure_score = float(record.get("@search.reranker_score") or record.get("@search.score") or 0)
     # Coverage across the question's concepts matters more than one isolated
     # exact phrase. This prevents a page that merely lists a decree number
     # from outranking the page that explains its calculation.
-    return (token_overlap * 4) + phrase_score + country_adjustment + (azure_score / 1_000)
+    return (
+        (coverage_score * 6)
+        + phrase_score
+        # Vector similarity finds paraphrases; lexical rank favors pages that
+        # explicitly contain the terms requested. Neither source wins alone.
+        + max(0, MAX_CANDIDATES - int(record.get("_vector_rank", MAX_CANDIDATES))) * 3.0
+        + max(0, MAX_CANDIDATES - int(record.get("_keyword_rank", MAX_CANDIDATES))) * 0.2
+        + (azure_score / 1_000)
+        - (int(record.get("_missing_anchor_count", 0)) * 8)
+    )
 
 
 def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float, dict]]:
-    """Rerank Azure candidates and boost phrases rare within the candidate set."""
+    """Rerank Azure candidates with query coverage and corpus-relative weights."""
+    query_tokens = set(tokenize(user_message))
+    token_document_frequency = {token: 0 for token in query_tokens}
     phrases = _query_phrases(user_message)
     phrase_document_frequency = {phrase: 0 for phrase in phrases}
     for record in records:
         document_text = " ".join(
             tokenize(f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}")
         )
+        document_token_set = set(document_text.split())
+        for token in query_tokens:
+            if token in document_token_set:
+                token_document_frequency[token] += 1
         for phrase in phrases:
             if phrase in document_text:
                 phrase_document_frequency[phrase] += 1
 
+    candidate_count = max(len(records), 1)
+    token_weights = {
+        token: 1 + math.log((candidate_count + 1) / (frequency + 1))
+        for token, frequency in token_document_frequency.items()
+    }
     phrase_weights = {
-        phrase: 4 + (8 / frequency)
+        phrase: 2 + (4 * math.log((candidate_count + 1) / (frequency + 1)))
         for phrase, frequency in phrase_document_frequency.items()
         if frequency
     }
+    # Query terms that appear in only part of the candidate set are useful
+    # disambiguators (country, product, module, acronym). Penalize a result
+    # that omits them, without keeping a vocabulary of special cases.
+    anchor_tokens = {
+        token
+        for token, frequency in token_document_frequency.items()
+        if 0 < frequency <= candidate_count * 0.45 and len(token) > 3
+    }
+    for record in records:
+        record_tokens = set(
+            tokenize(
+                f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
+                f"{record.get(CONTENT_FIELD, '')}"
+            )
+        )
+        record["_missing_anchor_count"] = len(anchor_tokens.difference(record_tokens))
     ranked_records = [
-        (_document_relevance_score(record, user_message, phrase_weights), record)
+        (_document_relevance_score(record, user_message, token_weights, phrase_weights), record)
         for record in records
     ]
     ranked_records.sort(key=lambda item: item[0], reverse=True)
@@ -199,35 +260,78 @@ def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float,
 
 
 def retrieve_azure_search_evidence(
-    user_message: str, config, limit: int = 3
+    user_message: str, config, client=None, limit: int = 3
 ) -> list[EvidenceSource]:
-    """Run a keyword or semantic query and normalize it to bot evidence."""
+    """Retrieve vector candidates and normalize them to bot evidence."""
     if not getattr(config, "azure_search_configured", False):
         return []
 
-    client = SearchClient(
+    search_client = SearchClient(
         endpoint=config.azure_search_endpoint,
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
     search_args = {
-        "search_text": user_message,
-        # Azure provides the candidate set. A local, deterministic rerank then
-        # promotes pages containing exact phrases from the user's question.
-        "top": max(limit * 4, 12),
-        "select": ["title", "source_url", "source_system", CONTENT_FIELD],
-        "search_fields": ["title", CONTENT_FIELD, "content_tokens"],
+        "top": MAX_CANDIDATES,
+        "select": [
+            "id", "title", "source_url", "source_system", CONTEXT_FIELD, CONTENT_FIELD
+        ],
         "connection_timeout": SEARCH_TIMEOUT_SECONDS,
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
     }
-    if config.azure_search_use_semantic:
-        search_args.update(
-            query_type=QueryType.SEMANTIC,
-            semantic_configuration_name=config.azure_search_semantic_configuration,
-            query_caption="extractive",
-        )
 
-    candidate_records = [dict(result) for result in client.search(**search_args)]
+    # The vector query is generic: it compares the meaning of a question with
+    # every indexed chunk. The keyword pass complements it for exact policy
+    # names, acronyms and figures. No document-specific query rewrites exist.
+    try:
+        query_embedding = _embed_texts([user_message], config, client=client)[0]
+        vector_query = VectorizedQuery(
+            vector=query_embedding,
+            k_nearest_neighbors=MAX_CANDIDATES,
+            fields=CONTENT_VECTOR_FIELD,
+        )
+        records_by_id: dict[str, dict] = {}
+        for rank, result in enumerate(
+            search_client.search(
+                search_text=None,
+                vector_queries=[vector_query],
+                **search_args,
+            ),
+            start=1,
+        ):
+            record = dict(result)
+            record["_vector_rank"] = rank
+            records_by_id[str(record.get("id", ""))] = record
+
+        for rank, result in enumerate(
+            search_client.search(
+                search_text=user_message,
+                search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                **search_args,
+            ),
+            start=1,
+        ):
+            record = dict(result)
+            record_id = str(record.get("id", ""))
+            existing = records_by_id.get(record_id)
+            if existing is None:
+                existing = record
+                records_by_id[record_id] = existing
+            existing["_keyword_rank"] = rank
+        candidate_records = list(records_by_id.values())
+    except Exception:
+        # Keep a usable, lower-quality fallback if embeddings or a legacy index
+        # are temporarily unavailable. It deliberately has no topic-specific
+        # behavior, and the caller still rejects weak evidence below.
+        candidate_records = [
+            dict(result)
+            for result in search_client.search(
+                search_text=user_message,
+                search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                **search_args,
+            )
+        ]
+
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
         return []
@@ -236,10 +340,10 @@ def retrieve_azure_search_evidence(
     # stronger match. Multiple pages are retained when they are similarly
     # relevant, which still supports answers that span a section boundary.
     best_score = ranked_records[0][0]
-    if best_score < 12:
+    if best_score < 8:
         return []
     relevant_records = [
-        item for item in ranked_records if item[0] >= best_score * 0.95
+        item for item in ranked_records if item[0] >= best_score * 0.80
     ][:limit]
     sources: list[EvidenceSource] = []
     for _, record in relevant_records:
@@ -297,8 +401,21 @@ def _metadata_for(document_path: Path) -> dict:
 
 def _document_records(source_dir: Path) -> list[dict]:
     records: list[dict] = []
-    for document_path in sorted(source_dir.rglob("*")):
-        if not document_path.is_file() or document_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+    documents = [
+        path
+        for path in sorted(source_dir.rglob("*"))
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+    # Once the OneDrive sync has written metadata, index only those managed
+    # copies. This prevents duplicate results from PDFs manually staged before
+    # delegated access was approved.
+    has_managed_documents = any(
+        path.with_suffix(path.suffix + ".metadata.json").exists() for path in documents
+    )
+    for document_path in documents:
+        if has_managed_documents and not document_path.with_suffix(
+            document_path.suffix + ".metadata.json"
+        ).exists():
             continue
         pages = _document_pages(document_path)
         full_text = "\n".join(text for _, text in pages)
@@ -308,6 +425,10 @@ def _document_records(source_dir: Path) -> list[dict]:
         source_url = metadata.get("web_url") or str(document_path.resolve())
         title = metadata.get("name") or document_path.stem
         source_system = metadata.get("source_system", "local")
+        # Later pages frequently omit the country/product named on the cover.
+        # Store a compact document-level context with every chunk so retrieval
+        # can keep that context without merging documents or pages.
+        document_context = _clean_text(full_text, limit=900)
         document_hash = hashlib.sha256(
             f"{source_url}|{full_text}".encode("utf-8")
         ).hexdigest()
@@ -320,6 +441,7 @@ def _document_records(source_dir: Path) -> list[dict]:
                         "id": f"{document_hash}-{sequence}",
                         "title": f"{title} — {page_label}",
                         "content": f"{page_label}\n{chunk}",
+                        CONTEXT_FIELD: document_context,
                         "source_url": source_url,
                         "source_system": source_system,
                         "chunk_number": sequence,
@@ -361,6 +483,14 @@ def ensure_index(config) -> None:
         SimpleField(name="id", type=SearchFieldDataType.String, key=True, filterable=True),
         SearchableField(name="title", type=SearchFieldDataType.String, searchable=True),
         SearchableField(name=CONTENT_FIELD, type=SearchFieldDataType.String, searchable=True),
+        SearchableField(name=CONTEXT_FIELD, type=SearchFieldDataType.String, searchable=True),
+        SearchField(
+            name=CONTENT_VECTOR_FIELD,
+            type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+            searchable=True,
+            vector_search_dimensions=config.openai_embedding_dimensions,
+            vector_search_profile_name="content-vector-profile",
+        ),
         SimpleField(name="source_url", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="source_system", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="chunk_number", type=SearchFieldDataType.Int32, filterable=True),
@@ -382,8 +512,30 @@ def ensure_index(config) -> None:
             name=config.azure_search_index_name,
             fields=fields,
             semantic_search=semantic_search,
+            vector_search=VectorSearch(
+                algorithms=[HnswAlgorithmConfiguration(name="content-vector-hnsw")],
+                profiles=[
+                    VectorSearchProfile(
+                        name="content-vector-profile",
+                        algorithm_configuration_name="content-vector-hnsw",
+                    )
+                ],
+            ),
         )
     )
+
+
+def reset_index(config) -> None:
+    """Delete and recreate only the explicitly configured pilot index."""
+    index_client = SearchIndexClient(
+        endpoint=config.azure_search_endpoint,
+        credential=_credential(config),
+    )
+    try:
+        index_client.delete_index(config.azure_search_index_name)
+    except ResourceNotFoundError:
+        pass
+    ensure_index(config)
 
 
 def index_directory(source_dir: Path, config, create_index: bool = False) -> int:
@@ -395,6 +547,7 @@ def index_directory(source_dir: Path, config, create_index: bool = False) -> int
     records = _document_records(source_dir)
     if not records:
         return 0
+    _attach_embeddings(records, config)
     client = SearchClient(
         endpoint=config.azure_search_endpoint,
         index_name=config.azure_search_index_name,

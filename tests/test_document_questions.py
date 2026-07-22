@@ -93,6 +93,11 @@ class DocumentQuestionTests(unittest.TestCase):
     def test_inflected_terms_normalize_for_retrieval(self):
         self.assertIn("proporcional", tokenize("proporcionalmente proporcionales"))
 
+    def test_camel_case_application_fields_are_searchable_by_concept(self):
+        tokens = tokenize("BaseCalculoISSS")
+
+        self.assertTrue({"base", "calculo", "isss"}.issubset(tokens))
+
     def test_specific_planilla_phrase_outranks_liquidation_page(self):
         question = "En la planilla quincenal, ¿cómo se aplican el ISSS, AFP e impuesto sobre la renta?"
         quincenal_page = {
@@ -115,19 +120,36 @@ class DocumentQuestionTests(unittest.TestCase):
         ranked = _rerank_records([liquidation_page, quincenal_page], question)
         self.assertEqual(quincenal_page, ranked[0][1])
 
-    def test_country_in_question_prioritizes_matching_document(self):
-        question = "¿Cómo se calcula proporcionalmente el aguinaldo en México?"
-        mexico_page = {
-            "title": "Políticas de Pago MEXICO — Página 9",
-            "content": "El aguinaldo se calcula proporcionalmente al ingreso durante el año.",
+    def test_generic_coverage_prioritizes_calculation_page(self):
+        question = "¿Cómo se aplica el ISR quincenal y qué descuentos se restan de su base?"
+        tax_page = {
+            "title": "Políticas de Pago SV — Página 6",
+            "content": "ISR BaseCalculoRenta. Tabla de Renta Quincenal. Descuentos AFP e ISSS.",
         }
-        guatemala_page = {
-            "title": "GT - Políticas de Pago Mensual — Página 7",
-            "content": "El aguinaldo se calcula proporcionalmente al ingreso durante el año.",
+        monthly_page = {
+            "title": "Políticas de Pago SV — Página 8",
+            "content": "Planilla mensual: ISR, AFP e ISSS. Se usa el mismo agrupador de la planilla quincenal.",
         }
 
-        ranked = _rerank_records([guatemala_page, mexico_page], question)
-        self.assertEqual(mexico_page, ranked[0][1])
+        ranked = _rerank_records([monthly_page, tax_page], question)
+        self.assertEqual(tax_page, ranked[0][1])
+
+    def test_vector_rank_breaks_a_lexical_tie(self):
+        question = "¿Cómo se calcula el aguinaldo proporcional?"
+        first_vector_result = {
+            "title": "México — Página 9",
+            "content": "El aguinaldo proporcional se calcula según los días laborados.",
+            "_vector_rank": 1,
+        }
+        later_vector_result = {
+            "title": "Guatemala — Página 7",
+            "content": "El aguinaldo proporcional se calcula según los días laborados.",
+            "_vector_rank": 20,
+        }
+
+        ranked = _rerank_records([later_vector_result, first_vector_result], question)
+
+        self.assertEqual(first_vector_result, ranked[0][1])
 
     def test_unmatched_question_remains_without_evidence(self):
         evidence = [
