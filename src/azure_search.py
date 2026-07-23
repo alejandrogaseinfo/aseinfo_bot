@@ -52,6 +52,7 @@ CONTENT_VECTOR_FIELD = "content_vector"
 SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
+CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 
 
 def _credential(config):
@@ -420,7 +421,9 @@ def _metadata_for(document_path: Path) -> dict:
         return {}
 
 
-def _document_records(source_dir: Path) -> list[dict]:
+def _document_records(
+    source_dir: Path, document_ids: set[str] | None = None
+) -> list[dict]:
     records: list[dict] = []
     documents = [
         path
@@ -447,6 +450,8 @@ def _document_records(source_dir: Path) -> list[dict]:
         title = metadata.get("name") or document_path.stem
         source_system = metadata.get("source_system", "local")
         document_id = str(metadata.get("document_id") or source_url)
+        if document_ids is not None and document_id not in document_ids:
+            continue
         document_version = str(metadata.get("etag") or metadata.get("document_version") or "")
         last_modified = str(metadata.get("last_modified") or "")
         folder_path = str(metadata.get("folder_path") or "")
@@ -591,6 +596,21 @@ def _deletion_document_ids(source_dir: Path) -> set[str]:
     return {item for item in deletions if item}
 
 
+def _changed_document_ids(source_dir: Path) -> set[str] | None:
+    """Read pending SharePoint upserts, or ``None`` for legacy full ingests."""
+    manifest_path = source_dir / CHANGE_MANIFEST_NAME
+    if not manifest_path.exists():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"El manifiesto de cambios no es válido: {manifest_path}") from error
+    changes = payload.get("changed_document_ids", [])
+    if not isinstance(changes, list) or not all(isinstance(item, str) for item in changes):
+        raise RuntimeError("El manifiesto de cambios debe contener changed_document_ids.")
+    return {item for item in changes if item}
+
+
 def _delete_record_ids(client: SearchClient, record_ids: set[str]) -> None:
     for offset in range(0, len(record_ids), 500):
         batch = list(record_ids)[offset : offset + 500]
@@ -609,8 +629,17 @@ def _clear_deletion_manifest(source_dir: Path) -> None:
         )
 
 
+def _clear_change_manifest(source_dir: Path) -> None:
+    manifest_path = source_dir / CHANGE_MANIFEST_NAME
+    if manifest_path.exists():
+        manifest_path.write_text(
+            json.dumps({"changed_document_ids": []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
 def index_directory(source_dir: Path, config, create_index: bool = False) -> int:
-    """Upload Markdown, text and PDFs from a controlled staging directory."""
+    """Upload all legacy files or only pending SharePoint changes to Azure AI Search."""
     if not getattr(config, "azure_search_configured", False):
         raise RuntimeError("Falta configurar AZURE_SEARCH_ENDPOINT y AZURE_SEARCH_API_KEY.")
     if create_index:
@@ -625,19 +654,26 @@ def index_directory(source_dir: Path, config, create_index: bool = False) -> int
         _delete_record_ids(client, _existing_record_ids(client, deleted_document_ids))
         _clear_deletion_manifest(source_dir)
 
-    records = _document_records(source_dir)
-    if not records:
-        return 0
-    _attach_embeddings(records, config)
-    previous_ids = _existing_record_ids(
-        client, {str(record["document_id"]) for record in records}
+    change_manifest_document_ids = _changed_document_ids(source_dir)
+    pending_changes = None if create_index else change_manifest_document_ids
+    records = _document_records(source_dir, document_ids=pending_changes)
+    target_document_ids = (
+        pending_changes
+        if pending_changes is not None
+        else {str(record["document_id"]) for record in records}
     )
-    for offset in range(0, len(records), 500):
-        results = client.merge_or_upload_documents(documents=records[offset : offset + 500])
-        failures = [result.key for result in results if not result.succeeded]
-        if failures:
-            raise RuntimeError(f"Azure AI Search rechazó {len(failures)} fragmentos.")
+    previous_ids = _existing_record_ids(client, target_document_ids)
+
+    if records:
+        _attach_embeddings(records, config)
+        for offset in range(0, len(records), 500):
+            results = client.merge_or_upload_documents(documents=records[offset : offset + 500])
+            failures = [result.key for result in results if not result.succeeded]
+            if failures:
+                raise RuntimeError(f"Azure AI Search rechazó {len(failures)} fragmentos.")
 
     stale_ids = previous_ids.difference(str(record["id"]) for record in records)
     _delete_record_ids(client, stale_ids)
+    if change_manifest_document_ids is not None:
+        _clear_change_manifest(source_dir)
     return len(records)

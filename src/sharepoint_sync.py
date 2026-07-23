@@ -24,6 +24,7 @@ GRAPH_DELEGATED_SCOPE = ["https://graph.microsoft.com/Files.Read.All"]
 GRAPH_APPLICATION_SCOPE = ["https://graph.microsoft.com/.default"]
 SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
+CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 
 
 def _safe_filename(name: str) -> str:
@@ -134,7 +135,7 @@ def create_sharepoint_client(config: Config) -> SharePointGraphClient:
 
 
 def sync_pdfs(config: Config, output_dir: Path) -> int:
-    """Synchronize only changed PDFs and emit tombstones for deleted files.
+    """Synchronize changed PDFs and emit durable change/deletion manifests.
 
     The durable production identity is pending the administrator requests. This
     local/delegated implementation nevertheless keeps the same document IDs,
@@ -149,6 +150,8 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     if not isinstance(previous_documents, dict):
         previous_documents = {}
     current_documents: dict[str, dict] = {}
+    pending_changes = _change_ids(output_dir / CHANGE_MANIFEST_NAME)
+    changed_document_ids = set(pending_changes)
 
     for item in files:
         # Prefix prevents collisions between same-named PDFs in different folders.
@@ -157,6 +160,13 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
         etag = item.get("eTag", "")
         prior = previous_documents.get(item["id"], {})
         prior_filename = prior.get("filename", "")
+        metadata_signature = {
+            "filename": filename,
+            "etag": etag,
+            "web_url": item.get("webUrl", ""),
+            "last_modified": item.get("lastModifiedDateTime", ""),
+            "folder_path": config.sharepoint_folder_path,
+        }
         if prior_filename and prior_filename != filename:
             old_destination = output_dir / prior_filename
             old_metadata_path = old_destination.with_suffix(old_destination.suffix + ".metadata.json")
@@ -164,7 +174,11 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
                 old_destination.unlink()
             if old_metadata_path.exists():
                 old_metadata_path.unlink()
-        if not destination.exists() or prior.get("etag") != etag:
+        has_changed = (
+            not destination.exists()
+            or any(prior.get(key) != value for key, value in metadata_signature.items())
+        )
+        if has_changed:
             client.download(item, destination)
         metadata = {
             "source_system": "sharepoint",
@@ -181,15 +195,15 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
         destination.with_suffix(destination.suffix + ".metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        current_documents[item["id"]] = {
-            "filename": filename,
-            "etag": etag,
-        }
+        current_documents[item["id"]] = metadata_signature
+        if has_changed:
+            changed_document_ids.add(item["id"])
 
     pending_deletions = _deletion_ids(output_dir / DELETION_MANIFEST_NAME)
     deleted_document_ids = sorted(
         pending_deletions.union(set(previous_documents).difference(current_documents))
     )
+    changed_document_ids.difference_update(deleted_document_ids)
     for document_id in deleted_document_ids:
         # A deletion can remain pending after the document has already been
         # removed from the last successful source snapshot. Retrying it is
@@ -207,6 +221,10 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     _write_json(
         output_dir / DELETION_MANIFEST_NAME,
         {"deleted_document_ids": deleted_document_ids},
+    )
+    _write_json(
+        output_dir / CHANGE_MANIFEST_NAME,
+        {"changed_document_ids": sorted(changed_document_ids)},
     )
     _write_json(state_path, {"documents": current_documents})
     return len(files)
@@ -233,6 +251,14 @@ def _deletion_ids(path: Path) -> set[str]:
     document_ids = payload.get("deleted_document_ids", [])
     if not isinstance(document_ids, list) or not all(isinstance(item, str) for item in document_ids):
         raise RuntimeError("El manifiesto de eliminaciones debe contener deleted_document_ids.")
+    return {item for item in document_ids if item}
+
+
+def _change_ids(path: Path) -> set[str]:
+    payload = _load_json(path)
+    document_ids = payload.get("changed_document_ids", [])
+    if not isinstance(document_ids, list) or not all(isinstance(item, str) for item in document_ids):
+        raise RuntimeError("El manifiesto de cambios debe contener changed_document_ids.")
     return {item for item in document_ids if item}
 
 

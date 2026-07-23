@@ -10,19 +10,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from azure_search import (
+    CHANGE_MANIFEST_NAME,
+    _changed_document_ids,
+    _clear_change_manifest,
     _clear_deletion_manifest,
     _deletion_document_ids,
     _document_records,
     _document_relevance_score,
     _excerpt_around_query,
     _rerank_records,
+    index_directory,
 )
 from classification import classify_case_by_rules
 from document_index import tokenize
 from formatting import format_user_response
 from models import EvidenceSource
 from models import BotDecision
-from sharepoint_sync import DELETION_MANIFEST_NAME, sync_pdfs
+from sharepoint_sync import (
+    CHANGE_MANIFEST_NAME as SYNC_CHANGE_MANIFEST_NAME,
+    DELETION_MANIFEST_NAME,
+    _change_ids,
+    sync_pdfs,
+)
 
 
 class DocumentQuestionTests(unittest.TestCase):
@@ -54,6 +63,18 @@ class DocumentQuestionTests(unittest.TestCase):
             self.assertEqual({"one", "two"}, _deletion_document_ids(source_dir))
             _clear_deletion_manifest(source_dir)
             self.assertEqual(set(), _deletion_document_ids(source_dir))
+
+    def test_change_manifest_is_read_and_cleared_after_indexing(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            manifest = source_dir / CHANGE_MANIFEST_NAME
+            manifest.write_text(
+                '{"changed_document_ids": ["one", "two", "one"]}', encoding="utf-8"
+            )
+
+            self.assertEqual({"one", "two"}, _changed_document_ids(source_dir))
+            _clear_change_manifest(source_dir)
+            self.assertEqual(set(), _changed_document_ids(source_dir))
 
     def test_pdf_records_include_stable_sharepoint_metadata(self):
         with TemporaryDirectory() as directory:
@@ -122,6 +143,7 @@ class DocumentQuestionTests(unittest.TestCase):
             sync_pdfs(config, source_dir)
             sync_pdfs(config, source_dir)
             self.assertEqual(1, fake_client.download_calls)
+            self.assertEqual({"document-1"}, _change_ids(source_dir / SYNC_CHANGE_MANIFEST_NAME))
 
             fake_client.files[0]["name"] = "manual-renombrado.pdf"
             sync_pdfs(config, source_dir)
@@ -132,12 +154,129 @@ class DocumentQuestionTests(unittest.TestCase):
             fake_client.files = []
             sync_pdfs(config, source_dir)
             self.assertEqual({"document-1"}, _deletion_document_ids(source_dir))
+            self.assertEqual(set(), _change_ids(source_dir / SYNC_CHANGE_MANIFEST_NAME))
             self.assertFalse((source_dir / "document_manual-renombrado.pdf").exists())
 
             # If Azure ingestion has not yet acknowledged the deletion, a
             # subsequent sync must retain the tombstone instead of losing it.
             sync_pdfs(config, source_dir)
             self.assertEqual({"document-1"}, _deletion_document_ids(source_dir))
+
+    def test_index_directory_only_embeds_pending_sharepoint_changes(self):
+        class FakeSearchClient:
+            def __init__(self):
+                self.uploaded_records = []
+
+            def search(self, **_kwargs):
+                return []
+
+            def merge_or_upload_documents(self, documents):
+                self.uploaded_records.extend(documents)
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+            def delete_documents(self, documents):
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+        )
+        fake_search = FakeSearchClient()
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            for document_id in ("document-1", "document-2"):
+                pdf_path = source_dir / f"{document_id}.pdf"
+                pdf_path.write_bytes(b"placeholder")
+                pdf_path.with_suffix(".pdf.metadata.json").write_text(
+                    (
+                        '{"source_system": "sharepoint", '
+                        f'"document_id": "{document_id}", "etag": "etag-1"}}'
+                    ),
+                    encoding="utf-8",
+                )
+            (source_dir / CHANGE_MANIFEST_NAME).write_text(
+                '{"changed_document_ids": ["document-1"]}', encoding="utf-8"
+            )
+
+            with (
+                patch("azure_search.SearchClient", return_value=fake_search),
+                patch(
+                    "azure_search._document_pages",
+                    return_value=[(1, "Contenido aprobado del manual.")],
+                ),
+                patch("azure_search._attach_embeddings") as attach_embeddings,
+            ):
+                uploaded = index_directory(source_dir, config)
+
+            self.assertEqual(1, uploaded)
+            embedded_records = attach_embeddings.call_args.args[0]
+            self.assertEqual(["document-1"], [record["document_id"] for record in embedded_records])
+            self.assertEqual(
+                ["document-1"],
+                [record["document_id"] for record in fake_search.uploaded_records],
+            )
+            self.assertEqual(set(), _changed_document_ids(source_dir))
+
+    def test_create_index_reindexes_every_pdf_and_acknowledges_pending_changes(self):
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return []
+
+            def merge_or_upload_documents(self, documents):
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+            def delete_documents(self, documents):
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+        )
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            for document_id in ("document-1", "document-2"):
+                pdf_path = source_dir / f"{document_id}.pdf"
+                pdf_path.write_bytes(b"placeholder")
+                pdf_path.with_suffix(".pdf.metadata.json").write_text(
+                    f'{{"document_id": "{document_id}"}}', encoding="utf-8"
+                )
+            (source_dir / CHANGE_MANIFEST_NAME).write_text(
+                '{"changed_document_ids": ["document-1"]}', encoding="utf-8"
+            )
+
+            with (
+                patch("azure_search.SearchClient", return_value=FakeSearchClient()),
+                patch("azure_search.ensure_index"),
+                patch(
+                    "azure_search._document_pages",
+                    return_value=[(1, "Contenido aprobado del manual.")],
+                ),
+                patch("azure_search._attach_embeddings") as attach_embeddings,
+            ):
+                uploaded = index_directory(source_dir, config, create_index=True)
+
+            self.assertEqual(2, uploaded)
+            self.assertEqual(
+                {"document-1", "document-2"},
+                {record["document_id"] for record in attach_embeddings.call_args.args[0]},
+            )
+            self.assertEqual(set(), _changed_document_ids(source_dir))
 
     def test_excerpt_prefers_matching_sentence_over_chunk_start(self):
         content = (
