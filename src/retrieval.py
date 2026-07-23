@@ -59,10 +59,14 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
                 # no documentary evidence.
                 return _dedupe_evidence(evidence, limit=4)
         except Exception:
-            logger.exception(
-                "Falló Azure AI Search. Se usará el índice documental local."
-            )
+            logger.exception("Falló Azure AI Search.")
 
+    if not getattr(config, "allow_local_document_fallback", True):
+        logger.info(
+            "No se usará el índice local. environment=%s",
+            getattr(config, "environment", "unknown"),
+        )
+        return []
     document_evidence = retrieve_document_evidence(user_message)
     if sources:
         return _dedupe_evidence(sources + document_evidence, limit=4)

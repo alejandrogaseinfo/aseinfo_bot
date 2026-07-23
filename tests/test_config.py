@@ -38,6 +38,18 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(config.sharepoint_configured)
         self.assertFalse(config.sharepoint_application_configured)
 
+    def test_local_document_fallback_is_disabled_in_production(self):
+        local_config = Config({"LIBRAS_ENV": "local"})
+        production_config = Config(
+            {
+                "LIBRAS_ENV": "production",
+                "ALLOW_LOCAL_DOCUMENT_FALLBACK": "true",
+            }
+        )
+
+        self.assertTrue(local_config.allow_local_document_fallback)
+        self.assertFalse(production_config.allow_local_document_fallback)
+
 
 if __name__ == "__main__":
     unittest.main()
