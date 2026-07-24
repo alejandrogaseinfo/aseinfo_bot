@@ -67,7 +67,11 @@ def _credential(config):
 def _embedding_client(config) -> OpenAI:
     return OpenAI(
         api_key=config.openai_api_key,
-        base_url=getattr(config, "openai_base_url", "") or None,
+        base_url=getattr(
+            config,
+            "resolved_openai_base_url",
+            getattr(config, "openai_base_url", "") or "https://api.openai.com/v1",
+        ),
     )
 
 

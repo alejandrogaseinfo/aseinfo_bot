@@ -39,10 +39,11 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual([], evidence)
         local_retrieval.assert_not_called()
 
-    def test_development_can_fall_back_to_local_documents(self):
+    def test_development_uses_local_documents_without_calling_pending_azure_search(self):
         config = SimpleNamespace(
             environment="local",
             azure_search_configured=True,
+            azure_search_enabled=False,
             azure_search_index_name="libras-docs",
             allow_local_document_fallback=True,
         )
@@ -54,6 +55,22 @@ class RetrievalTests(unittest.TestCase):
 
         self.assertEqual(self.local_evidence, evidence)
         local_retrieval.assert_called_once_with("¿Qué dice el manual?")
+
+    def test_development_can_opt_in_to_azure_search(self):
+        config = SimpleNamespace(
+            environment="local",
+            azure_search_configured=True,
+            azure_search_enabled=True,
+            azure_search_index_name="libras-docs",
+            allow_local_document_fallback=True,
+        )
+
+        with patch("retrieval.retrieve_azure_search_evidence", return_value=[] ) as azure_retrieval, patch(
+            "retrieval.retrieve_document_evidence", return_value=self.local_evidence
+        ):
+            retrieve_evidence("¿Qué dice el manual?", config=config)
+
+        azure_retrieval.assert_called_once()
 
 
 if __name__ == "__main__":

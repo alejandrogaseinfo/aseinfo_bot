@@ -40,9 +40,10 @@ load_environment()
 config = Config(os.environ)
 agents_sdk_config = load_configuration_from_env(os.environ)
 
-client_options = {"api_key": config.openai_api_key or "ollama"}
-if config.openai_base_url:
-    client_options["base_url"] = config.openai_base_url
+client_options = {
+    "api_key": config.openai_api_key or "ollama",
+    "base_url": config.resolved_openai_base_url,
+}
 client = OpenAI(**client_options)
 
 

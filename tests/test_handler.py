@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from handler import process_user_message
+from intent import IntentResult
 from models import BotDecision, EvidenceSource
 
 
@@ -17,8 +18,11 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = SimpleNamespace(
             openai_model_name="test-model",
+            openai_intent_model_name="test-intent-model",
             retrieval_timeout_seconds=0.01,
             classification_timeout_seconds=0.01,
+            intent_timeout_seconds=0.01,
+            use_llm_intent_classifier=False,
         )
 
     async def test_retrieval_timeout_returns_safe_no_evidence_response(self):
@@ -85,6 +89,70 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("evidence_count=1", telemetry)
         self.assertNotIn(question, telemetry)
         self.assertNotIn(evidence[0].fragmento, telemetry)
+
+    async def test_help_command_returns_guidance_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("ayuda", None, self.config)
+
+        self.assertIn("producto o módulo", response)
+        self.assertIn("mensaje exacto", response)
+        retrieval.assert_not_called()
+
+    async def test_natural_language_help_request_returns_guidance_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("necesito ayuda", None, self.config)
+
+        self.assertIn("producto o módulo", response)
+        retrieval.assert_not_called()
+
+    async def test_greeting_with_orientation_request_returns_guidance_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("hola me podes orientar", None, self.config)
+
+        self.assertIn("documentación técnica", response)
+        retrieval.assert_not_called()
+
+    async def test_llm_intent_routes_natural_language_help_without_retrieval(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        self.config.intent_timeout_seconds = 0.2
+        self.config.conversation_timeout_seconds = 0.2
+        with patch(
+            "handler.classify_intent",
+            return_value=IntentResult(name="ayuda", requires_context=False),
+        ), patch(
+            "handler.generate_conversational_response",
+            return_value="Claro, cuéntame qué quieres revisar.",
+        ), patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("¿Me puedes orientar?", None, self.config)
+
+        self.assertEqual("Claro, cuéntame qué quieres revisar.", response)
+        retrieval.assert_not_called()
+
+    async def test_llm_intent_routes_underspecified_error_without_retrieval(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        self.config.intent_timeout_seconds = 0.2
+        self.config.conversation_timeout_seconds = 0.2
+        with patch(
+            "handler.classify_intent",
+            return_value=IntentResult(name="reporte_error", requires_context=True),
+        ), patch(
+            "handler.generate_conversational_response",
+            return_value="¿Qué producto y mensaje de error aparecen?",
+        ), patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("Me falla algo al entrar", None, self.config)
+
+        self.assertEqual("¿Qué producto y mensaje de error aparecen?", response)
+        retrieval.assert_not_called()
+
+    async def test_generic_error_request_requires_context_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("¿Cómo se corrige el error?", None, self.config)
+
+        self.assertIn("Necesito más contexto", response)
+        self.assertIn("producto o módulo", response)
+        retrieval.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -43,7 +43,11 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
     jira_evidence = retrieve_jira_evidence(user_message, config=config, limit=2)
     sources.extend(jira_evidence)
 
-    if getattr(config, "azure_search_configured", False):
+    if getattr(
+        config,
+        "azure_search_enabled",
+        getattr(config, "azure_search_configured", False),
+    ):
         try:
             evidence = retrieve_azure_search_evidence(
                 user_message, config=config, client=client

@@ -17,6 +17,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:11434/v1", config.openai_base_url)
         self.assertEqual("", config.openai_api_key)
 
+    def test_empty_openai_base_url_resolves_to_the_official_endpoint(self):
+        config = Config({"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": ""})
+
+        self.assertEqual("https://api.openai.com/v1", config.resolved_openai_base_url)
+
     def test_embedding_configuration_has_safe_defaults(self):
         config = Config({})
 
@@ -24,6 +29,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(1536, config.openai_embedding_dimensions)
         self.assertEqual(12, config.retrieval_timeout_seconds)
         self.assertEqual(12, config.classification_timeout_seconds)
+
+    def test_model_endpoint_requires_http_url_when_custom_endpoint_is_set(self):
+        invalid_config = Config(
+            {"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": "localhost:11434/v1"}
+        )
+        valid_config = Config(
+            {"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": "http://127.0.0.1:11434/v1"}
+        )
+
+        self.assertFalse(invalid_config.model_endpoint_configured)
+        self.assertTrue(valid_config.model_endpoint_configured)
 
     def test_application_sharepoint_mode_requires_an_explicit_approved_location(self):
         config = Config(

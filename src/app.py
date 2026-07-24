@@ -5,7 +5,7 @@ from microsoft_agents.hosting.aiohttp import (
     jwt_authorization_middleware,
     CloudAdapter,
 )
-from aiohttp.web import Request, Response, Application, json_response, run_app
+from aiohttp.web import Request, Response, Application, json_response, middleware, run_app
 
 from agent import agent_app, config, connection_manager
 from runtime_health import readiness_payload
@@ -30,7 +30,16 @@ async def readyz(req: Request) -> Response:
     payload = readiness_payload(req.app["runtime_config"])
     return json_response(payload, status=200 if payload["status"] == "ready" else 503)
 
-app = Application(middlewares=[jwt_authorization_middleware])
+
+@middleware
+async def authorization_middleware(request: Request, handler):
+    """Allow unauthenticated health probes while protecting bot activities."""
+    if request.path in {"/healthz", "/readyz"}:
+        return await handler(request)
+    return await jwt_authorization_middleware(request, handler)
+
+
+app = Application(middlewares=[authorization_middleware])
 app.router.add_post("/api/messages", entry_point)
 app.router.add_get("/healthz", healthz)
 app.router.add_get("/readyz", readyz)

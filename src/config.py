@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+
+
+OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 
 
 def load_project_environment() -> None:
@@ -26,6 +30,9 @@ class Config:
         self.require_azure_search = env.get(
             "REQUIRE_AZURE_SEARCH", "true" if self.environment == "production" else "false"
         ).lower() == "true"
+        self.use_azure_search_in_local = (
+            env.get("USE_AZURE_SEARCH_IN_LOCAL", "false").lower() == "true"
+        )
         self.allow_local_document_fallback = (
             self.environment != "production"
             and env.get("ALLOW_LOCAL_DOCUMENT_FALLBACK", "true").lower() == "true"
@@ -33,6 +40,12 @@ class Config:
         self.openai_api_key = env.get("OPENAI_API_KEY") or env.get("SECRET_OPENAI_API_KEY", "")
         self.openai_model_name = env.get("OPENAI_MODEL", "gpt-4o")
         self.openai_base_url = env.get("OPENAI_BASE_URL", "").strip().rstrip("/")
+        self.openai_intent_model_name = env.get(
+            "OPENAI_INTENT_MODEL", "gpt-4o-mini"
+        ).strip()
+        self.use_llm_intent_classifier = env.get(
+            "USE_LLM_INTENT_CLASSIFIER", "true"
+        ).lower() == "true"
         self.openai_embedding_model = env.get(
             "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
         ).strip()
@@ -44,6 +57,10 @@ class Config:
         )
         self.classification_timeout_seconds = float(
             env.get("CLASSIFICATION_TIMEOUT_SECONDS", "12")
+        )
+        self.intent_timeout_seconds = float(env.get("INTENT_TIMEOUT_SECONDS", "3"))
+        self.conversation_timeout_seconds = float(
+            env.get("CONVERSATION_TIMEOUT_SECONDS", "4")
         )
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
         self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "chat-salvador-docs").strip()
@@ -82,6 +99,28 @@ class Config:
             and self.azure_search_index_name
             and (self.azure_search_api_key or self.azure_search_use_entra_id)
         )
+
+    @property
+    def azure_search_enabled(self) -> bool:
+        """Keep local Markdown tests independent from pending Azure permissions."""
+        return self.azure_search_configured and (
+            self.environment == "production" or self.use_azure_search_in_local
+        )
+
+    @property
+    def model_endpoint_configured(self) -> bool:
+        """Avoid remote model calls when a custom endpoint is malformed."""
+        if not self.openai_api_key:
+            return False
+        if not self.openai_base_url:
+            return True
+        parsed = urlparse(self.openai_base_url)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    @property
+    def resolved_openai_base_url(self) -> str:
+        """Use the official endpoint when no compatible provider is configured."""
+        return self.openai_base_url or OPENAI_OFFICIAL_BASE_URL
 
     @property
     def sharepoint_configured(self) -> bool:
