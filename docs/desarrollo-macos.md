@@ -1,6 +1,6 @@
 # Desarrollo en macOS y uso de Codex
 
-Esta guía permite abrir una copia limpia de Chat-Salvador en una Mac y continuar el trabajo sin mover secretos desde otra computadora.
+Esta guía permite abrir una copia limpia de Libras en una Mac y continuar el trabajo sin mover secretos desde otra computadora.
 
 ## Qué se clona y qué se recrea
 
@@ -65,7 +65,7 @@ Para volver a OpenAI en la nube, borra `OPENAI_BASE_URL`, indica una clave váli
 
 ## Primer contexto para Codex
 
-Codex debe leer primero [AGENTS.md](../AGENTS.md), después [README.md](../README.md) y por último el mapa rector [plan-mvp-presentacion-lunes.md](plan-mvp-presentacion-lunes.md). Las reglas esenciales son:
+Codex debe leer primero [AGENTS.md](../AGENTS.md), después [README.md](../README.md) y por último el mapa rector [produccion-semana.md](produccion-semana.md). No debe consultar `planes-posteriores/` durante la entrega activa, salvo indicación explícita del usuario. Las reglas esenciales son:
 
 - no rehacer la integración existente con Teams;
 - no inventar respuestas sin evidencia;

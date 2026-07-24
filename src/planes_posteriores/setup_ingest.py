@@ -52,7 +52,7 @@ def ingest_setup(product: str, release: str, source: str, output_dir: Path = DEF
             )
             destination = output_dir / output_name
             metadata = "\n".join([
-                "<!-- chat-salvador-metadata",
+                "<!-- libras-metadata",
                 f"producto: {product}",
                 f"entrega: {release}",
                 "fuente: setup_hotfix",

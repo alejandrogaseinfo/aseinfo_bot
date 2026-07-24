@@ -1,7 +1,5 @@
 from azure_search import retrieve_azure_search_evidence
-from clickup_retrieval import retrieve_clickup_evidence
 from document_index import retrieve_document_evidence
-from jira_retrieval import retrieve_jira_evidence
 from logging_utils import get_logger
 from models import EvidenceSource
 
@@ -31,18 +29,9 @@ def _dedupe_evidence(sources: list[EvidenceSource], limit: int = 4) -> list[Evid
 
 def retrieve_evidence(user_message: str, client=None, config=None) -> list[EvidenceSource]:
     """
-    Recupera evidencia desde ClickUp en modo solo lectura cuando esta
-    configurado. Azure AI Search es el índice documental principal y el índice
-    local se conserva como respaldo para desarrollo o falta de permisos.
+    Recupera evidencia desde Azure AI Search; el índice local solo respalda
+    entornos que lo permiten explícitamente.
     """
-    sources: list[EvidenceSource] = []
-
-    clickup_evidence = retrieve_clickup_evidence(user_message, config=config, limit=2)
-    sources.extend(clickup_evidence)
-
-    jira_evidence = retrieve_jira_evidence(user_message, config=config, limit=2)
-    sources.extend(jira_evidence)
-
     if getattr(
         config,
         "azure_search_enabled",
@@ -58,9 +47,6 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
                 len(evidence),
             )
             if evidence:
-                # During the document-retrieval flow, Azure is the source of
-                # truth. Operational sources are consulted only when Azure has
-                # no documentary evidence.
                 return _dedupe_evidence(evidence, limit=4)
         except Exception:
             logger.exception("Falló Azure AI Search.")
@@ -71,8 +57,6 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
             getattr(config, "environment", "unknown"),
         )
         return []
-    document_evidence = retrieve_document_evidence(user_message)
-    if sources:
-        return _dedupe_evidence(sources + document_evidence, limit=4)
 
+    document_evidence = retrieve_document_evidence(user_message)
     return _dedupe_evidence(document_evidence, limit=4)

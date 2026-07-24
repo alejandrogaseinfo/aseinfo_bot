@@ -103,10 +103,26 @@ def data_access_checks(config) -> list[CheckResult]:
         "sharepoint_drive_id": "ID de la biblioteca o drive aprobado.",
         "sharepoint_folder_path": "Carpeta aprobada dentro de la biblioteca.",
     }
-    return [
+    checks = [
         CheckResult(name, bool(getattr(config, name, "")), detail)
         for name, detail in required_fields.items()
     ]
+    auth_mode = getattr(config, "sharepoint_auth_mode", "delegated")
+    checks.append(
+        CheckResult(
+            "sharepoint_auth_mode",
+            auth_mode == "application",
+            "La sincronización productiva usa application con la App Registration corporativa.",
+        )
+    )
+    checks.append(
+        CheckResult(
+            "sharepoint_application_secret",
+            bool(getattr(config, "sharepoint_client_secret", "")),
+            "El secreto o referencia de Key Vault de la App Registration está disponible.",
+        )
+    )
+    return checks
 
 
 def run_preflight(config, stage: str, manifest_path: Path = MANIFEST_PATH) -> list[CheckResult]:

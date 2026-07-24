@@ -88,7 +88,7 @@ _supports_files_warned = False
 async def on_members_added(context: TurnContext, _state: TurnState):
     global _supports_files_warned
     await context.send_activity(
-        "Hola. Soy Chat-Salvador, asistente de base de conocimiento y resolucion de errores para soporte tecnico."
+        "Hola. Soy Libras, asistente de base de conocimiento y resolucion de errores para soporte tecnico."
     )
     if _supports_files_warning and not _supports_files_warned:
         _supports_files_warned = True

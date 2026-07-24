@@ -1,10 +1,10 @@
-# Chat-Salvador
+# Libras
 
-Bot de Microsoft Teams para soporte técnico y operaciones. Recupera evidencia documental y operativa, clasifica cada consulta y responde únicamente cuando hay respaldo suficiente.
+Bot interno de Microsoft Teams para consultar documentación aprobada. Recupera evidencia documental, la clasifica y responde únicamente cuando hay respaldo suficiente.
 
 ## Estado y alcance
 
-El mapa rector del MVP es [docs/plan-mvp-presentacion-lunes.md](docs/plan-mvp-presentacion-lunes.md). Define el alcance, arquitectura, fuentes, prioridades y criterios de aceptación; no se deben crear roadmaps paralelos.
+La prioridad actual es llevar Libras a producción con Teams, Azure AI Search y SharePoint/OneDrive. El mapa rector vigente es [docs/produccion-semana.md](docs/produccion-semana.md). No ampliar el alcance ni crear roadmaps paralelos sin actualizar ese documento.
 
 El proyecto ya incluye:
 
@@ -14,7 +14,8 @@ El proyecto ya incluye:
 - Azure AI Search como índice documental principal cuando se configure;
 - sincronización opcional de PDFs autorizados desde SharePoint;
 - clasificación estructurada con fallback por reglas;
-- clientes opcionales de solo lectura para ClickUp y Jira.
+
+Los planes de ClickUp, Jira, GitHub, MCP/DownloadAseinfo.net y automatizaciones posteriores están archivados en [docs/planes-posteriores](docs/planes-posteriores/README.md) y no son parte de la entrega actual.
 
 ## Inicio rápido
 
@@ -103,8 +104,7 @@ La configuración, permisos mínimos y comandos de carga están en [docs/azure-a
 
 ## Documentación del proyecto
 
+- [Foco de producción de esta semana](docs/produccion-semana.md)
+- [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)
 - [Guía de desarrollo en macOS y Codex](docs/desarrollo-macos.md)
-- [Mapa único del MVP](docs/plan-mvp-presentacion-lunes.md)
-- [Estado actual](docs/estado-actual-demo-chat-salvador.md)
-- [Incorporación documental](docs/incorporacion-readmes.md)
-- [Requerimientos del MCP de DownloadAseinfo.net](docs/requerimientos-mcp-downloadaseinfo-mvp.md)
+- [Planes posteriores archivados](docs/planes-posteriores/README.md)

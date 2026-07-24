@@ -22,7 +22,7 @@ def load_project_environment() -> None:
 
 
 class Config:
-    """Runtime configuration for Chat-Salvador."""
+    """Runtime configuration for Libras."""
 
     def __init__(self, env):
         self.port = int(env.get("PORT", 3978))
@@ -63,7 +63,7 @@ class Config:
             env.get("CONVERSATION_TIMEOUT_SECONDS", "4")
         )
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
-        self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "chat-salvador-docs").strip()
+        self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "libras-docs").strip()
         self.azure_search_api_key = env.get("AZURE_SEARCH_API_KEY", "").strip()
         self.azure_search_use_entra_id = env.get("AZURE_SEARCH_USE_ENTRA_ID", "false").lower() == "true"
         self.azure_search_semantic_configuration = env.get(
@@ -80,14 +80,7 @@ class Config:
         self.sharepoint_site_id = env.get("SHAREPOINT_SITE_ID", "").strip()
         self.sharepoint_drive_id = env.get("SHAREPOINT_DRIVE_ID", "").strip()
         self.sharepoint_folder_path = env.get("SHAREPOINT_FOLDER_PATH", "").strip("/")
-        self.clickup_api_token = env.get("CLICKUP_API_TOKEN", "").strip()
-        self.clickup_workspace_id = env.get("CLICKUP_WORKSPACE_ID", "").strip()
-        self.clickup_list_id = env.get("CLICKUP_LIST_ID", "").strip()
-        self.jira_domain = env.get("JIRA_DOMAIN", "").strip() # ej. tu-dominio.atlassian.net
-        self.jira_email = env.get("JIRA_EMAIL", "").strip()
-        self.jira_api_token = env.get("JIRA_API_TOKEN", "").strip()
-        self.jira_project_key = env.get("JIRA_PROJECT_KEY", "").strip() # Opcional: para filtrar por proyecto
-        self.bot_name = "Chat-Salvador"
+        self.bot_name = "Libras"
         self.bot_role = "Asistente de Base de Conocimiento y Resolucion de Errores"
         self.response_language = "es"
 

@@ -1,106 +1,85 @@
 # AGENTS.md
 
-## Proyecto
+## Proyecto y prioridad activa
 
-`Chat-Salvador` es un bot de autoservicio para Microsoft Teams orientado a soporte y operaciones. Su objetivo es consultar conocimiento técnico existente, reducir preguntas repetitivas y escalar los casos que no tengan evidencia suficiente.
+`Libras` es un bot interno de Microsoft Teams que responde preguntas a partir de documentación aprobada. La prioridad de esta semana es llevarlo a producción con este único flujo:
 
-## Mapa rector
+```text
+Microsoft Teams -> Libras en Azure -> Azure AI Search <- SharePoint / OneDrive
+```
 
-El único mapa vigente del MVP es:
+El objetivo de producción es que personas autorizadas de la organización puedan consultar, desde Teams, documentación ubicada en una biblioteca o carpeta aprobada de SharePoint/OneDrive.
 
-- [docs/plan-mvp-presentacion-lunes.md](docs/plan-mvp-presentacion-lunes.md)
+## Mapa rector vigente
 
-Ese documento define el alcance, la arquitectura, las fuentes, las prioridades, el plan de trabajo, los criterios de aceptación y el backlog posterior. No crear roadmaps paralelos sin actualizar primero ese archivo.
+Antes de planificar o implementar, leer:
 
-## Estado técnico actual
+- [docs/produccion-semana.md](docs/produccion-semana.md)
+- [docs/azure-ai-search-sharepoint.md](docs/azure-ai-search-sharepoint.md)
+
+No crear roadmaps paralelos. Actualizar `docs/produccion-semana.md` si cambia el alcance, una dependencia o el estado de producción.
+
+## Documentación aplazada
+
+`docs/planes-posteriores/` y `src/planes_posteriores/` conservan planes, arquitectura, referencias y adaptadores para fases posteriores. **No leer, importar, usar, actualizar ni implementar nada desde esas carpetas durante esta semana**, salvo que el usuario reactive explícitamente una de esas fases.
+
+Las fases aplazadas incluyen ClickUp, Jira, GitHub, MCP/DownloadAseinfo.net, arquitectura híbrida, automatización incremental con Blob Storage y planes de demo históricos.
+
+## Estado técnico relevante
 
 El proyecto ya tiene:
 
 - integración funcional con Microsoft Teams / Microsoft 365 Agents Playground;
 - backend Python con `microsoft-agents-hosting-aiohttp`;
 - flujo modular en `agent.py`, `handler.py`, `retrieval.py`, `classification.py` y `formatting.py`;
-- índice documental local en Markdown;
-- clasificación estructurada;
-- fallback de clasificación por reglas;
-- respuesta con estado, confianza, evidencia, siguiente acción y escalamiento;
-- integración opcional de lectura con ClickUp y Jira mediante código existente.
-- sincronización delegada de PDFs desde una carpeta piloto de OneDrive hacia staging local;
-- ingesta de esos PDFs en Azure AI Search, con el índice local como fallback.
+- índice documental local como respaldo de desarrollo;
+- sincronización delegada de PDFs desde una carpeta piloto de OneDrive/SharePoint;
+- ingesta de documentos en Azure AI Search.
 
-Azure AI Search es el índice documental del MVP. OneDrive/SharePoint alimenta una biblioteca piloto mediante Microsoft Graph y autenticación delegada; tras agregar o modificar documentos se ejecutan `sharepoint_sync.py` y `azure_search_ingest.py`. La eliminación automática de documentos retirados de OneDrive sigue pendiente. DownloadAseinfo.net alimentará el índice mediante su MCP o, mientras este no esté disponible, mediante staging real controlado. GitHub queda como proveedor posterior.
+Para producción, el acceso personal/delegado a SharePoint debe sustituirse por una identidad corporativa con permisos mínimos sobre el sitio autorizado. Azure AI Search será el índice documental de producción; el índice local queda únicamente como fallback de desarrollo.
 
-## Decisiones importantes
+## Decisiones de implementación
 
-1. No rehacer el proyecto ni la integración con Teams.
-2. Mantener la clasificación por reglas como red de seguridad.
-3. Usar Azure AI Search como índice documental del MVP y conservar el índice local como fallback.
-4. Mantener OpenAI para generación durante el MVP, salvo que exista una restricción corporativa explícita.
-5. Consultar Jira o ClickUp como fuente operativa de solo lectura cuando exista acceso; no son condición para demostrar el núcleo documental.
-6. Tratar MCP como mecanismo de acceso a fuentes, no como almacenamiento central.
-7. No indexar todo el código de GitHub durante el MVP; OneDrive/SharePoint se limita a una carpeta piloto autorizada y GitHub queda como extensión posterior.
-8. Responder solo con evidencia y escalar ante la duda.
+1. No rehacer la integración de Teams ni el backend principal.
+2. Limitar esta semana a Teams, Azure AI Search y SharePoint/OneDrive.
+3. Usar una sola biblioteca o carpeta documental aprobada como fuente inicial.
+4. Aplicar mínimo privilegio: `Sites.Selected` y lectura exclusiva del sitio aprobado; no usar permisos globales de Microsoft Graph.
+5. Mantener autenticación corporativa, identidades administradas y secretos fuera del código y logs.
+6. No mostrar documentos, fragmentos ni enlaces que la audiencia autorizada no pueda consultar.
+7. Mantener la clasificación por reglas y la política de evidencia como red de seguridad.
 
-## Contrato de respuesta
+## Fuera de alcance esta semana
 
-La respuesta visible debe incluir:
-
-- Estado: `resuelto`, `en_progreso`, `similar_del_pasado` o `sin_evidencia`.
-- Confianza: `alta`, `media` o `baja`.
-- Resumen.
-- Ruta de investigación.
-- Evidencia con fuente, fragmento y ubicación.
-- Versión o fecha cuando exista.
-- Siguiente acción.
-- Escalamiento cuando corresponda.
-
-No inventar tickets, estados, causas, fechas, versiones, permisos ni soluciones.
+- ClickUp, Jira, GitHub y sus conectores.
+- MCP y DownloadAseinfo.net.
+- Nuevas fuentes documentales distintas de SharePoint/OneDrive.
+- Automatización incremental avanzada, Blob Storage y enriquecimientos posteriores.
+- Cambios de arquitectura que no sean necesarios para producción.
 
 ## Reglas de implementación
 
-- Mantener la lógica de orquestación fuera de `agent.py`.
-- Evitar que `retrieval.py` llame todas las fuentes en cada consulta; usar routing por intención.
-- Normalizar todas las fuentes a un modelo común de evidencia.
-- No clasificar como `resuelto` solo porque aparezca la palabra `hotfix`.
+- Mantener la orquestación fuera de `agent.py`.
 - Aplicar límites y timeouts a llamadas externas.
 - No guardar secretos en el código ni en logs.
-- Preservar el índice local como fallback de desarrollo.
-- No mostrar documentos o enlaces que el usuario no pueda consultar.
-
-## Trabajo multiplataforma y con Codex
-
-- El repositorio debe funcionar tanto en Windows como en macOS. Usar rutas relativas con `pathlib` en Python y comandos documentados para ambos sistemas.
-- No cambiar el alcance del MVP ni rehacer la integración con Teams para probar IA local. La IA local es una configuración del cliente OpenAI-compatible.
-- La configuración del modelo se lee de `OPENAI_API_KEY`, `OPENAI_MODEL` y, opcionalmente, `OPENAI_BASE_URL`. Si se define la URL base, se puede usar Ollama local (`http://127.0.0.1:11434/v1`).
-- Los archivos `.env`, `env/.env.*` y cualquier secreto son locales. Nunca pedirlos, imprimirlos, copiarlos al repositorio ni sustituirlos por valores inventados.
-- Antes de modificar código, leer este archivo, el `README.md` y el documento rector. Para el arranque en Mac, seguir [docs/desarrollo-macos.md](docs/desarrollo-macos.md).
+- Usar rutas relativas con `pathlib` y conservar compatibilidad Windows/macOS.
+- No cambiar el alcance para experimentar con IA local u otras integraciones.
+- Antes de modificar código, leer este archivo, `README.md` y `docs/produccion-semana.md`.
 
 ## Archivos clave
 
 - `src/agent.py`: entrada y eventos de Teams.
 - `src/app.py`: host HTTP.
 - `src/handler.py`: orquestación.
-- `src/retrieval.py`: recuperación y futura capa de adaptadores.
+- `src/retrieval.py`: recuperación documental.
 - `src/document_index.py`: índice local de respaldo.
-- `src/classification.py`: decisión estructurada y reglas de seguridad.
-- `src/formatting.py`: respuesta visible.
-- `src/models.py`: modelos de evidencia y decisión.
 - `src/config.py`: configuración por entorno.
-- `src/sharepoint_sync.py`: sincronización manual de PDFs desde OneDrive/SharePoint con Microsoft Graph.
-- `src/azure_search_ingest.py`: carga de staging hacia Azure AI Search.
-- `docs/knowledge-base`: documentos locales de prueba o staging.
+- `src/sharepoint_sync.py`: sincronización actual desde OneDrive/SharePoint.
+- `src/azure_search_ingest.py`: carga hacia Azure AI Search.
 
-## Documentos vigentes
+## Pruebas mínimas antes de producción
 
-- [docs/incorporacion-readmes.md](docs/incorporacion-readmes.md): proceso de incorporación documental.
-- [docs/requerimientos-mcp-downloadaseinfo-mvp.md](docs/requerimientos-mcp-downloadaseinfo-mvp.md): contrato técnico del MCP de DownloadAseinfo.net.
-- [docs/estado-actual-demo-chat-salvador.md](docs/estado-actual-demo-chat-salvador.md): estado y evidencia de avance.
-
-## Pruebas mínimas antes de una demo
-
-- Probar una consulta con evidencia documental real.
-- Probar una consulta con ticket activo.
-- Probar una consulta histórica.
+- Probar una pregunta desde Teams con evidencia real de SharePoint.
+- Verificar que Azure AI Search devuelve el documento y enlace correctos.
 - Probar una consulta sin evidencia.
-- Verificar que cada afirmación tenga fuente.
-- Verificar que un fallo de una fuente no derribe el bot.
-- Revisar que no se impriman tokens ni secretos.
+- Verificar que el bot no expone secretos ni datos fuera de la biblioteca autorizada.
+- Verificar que una persona de la audiencia objetivo puede instalar y usar Libras en Teams.

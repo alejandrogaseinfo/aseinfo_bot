@@ -5,21 +5,21 @@
     "id": "${{TEAMS_APP_ID}}",
     "developer": {
         "name": "Equipo de desarrollo",
-        "websiteUrl": "https://chat-salvador.example.com",
-        "privacyUrl": "https://chat-salvador.example.com/privacy",
-        "termsOfUseUrl": "https://chat-salvador.example.com/terms"
+        "websiteUrl": "https://libras.example.com",
+        "privacyUrl": "https://libras.example.com/privacy",
+        "termsOfUseUrl": "https://libras.example.com/terms"
     },
     "icons": {
         "color": "color.png",
         "outline": "outline.png"
     },
     "name": {
-        "short": "Chat-Salvador${{APP_NAME_SUFFIX}}",
-        "full": "Asistente de Base de Conocimiento y Resolucion de Errores"
+        "short": "Libras${{APP_NAME_SUFFIX}}",
+        "full": "Libras - Asistente de Base de Conocimiento y Resolucion de Errores"
     },
     "description": {
         "short": "Bot de IA para consultar soluciones a errores, estados de hotfixes y documentacion tecnica.",
-        "full": "Un espacio de conocimiento inteligente disenado para los equipos de operaciones y soporte. Permite verificar de forma inmediata si un error ya esta resuelto en algun setup, si esta reportado y en progreso, o encontrar soluciones a casos similares del pasado. El bot se alimenta de documentos de actualizacion, Click, historico de Jira y diferencias de codigo fuente para evitar escalamientos innecesarios."
+        "full": "Asistente interno para operaciones y soporte. Consulta documentación técnica aprobada en SharePoint y Azure AI Search, presenta evidencia y enlaces de origen, y escala los casos sin respaldo suficiente."
     },
     "accentColor": "#008f39",
     "supportsChannelFeatures": "tier1",
@@ -40,20 +40,20 @@
                     ],
                     "commands": [
                         {
-                            "title": "revisar_error",
-                            "description": "Verifica si un problema ya esta resuelto en el setup de un producto o si ya esta reportado y en progreso."
+                            "title": "consultar_documentacion",
+                            "description": "Busca procedimientos, manuales y documentación técnica aprobada."
                         },
                         {
-                            "title": "buscar_antecedentes",
-                            "description": "Busca casos similares o historicos en Jira y en errores pasados de otros modulos."
+                            "title": "consultar_procedimiento",
+                            "description": "Busca pasos documentados para una tarea o configuración."
                         },
                         {
                             "title": "consultar_actualizacion",
-                            "description": "Revisa advertencias y notas de actualizacion de hotfixes recientes para evitar errores de instalacion."
+                            "description": "Revisa notas, requisitos y advertencias documentadas de una actualización."
                         },
                         {
-                            "title": "ayuda_fuentes",
-                            "description": "Muestra las fuentes de datos que el bot consulta: Readmes, Click, Jira y diffs de codigo."
+                            "title": "ayuda",
+                            "description": "Explica cómo consultar la documentación disponible en Libras."
                         }
                     ]
                 }
