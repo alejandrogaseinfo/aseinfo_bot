@@ -12,6 +12,7 @@ import json
 import math
 import re
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
@@ -53,6 +54,25 @@ SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
+# Keep query fields compatible with indexes created before the optional
+# SharePoint provenance fields were added. The richer metadata is read with
+# ``dict.get`` below when the active index provides it.
+SEARCH_SELECT_FIELDS = [
+    "id",
+    "title",
+    "source_url",
+    "source_system",
+    CONTEXT_FIELD,
+    CONTENT_FIELD,
+    "content_tokens",
+    "chunk_number",
+]
+
+
+@lru_cache(maxsize=1)
+def _entra_credential():
+    """Reuse Entra token state instead of prompting for every local query."""
+    return DefaultAzureCredential(exclude_interactive_browser_credential=False)
 
 
 def _credential(config):
@@ -60,7 +80,7 @@ def _credential(config):
     if config.azure_search_api_key:
         return AzureKeyCredential(config.azure_search_api_key)
     if config.azure_search_use_entra_id:
-        return DefaultAzureCredential(exclude_interactive_browser_credential=False)
+        return _entra_credential()
     raise RuntimeError("Falta AZURE_SEARCH_API_KEY o AZURE_SEARCH_USE_ENTRA_ID=true.")
 
 
@@ -283,19 +303,7 @@ def retrieve_azure_search_evidence(
     )
     search_args = {
         "top": MAX_CANDIDATES,
-        "select": [
-            "id",
-            "title",
-            "source_url",
-            "source_system",
-            CONTEXT_FIELD,
-            CONTENT_FIELD,
-            "document_id",
-            "document_version",
-            "last_modified",
-            "document_type",
-            "folder_path",
-        ],
+        "select": SEARCH_SELECT_FIELDS,
         "connection_timeout": SEARCH_TIMEOUT_SECONDS,
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
     }

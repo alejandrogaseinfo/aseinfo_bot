@@ -48,6 +48,26 @@ GENERIC_ISSUE_TOKENS = {
     "resolver",
     "arreglar",
 }
+DOCUMENTARY_TOKENS = {
+    "actualizacion",
+    "afp",
+    "aguinaldo",
+    "bono",
+    "documentacion",
+    "documento",
+    "hotfix",
+    "impuesto",
+    "isr",
+    "isss",
+    "manual",
+    "pago",
+    "planilla",
+    "politica",
+    "procedimiento",
+    "renta",
+    "salario",
+    "vacacion",
+}
 
 
 def _normalize_command(user_message: str) -> str:
@@ -94,7 +114,13 @@ def _help_response() -> str:
     )
 
 
-def _intent_response(intent: IntentResult) -> str | None:
+def _looks_like_documentary_question(user_message: str) -> bool:
+    """Keep a concrete document question out of the conversational short-cut."""
+    query_tokens = set(tokenize(user_message or ""))
+    return bool(query_tokens.intersection(DOCUMENTARY_TOKENS))
+
+
+def _intent_response(intent: IntentResult, user_message: str = "") -> str | None:
     if intent.name == "saludo":
         return (
             "Hola, soy Libras. Puedo ayudarte a consultar documentación técnica aprobada. "
@@ -103,6 +129,12 @@ def _intent_response(intent: IntentResult) -> str | None:
     if intent.name == "ayuda":
         return _help_response()
     if intent.name in {"reporte_error", "consulta_ambigua"} and intent.requires_context:
+        # The intent model can confuse a factual policy question with an
+        # underspecified support case (for example, "planillas en El Salvador").
+        # Let retrieval decide whether there is evidence instead of discarding
+        # a concrete documentary query before it reaches Azure AI Search.
+        if _looks_like_documentary_question(user_message):
+            return None
         return (
             "Necesito más contexto para orientar la consulta: indique producto o módulo, versión, "
             "mensaje de error y los pasos que lo provocan."
@@ -142,7 +174,7 @@ async def process_user_message(user_message: str, client, config) -> str:
                 model=config.openai_intent_model_name,
                 timeout_seconds=config.intent_timeout_seconds,
             )
-            intent_response = _intent_response(intent) if intent else None
+            intent_response = _intent_response(intent, user_message) if intent else None
             if intent_response:
                 try:
                     conversational_response = await _run_blocking_with_timeout(

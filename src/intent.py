@@ -1,4 +1,4 @@
-"""Small, bounded LLM router for the first user message in a conversation."""
+"""Small, bounded LLM router for a user message in a conversation."""
 
 from __future__ import annotations
 
@@ -15,10 +15,12 @@ VALID_INTENTS = {
 }
 
 INTENT_PROMPT = """
-Clasifique el primer mensaje de un usuario de Libras en JSON válido.
+Clasifique el mensaje de un usuario de Libras en JSON válido.
 Use solo una intención: saludo, ayuda, consulta_documental, reporte_error o consulta_ambigua.
-Marque requiere_contexto=true solo si faltan producto o módulo, versión, mensaje de error
-o pasos para poder buscar evidencia técnica de manera segura.
+Marque requiere_contexto=true solo para un reporte de error o una consulta
+realmente ambigua cuando falte información necesaria para buscar evidencia.
+Una pregunta factual sobre políticas, pagos, planillas o documentos es
+consulta_documental aunque no indique producto, módulo o versión.
 
 Reglas:
 - saludo: saludo o conversación social breve.

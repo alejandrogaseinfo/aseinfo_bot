@@ -11,14 +11,17 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from azure_search import (
     CHANGE_MANIFEST_NAME,
+    _credential,
     _changed_document_ids,
     _clear_change_manifest,
     _clear_deletion_manifest,
     _deletion_document_ids,
     _document_records,
     _document_relevance_score,
+    _entra_credential,
     _excerpt_around_query,
     _rerank_records,
+    retrieve_azure_search_evidence,
     index_directory,
 )
 from classification import classify_case_by_rules
@@ -35,6 +38,70 @@ from sharepoint_sync import (
 
 
 class DocumentQuestionTests(unittest.TestCase):
+    def test_retrieval_uses_fields_supported_by_legacy_search_indexes(self):
+        class FakeSearchClient:
+            def __init__(self):
+                self.calls = []
+
+            def search(self, **kwargs):
+                self.calls.append(kwargs)
+                return [
+                    {
+                        "id": "sv-page-1",
+                        "title": "Políticas de Pago SV.pdf — Página 1",
+                        "source_url": "https://contoso.example/politicas-sv.pdf",
+                        "source_system": "sharepoint",
+                        "document_context": "El Salvador. Planilla Mensual, Planilla Quincenal y Planilla Aguinaldo.",
+                        "content": "El Salvador. Dentro del proyecto se contemplan la Planilla Mensual, la Planilla Quincenal y la Planilla Aguinaldo.",
+                        "content_tokens": "salvador planilla mensual quincenal aguinaldo",
+                    }
+                ]
+
+        fake_search = FakeSearchClient()
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="chat-salvador-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            openai_api_key="test-key",
+            openai_base_url="",
+            resolved_openai_base_url="https://api.openai.com/v1",
+            openai_embedding_model="text-embedding-3-small",
+        )
+
+        with patch("azure_search.SearchClient", return_value=fake_search), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "¿Cuáles son las planillas que se pagan en El Salvador?",
+                config,
+            )
+
+        self.assertEqual("Políticas de Pago SV.pdf — Página 1", sources[0].titulo)
+        for call in fake_search.calls:
+            self.assertNotIn("document_id", call["select"])
+            self.assertNotIn("document_version", call["select"])
+            self.assertNotIn("folder_path", call["select"])
+
+    def test_entra_credential_is_reused_for_multiple_search_operations(self):
+        config = SimpleNamespace(
+            azure_search_api_key="",
+            azure_search_use_entra_id=True,
+        )
+        _entra_credential.cache_clear()
+        try:
+            with patch("azure_search.DefaultAzureCredential") as credential_class:
+                first = _credential(config)
+                second = _credential(config)
+
+            self.assertIs(first, second)
+            credential_class.assert_called_once_with(
+                exclude_interactive_browser_credential=False
+            )
+        finally:
+            _entra_credential.cache_clear()
+
     def test_evidence_source_preserves_optional_document_metadata(self):
         source = EvidenceSource(
             tipo="sharepoint",
