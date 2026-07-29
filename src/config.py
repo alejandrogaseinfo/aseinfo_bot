@@ -18,7 +18,9 @@ def load_project_environment() -> None:
         project_root / "env" / f".env.{env_name}.user",
     ):
         if candidate.exists():
-            load_dotenv(candidate, override=False)
+            # User-scoped settings must supersede empty or development defaults
+            # from the repository-level .env file.
+            load_dotenv(candidate, override=True)
 
 
 class Config:
@@ -79,7 +81,21 @@ class Config:
         ).strip()
         self.sharepoint_site_id = env.get("SHAREPOINT_SITE_ID", "").strip()
         self.sharepoint_drive_id = env.get("SHAREPOINT_DRIVE_ID", "").strip()
+        configured_drives = env.get("SHAREPOINT_DRIVE_IDS", "")
+        self.sharepoint_drive_ids = tuple(
+            drive.strip()
+            for drive in configured_drives.replace(";", ",").split(",")
+            if drive.strip()
+        ) or ((self.sharepoint_drive_id,) if self.sharepoint_drive_id else ())
         self.sharepoint_folder_path = env.get("SHAREPOINT_FOLDER_PATH", "").strip("/")
+        configured_paths = env.get("SHAREPOINT_FOLDER_PATHS", "")
+        raw_paths = [path.strip() for path in configured_paths.replace(";", ",").split(",")]
+        self.sharepoint_folder_paths = (
+            tuple("" if path in {"", "/", "."} else path.strip("/") for path in raw_paths)
+            if configured_paths
+            else ((self.sharepoint_folder_path,) if self.sharepoint_folder_path else ())
+        )
+        self.sharepoint_sources = tuple(zip(self.sharepoint_folder_paths, self.sharepoint_drive_ids))
         self.bot_name = "Libras"
         self.bot_role = "Asistente de Base de Conocimiento y Resolucion de Errores"
         self.response_language = "es"
@@ -134,5 +150,6 @@ class Config:
             and self.sharepoint_client_secret
             and self.sharepoint_site_id
             and self.sharepoint_drive_id
-            and self.sharepoint_folder_path
+            and self.sharepoint_sources
+            and len(self.sharepoint_sources) == len(self.sharepoint_folder_paths)
         )

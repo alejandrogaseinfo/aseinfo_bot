@@ -1,6 +1,6 @@
 # Libras con Azure AI Search y SharePoint/OneDrive
 
-> Alcance activo: esta guía cubre exclusivamente la ruta hacia producción de Libras con Teams, Azure AI Search y SharePoint/OneDrive. Las fuentes y planes posteriores están archivados en [planes-posteriores](planes-posteriores/README.md).
+> Alcance activo: esta guía cubre exclusivamente la ruta hacia producción de Libras con Teams, Azure AI Search y SharePoint/OneDrive. Las integraciones posteriores tienen un orden separado en [planes-posteriores](planes-posteriores/README.md).
 
 ## Objetivo de producción
 
@@ -14,14 +14,20 @@ La cuenta personal del desarrollador puede servir para una prueba local, pero no
 
 ## Contrato documental inicial
 
-La primera biblioteca aprobada contiene únicamente PDFs y tiene una audiencia
-común: todo miembro autorizado de Libras puede consultar todo su contenido. No
-hay permisos distintos por documento en esta fase.
+Las carpetas aprobadas contienen archivos PDF y otros formatos con texto
+recuperable. Libras ingiere PDF, DOCX, XLSX, TXT, CSV, SQL, XML, RDLC, ASPX,
+PowerShell, BAT y JSON. Imágenes, vídeos, ejecutables, DLL y archivos
+comprimidos se mantienen fuera del índice porque no ofrecen texto RAG fiable.
+Todo miembro autorizado de Libras puede consultar el contenido indexado; no hay
+permisos distintos por documento en esta fase. El alcance productivo autorizado
+en esta fase es únicamente la carpeta `Documentos compartidos/SOLUCIONES` y
+sus subcarpetas. Otras bibliotecas, incluida `ReadME Hotfixes`, no se consultan
+ni se indexan.
 
 Cada fragmento cargado en Azure AI Search conserva `document_id`, versión
 (`etag`), fecha de modificación, URL de SharePoint, sitio, drive, carpeta,
 hash de contenido, tipo documental y número de fragmento. La identidad estable
-es `document_id`, no el nombre del archivo. Si un PDF cambia, sus fragmentos se
+es `document_id`, no el nombre del archivo. Si un archivo cambia, sus fragmentos se
 reemplazan; si se elimina de SharePoint, la sincronización emite su
 `document_id` para que la ingesta elimine todos los fragmentos asociados.
 Al aplicar este contrato a un índice piloto que ya existe, se debe ejecutar una
@@ -32,7 +38,7 @@ metadatos.
 
 `src/sharepoint_sync.py` usa hoy autenticación delegada: quien ejecuta el script inicia sesión con su propia cuenta de Microsoft 365. Esto permite validar la conectividad, pero no es suficiente para producción ni para una sincronización programada.
 
-Antes de publicar Libras se debe cambiar esa sincronización a la App Registration corporativa `libras-sharepoint-ingestion-prod`, con acceso de solo lectura limitado al sitio aprobado. La Solicitud B del administrador concede ese acceso cuando existan los IDs definitivos.
+Antes de publicar Libras se debe cambiar esa sincronización a la App Registration corporativa `libras-sharepoint-ingestion-prod`, con acceso de solo lectura limitado al sitio aprobado. El acceso requiere tres pasos separados: agregar `Sites.Selected`, obtener consentimiento administrativo y conceder explícitamente el rol `read` sobre el sitio mediante Microsoft Graph.
 
 Cuando se reciban los datos de A y B, configurar `SHAREPOINT_AUTH_MODE=application`,
 `SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_SITE_ID`,
@@ -60,15 +66,13 @@ Esperar y registrar:
 5. Definir la biblioteca o carpeta de SharePoint/OneDrive que será la única fuente inicial.
 6. Preparar el paquete de Teams de producción.
 
-## Solicitud B: aprobaciones necesarias al final
-
-La Solicitud B se realiza solo después de terminar la preparación técnica y contar con los IDs de los recursos.
+## Permisos productivos requeridos
 
 El administrador deberá:
 
 | Área | Aprobación mínima |
 |---|---|
-| Microsoft Entra / SharePoint | `Sites.Selected`, consentimiento administrativo y lectura exclusiva del sitio SharePoint aprobado para `libras-sharepoint-ingestion-prod`. |
+| Microsoft Entra / SharePoint | `Sites.Selected` como permiso Application, consentimiento administrativo y concesión explícita `read` sobre el sitio SharePoint aprobado para `libras-sharepoint-ingestion-prod`. |
 | Azure AI Search | `Search Index Data Reader` para la identidad del bot y `Search Index Data Contributor` para la identidad de sincronización. |
 | Key Vault | `Key Vault Secrets User` para la identidad del bot y `Key Vault Secrets Officer` para la identidad que carga secretos. |
 | Teams | Cargar, permitir y distribuir el paquete de Libras a la audiencia corporativa aprobada. |

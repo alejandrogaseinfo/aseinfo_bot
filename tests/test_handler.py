@@ -112,6 +112,49 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("documentación técnica", response)
         retrieval.assert_not_called()
 
+    async def test_capability_question_is_answered_before_llm_classification(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        with patch("handler.classify_intent") as classify, patch(
+            "handler.retrieve_evidence"
+        ) as retrieval:
+            response = await process_user_message("Hola, ¿qué puedes consultar?", None, self.config)
+
+        self.assertIn("procedimientos, manuales, hotfixes y actualizaciones", response)
+        self.assertIn("documentación técnica aprobada", response)
+        classify.assert_not_called()
+        retrieval.assert_not_called()
+
+    async def test_clickup_is_reported_as_out_of_scope_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message(
+                "¿Cuál es el estado de mi proyecto en ClickUp?", None, self.config
+            )
+
+        self.assertIn("ClickUp todavía no está integrado", response)
+        retrieval.assert_not_called()
+
+    async def test_summary_follow_up_preserves_prior_evidence_without_retrieval(self):
+        previous_response = (
+            "Ingrese al servidor de Evolution. Abra IIS. Modifique el tiempo de espera. "
+            "Aplique el cambio.\n\n"
+            "Fuente: Ampliar Tiempo de Sesion.pdf — Azure AI Search\n"
+            "Enlace: https://contoso.example/tiempo-sesion.pdf"
+        )
+
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message(
+                "¿Puedes resumir esos pasos en una lista corta?",
+                None,
+                self.config,
+                previous_documentary_response=previous_response,
+            )
+
+        self.assertIn("Resumen de la respuesta anterior", response)
+        self.assertIn("- Ingrese al servidor de Evolution.", response)
+        self.assertIn("Enlace: https://contoso.example/tiempo-sesion.pdf", response)
+        retrieval.assert_not_called()
+
     async def test_llm_intent_routes_natural_language_help_without_retrieval(self):
         self.config.use_llm_intent_classifier = True
         self.config.model_endpoint_configured = True

@@ -10,6 +10,7 @@ from microsoft_agents.authentication.msal import MsalConnectionManager
 from microsoft_agents.hosting.aiohttp import CloudAdapter
 from microsoft_agents.hosting.core import (
     AgentApplication,
+    ApplicationOptions,
     MemoryStorage,
     TurnContext,
     TurnState,
@@ -32,7 +33,9 @@ def load_environment() -> None:
 
     for candidate in candidate_files:
         if candidate.exists():
-            load_dotenv(candidate, override=False)
+            # User-scoped settings must supersede development defaults when
+            # the production environment is selected.
+            load_dotenv(candidate, override=True)
 
 
 load_environment()
@@ -71,8 +74,8 @@ connection_manager = MsalConnectionManager(**agents_sdk_config)
 adapter = CloudAdapter(connection_manager=connection_manager)
 
 agent_app = AgentApplication[TurnState](
-    storage=storage,
-    adapter=adapter,
+    options=ApplicationOptions(storage=storage, adapter=adapter),
+    connection_manager=connection_manager,
     **agents_sdk_config,
 )
 
@@ -82,6 +85,15 @@ _supports_files_warning = (
     else ""
 )
 _supports_files_warned = False
+_documentary_responses: dict[str, str] = {}
+
+
+def _conversation_id(context: TurnContext) -> str:
+    return str(getattr(getattr(context.activity, "conversation", None), "id", ""))
+
+
+def _is_documentary_response(answer: str) -> bool:
+    return "\n\nFuente:" in answer or "\n\nFuentes:" in answer
 
 
 @agent_app.conversation_update("membersAdded")
@@ -103,7 +115,17 @@ async def on_message(context: TurnContext, _state: TurnState):
         await context.send_activity(_supports_files_warning)
 
     user_message = context.activity.text or ""
-    answer = await process_user_message(user_message, client, config)
+    conversation_id = _conversation_id(context)
+    answer = await process_user_message(
+        user_message,
+        client,
+        config,
+        previous_documentary_response=_documentary_responses.get(conversation_id),
+    )
+    if _is_documentary_response(answer):
+        _documentary_responses[conversation_id] = answer
+    elif conversation_id:
+        _documentary_responses.pop(conversation_id, None)
     await context.send_activity(answer)
 
 

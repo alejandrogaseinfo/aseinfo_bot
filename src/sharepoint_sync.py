@@ -1,4 +1,4 @@
-"""Synchronize approved SharePoint PDFs for Azure AI Search ingestion.
+"""Synchronize readable files from the approved SharePoint folder.
 
 Local development uses delegated device authentication. Production uses the
 corporate App Registration with application permissions restricted to the
@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
@@ -27,8 +28,24 @@ DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 
 
+SUPPORTED_EXTENSIONS = {
+    ".aspx",
+    ".bat",
+    ".csv",
+    ".docx",
+    ".json",
+    ".pdf",
+    ".ps1",
+    ".rdlc",
+    ".sql",
+    ".txt",
+    ".xlsx",
+    ".xml",
+}
+
+
 def _safe_filename(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "documento.pdf"
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "documento"
 
 
 class SharePointGraphClient:
@@ -47,28 +64,63 @@ class SharePointGraphClient:
             )
         return response.json()
 
-    def _children_url(self, folder_path: str) -> str:
-        base = f"{GRAPH_ROOT}/drives/{self.drive_id}/root"
+    def _children_url(self, folder_path: str, drive_id: str | None = None) -> str:
+        drive_id = drive_id or self.drive_id
+        base = f"{GRAPH_ROOT}/drives/{drive_id}/root"
         if not folder_path:
             return f"{base}/children"
         return f"{base}:/{quote(folder_path)}:/children"
 
-    def list_pdfs(self) -> list[dict]:
-        pending = [self._children_url(self.config.sharepoint_folder_path)]
+    def list_supported_files(
+        self, folder_path: str | None = None, drive_id: str | None = None
+    ) -> list[dict]:
+        folder_path = self.config.sharepoint_folder_path if folder_path is None else folder_path
+        drive_id = drive_id or self.drive_id
+        pending = [self._children_url(folder_path, drive_id)]
         files: list[dict] = []
         while pending:
             page = self._get(pending.pop())
             for item in page.get("value", []):
                 if "folder" in item:
-                    pending.append(f"{GRAPH_ROOT}/drives/{self.drive_id}/items/{item['id']}/children")
-                elif item.get("name", "").lower().endswith(".pdf") and "file" in item:
-                    files.append(item)
+                    pending.append(f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/children")
+                elif "file" in item:
+                    extension = Path(str(item.get("name", ""))).suffix.lower()
+                    if extension in SUPPORTED_EXTENSIONS:
+                        item["_libras_folder_path"] = folder_path
+                        item["_libras_drive_id"] = drive_id
+                        files.append(item)
             if page.get("@odata.nextLink"):
                 pending.append(page["@odata.nextLink"])
         return files
 
+    def list_pdfs(self) -> list[dict]:
+        """Backward-compatible alias for callers that still expect this name."""
+        return [item for item in self.list_supported_files() if item["name"].lower().endswith(".pdf")]
+
+    def inventory(self, folder_path: str | None = None, drive_id: str | None = None) -> dict:
+        """Enumerate the approved folder without downloading or writing files."""
+        folder_path = self.config.sharepoint_folder_path if folder_path is None else folder_path
+        drive_id = drive_id or self.drive_id
+        pending = [self._children_url(folder_path, drive_id)]
+        files: list[dict] = []
+        folder_count = 0
+        while pending:
+            page = self._get(pending.pop())
+            for item in page.get("value", []):
+                if "folder" in item:
+                    folder_count += 1
+                    pending.append(
+                        f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/children"
+                    )
+                elif "file" in item:
+                    files.append(item)
+            if page.get("@odata.nextLink"):
+                pending.append(page["@odata.nextLink"])
+        return {"folder_count": folder_count, "files": files}
+
     def download(self, item: dict, destination: Path) -> None:
-        content_url = f"{GRAPH_ROOT}/drives/{self.drive_id}/items/{item['id']}/content"
+        drive_id = item.get("_libras_drive_id") or self.drive_id
+        content_url = f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/content"
         response = requests.get(
             content_url, headers=self.headers, timeout=90, allow_redirects=True
         )
@@ -134,8 +186,25 @@ def create_sharepoint_client(config: Config) -> SharePointGraphClient:
     raise RuntimeError("SHAREPOINT_AUTH_MODE debe ser delegated o application.")
 
 
+def inventory_summary(client: SharePointGraphClient, folder_path: str) -> dict:
+    """Return a compact, read-only inventory of the configured source folder."""
+    inventory = client.inventory()
+    files = inventory["files"]
+    extensions = Counter(
+        Path(str(item.get("name", ""))).suffix.lower() or "[sin extension]"
+        for item in files
+    )
+    return {
+        "folder_path": folder_path,
+        "folder_count": inventory["folder_count"],
+        "file_count": len(files),
+        "files_by_extension": dict(sorted(extensions.items())),
+        "pdf_count": extensions[".pdf"],
+    }
+
+
 def sync_pdfs(config: Config, output_dir: Path) -> int:
-    """Synchronize changed PDFs and emit durable change/deletion manifests.
+    """Synchronize readable files and emit durable change/deletion manifests.
 
     The durable production identity is pending the administrator requests. This
     local/delegated implementation nevertheless keeps the same document IDs,
@@ -143,7 +212,21 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     client = create_sharepoint_client(config)
-    files = client.list_pdfs()
+    list_files = client.list_supported_files if hasattr(client, "list_supported_files") else client.list_pdfs
+    files = []
+    sources = getattr(
+        config,
+        "sharepoint_sources",
+        ((getattr(config, "sharepoint_folder_path", ""), client.drive_id),),
+    )
+    for folder_path, drive_id in sources:
+        if hasattr(client, "list_supported_files"):
+            try:
+                files.extend(list_files(folder_path, drive_id))
+            except TypeError:
+                files.extend(list_files())
+        else:
+            files.extend(list_files())
     state_path = output_dir / SYNC_STATE_NAME
     previous_state = _load_json(state_path)
     previous_documents = previous_state.get("documents", {})
@@ -155,17 +238,24 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
 
     for item in files:
         # Prefix prevents collisions between same-named PDFs in different folders.
-        filename = f"{item['id'][:8]}_{_safe_filename(item['name'])}"
+        # Use the full Graph item ID: SharePoint can contain duplicate names
+        # and many IDs share the same initial characters.
+        filename = f"{item['id']}_{_safe_filename(item['name'])}"
         destination = output_dir / filename
         etag = item.get("eTag", "")
         prior = previous_documents.get(item["id"], {})
         prior_filename = prior.get("filename", "")
+        source_folder_path = (
+            item["_libras_folder_path"]
+            if "_libras_folder_path" in item
+            else sources[0][0]
+        )
         metadata_signature = {
             "filename": filename,
             "etag": etag,
             "web_url": item.get("webUrl", ""),
             "last_modified": item.get("lastModifiedDateTime", ""),
-            "folder_path": config.sharepoint_folder_path,
+            "folder_path": source_folder_path,
         }
         if prior_filename and prior_filename != filename:
             old_destination = output_dir / prior_filename
@@ -186,9 +276,9 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
             "web_url": item.get("webUrl", ""),
             "document_id": item["id"],
             "drive_item_id": item["id"],
-            "drive_id": client.drive_id,
+            "drive_id": item.get("_libras_drive_id") or client.drive_id,
             "site_id": config.sharepoint_site_id,
-            "folder_path": config.sharepoint_folder_path,
+            "folder_path": source_folder_path,
             "etag": etag,
             "last_modified": item.get("lastModifiedDateTime", ""),
         }
@@ -263,12 +353,24 @@ def _change_ids(path: Path) -> set[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Descarga PDFs autorizados de SharePoint para staging.")
+    parser = argparse.ArgumentParser(
+        description="Descarga archivos legibles autorizados de SharePoint para staging."
+    )
     parser.add_argument("--output-dir", default="data/sharepoint", help="Carpeta local de staging.")
+    parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Enumera recursivamente la carpeta configurada sin descargar ni modificar archivos.",
+    )
     args = parser.parse_args()
     load_project_environment()
-    count = sync_pdfs(Config(os.environ), Path(args.output_dir).resolve())
-    print(f"Descargados {count} PDF(s) de SharePoint.")
+    config = Config(os.environ)
+    if args.inventory:
+        client = create_sharepoint_client(config)
+        print(json.dumps(inventory_summary(client, config.sharepoint_folder_path), ensure_ascii=False))
+        return
+    count = sync_pdfs(config, Path(args.output_dir).resolve())
+    print(f"Descargados {count} archivo(s) legible(s) de SharePoint.")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ El proyecto ya incluye:
 - sincronización opcional de PDFs autorizados desde SharePoint;
 - clasificación estructurada con fallback por reglas;
 
-Los planes de ClickUp, Jira, GitHub, MCP/DownloadAseinfo.net y automatizaciones posteriores están archivados en [docs/planes-posteriores](docs/planes-posteriores/README.md) y no son parte de la entrega actual.
+El trabajo posterior a producción seguirá este orden: primero ClickUp + GitHub, luego Jira como fuente histórica y finalmente un MCP de solo lectura para `downloads.aseinfo.net`. El mapa y el estado de estas fases están en [docs/planes-posteriores](docs/planes-posteriores/README.md).
 
 ## Inicio rápido
 
@@ -102,9 +102,15 @@ El bot puede usar un servicio compatible con la API de OpenAI. Por defecto apunt
 
 La configuración, permisos mínimos y comandos de carga están en [docs/azure-ai-search-sharepoint.md](docs/azure-ai-search-sharepoint.md). Azure AI Search es el índice documental principal cuando está disponible; la base Markdown local se mantiene como fallback de desarrollo.
 
+La arquitectura productiva vigente está documentada en
+[docs/arquitectura-produccion.md](docs/arquitectura-produccion.md). Incluye el
+flujo de consultas desde Teams, el job separado de ingesta, la carpeta
+`Documentos compartidos/SOLUCIONES`, Azure AI Search, OpenAI y las referencias
+de secretos desde Key Vault.
+
 ## Documentación del proyecto
 
 - [Foco de producción de esta semana](docs/produccion-semana.md)
 - [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)
 - [Guía de desarrollo en macOS y Codex](docs/desarrollo-macos.md)
-- [Planes posteriores archivados](docs/planes-posteriores/README.md)
+- [Roadmap de integraciones posteriores](docs/planes-posteriores/README.md)

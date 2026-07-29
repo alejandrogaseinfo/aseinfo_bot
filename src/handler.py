@@ -1,4 +1,5 @@
 import asyncio
+import re
 from collections.abc import Callable
 from time import perf_counter
 
@@ -35,6 +36,11 @@ GREETING_COMMANDS = {
 }
 GREETING_TOKENS = {"hola", "buenas", "buenos", "buenas"}
 HELP_TOKENS = {"ayuda", "orientar", "orientacion", "guiar", "guia"}
+# Tokens use the lightweight normalization in ``document_index``: ``puedes``
+# becomes ``pued`` and the camel-case product name ``ClickUp`` becomes
+# ``click`` + ``up`` before stop-word filtering.
+CAPABILITY_TOKENS = {"pued", "consultar"}
+UNAVAILABLE_INTEGRATIONS = {"click"}
 GENERIC_ISSUE_TOKENS = {
     "error",
     "problema",
@@ -70,6 +76,38 @@ DOCUMENTARY_TOKENS = {
 }
 
 
+def _is_summary_follow_up(user_message: str) -> bool:
+    normalized = _normalize_command(user_message)
+    return "resum" in normalized and (
+        "paso" in normalized or "lista" in normalized
+    )
+
+
+def _summarize_previous_documentary_response(previous_response: str) -> str:
+    """Produce a short, deterministic summary without adding new claims."""
+    body, separator, source_details = previous_response.partition("\n\nFuente")
+    numbered_steps = [
+        step.strip()
+        for step in re.findall(r"(?:^|\s)\d+\.\s*(.*?)(?=\s+\d+\.|$)", body)
+        if step.strip()
+    ]
+    if len(numbered_steps) >= 2:
+        bullets = numbered_steps[:4]
+    else:
+        sentences = [
+            sentence.strip(" -")
+            for sentence in re.split(r"(?<=[.!?])\s+", body.strip())
+            if sentence.strip(" -")
+        ]
+        bullets = sentences[:4] or [body.strip()]
+    response = "Resumen de la respuesta anterior:\n" + "\n".join(
+        f"- {bullet}" for bullet in bullets
+    )
+    if separator:
+        response += f"\n\nFuente{source_details}"
+    return response
+
+
 def _normalize_command(user_message: str) -> str:
     return " ".join((user_message or "").strip().lower().replace("/", " ").split())
 
@@ -79,6 +117,23 @@ def _direct_response(user_message: str) -> str | None:
     command = _normalize_command(user_message)
     if command in HELP_COMMANDS:
         return _help_response()
+
+    query_tokens = set(tokenize(user_message or ""))
+    if query_tokens.intersection(UNAVAILABLE_INTEGRATIONS):
+        return (
+            "ClickUp todavía no está integrado con Libras. Puedo consultar únicamente "
+            "la documentación técnica aprobada disponible para este asistente."
+        )
+
+    # Keep the opening capability question deterministic.  The intent model can
+    # treat it as an underspecified support request, which makes the bot ask for
+    # an error context instead of explaining its scope.
+    if (
+        CAPABILITY_TOKENS.issubset(query_tokens)
+        and not query_tokens.intersection(DOCUMENTARY_TOKENS)
+        and len(query_tokens) <= 4
+    ):
+        return _capability_response()
 
     return None
 
@@ -111,6 +166,14 @@ def _help_response() -> str:
         "Puedo consultar la documentación técnica aprobada disponible para Libras. "
         "Indique el producto o módulo, la versión y su pregunta. Para reportar un error, "
         "incluya el mensaje exacto, los pasos que lo provocan y, si aplica, el hotfix relacionado."
+    )
+
+
+def _capability_response() -> str:
+    return (
+        "Puedo consultar la documentación técnica aprobada disponible para Libras, "
+        "incluidos procedimientos, manuales, hotfixes y actualizaciones. "
+        "Indique el producto o módulo, la versión y su pregunta para buscar evidencia."
     )
 
 
@@ -155,8 +218,16 @@ async def _run_blocking_with_timeout(
     )
 
 
-async def process_user_message(user_message: str, client, config) -> str:
+async def process_user_message(
+    user_message: str,
+    client,
+    config,
+    previous_documentary_response: str | None = None,
+) -> str:
     started_at = perf_counter()
+    if previous_documentary_response and _is_summary_follow_up(user_message):
+        return _summarize_previous_documentary_response(previous_documentary_response)
+
     direct_response = _direct_response(user_message)
     if direct_response:
         logger.info("query_completed duration_ms=0 evidence_count=0 source_types=none decision_state=solicita_contexto escalated=False")

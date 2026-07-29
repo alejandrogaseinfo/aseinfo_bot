@@ -1,7 +1,7 @@
 # Pruebas locales de Libras con Teams
 
 **Fecha:** 24 de julio de 2026
-**Estado:** Preparación local verificada; ejecución HTTP/Teams pendiente.
+**Estado:** Prueba local aprobada; la validación de producción queda pendiente de permisos y despliegue.
 
 ### Bitácora de progreso
 

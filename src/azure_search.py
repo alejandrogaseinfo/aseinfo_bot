@@ -43,10 +43,22 @@ from document_index import tokenize
 from models import EvidenceSource
 
 
-# La primera fuente productiva aprobada contiene únicamente PDFs. El índice
-# local de Markdown sigue existiendo como fallback de desarrollo, pero no se
-# carga mediante este proceso de ingesta.
-SUPPORTED_EXTENSIONS = {".pdf"}
+# Solo se ingieren formatos con texto recuperable. Los binarios de la carpeta
+# (imágenes, vídeos, ejecutables y comprimidos) permanecen fuera del índice.
+SUPPORTED_EXTENSIONS = {
+    ".aspx",
+    ".bat",
+    ".csv",
+    ".docx",
+    ".json",
+    ".pdf",
+    ".ps1",
+    ".rdlc",
+    ".sql",
+    ".txt",
+    ".xlsx",
+    ".xml",
+}
 CONTENT_FIELD = "content"
 CONTEXT_FIELD = "document_context"
 CONTENT_VECTOR_FIELD = "content_vector"
@@ -54,6 +66,7 @@ SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
+SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
 # Keep query fields compatible with indexes created before the optional
 # SharePoint provenance fields were added. The richer metadata is read with
 # ``dict.get`` below when the active index provides it.
@@ -67,6 +80,25 @@ SEARCH_SELECT_FIELDS = [
     "content_tokens",
     "chunk_number",
 ]
+COUNTRY_TOKENS = {
+    "guatemala": {"guatemala", "guatemalteco", "guatemalteca"},
+    "el_salvador": {"salvador", "salvadoreno", "salvadoreño", "salvadorena", "salvadoreña"},
+}
+GENERIC_QUERY_TOKENS = {
+    "cambio",
+    "como",
+    "configur",
+    "document",
+    "documentacion",
+    "existir",
+    "hacer",
+    "informacion",
+    "oficial",
+    "paso",
+    "procedimiento",
+    "realizar",
+    "tema",
+}
 
 
 @lru_cache(maxsize=1)
@@ -106,8 +138,10 @@ def _embed_texts(texts: list[str], config, client=None) -> list[list[float]]:
 
 def _attach_embeddings(records: list[dict], config) -> None:
     """Add one embedding per chunk before it is sent to Azure AI Search."""
-    for offset in range(0, len(records), 100):
-        batch = records[offset : offset + 100]
+    # Keep the request well below the provider's aggregate token limit when
+    # indexing code-heavy files with many tokens per character.
+    for offset in range(0, len(records), 20):
+        batch = records[offset : offset + 20]
         embeddings = _embed_texts(
             [str(record[CONTENT_FIELD]) for record in batch], config
         )
@@ -237,6 +271,80 @@ def _document_relevance_score(
     )
 
 
+def _requested_country(user_message: str) -> str | None:
+    query_tokens = set(tokenize(user_message))
+    for country, country_tokens in COUNTRY_TOKENS.items():
+        if query_tokens.intersection(country_tokens):
+            return country
+    return None
+
+
+def _record_has_authorized_provenance(record: dict) -> bool:
+    """Accept only HTTPS SharePoint items from the approved document index."""
+    return (
+        record.get("source_system") == "sharepoint"
+        and str(record.get("source_url") or "").startswith("https://")
+    )
+
+
+def _filter_records_for_requested_country(
+    records: list[dict], user_message: str
+) -> list[dict]:
+    """Do not substitute evidence from another country for an explicit request."""
+    country = _requested_country(user_message)
+    if country is None:
+        return records
+
+    country_tokens = COUNTRY_TOKENS[country]
+    return [
+        record
+        for record in records
+        if _record_matches_only_requested_country(record, country_tokens)
+    ]
+
+
+def _record_matches_only_requested_country(record: dict, country_tokens: set[str]) -> bool:
+    record_tokens = set(
+        tokenize(
+            f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
+            f"{record.get(CONTENT_FIELD, '')}"
+        )
+    )
+    if not country_tokens.intersection(record_tokens):
+        return False
+
+    other_country_tokens = set().union(
+        *(tokens for tokens in COUNTRY_TOKENS.values() if tokens != country_tokens)
+    )
+    # Contact footers often list several countries.  They do not establish
+    # that the technical procedure applies to any one of those countries.
+    return not other_country_tokens.intersection(record_tokens)
+
+
+def _has_minimum_content_coverage(record: dict, user_message: str) -> bool:
+    """Reject a tangential hit that shares only one broad term with the query."""
+    country_tokens = set().union(*COUNTRY_TOKENS.values())
+    required_tokens = set(tokenize(user_message)).difference(
+        GENERIC_QUERY_TOKENS, country_tokens
+    )
+    if not required_tokens:
+        return True
+
+    record_tokens = set(
+        tokenize(f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}")
+    )
+    required_matches = required_tokens.intersection(record_tokens)
+    if _requested_country(user_message) is not None:
+        # Country filtering above already requires an exclusive country match;
+        # one domain term can be sufficient for a short country-specific query.
+        minimum_matches = 1
+    elif len(required_tokens) >= 4:
+        minimum_matches = 3
+    else:
+        minimum_matches = 2 if len(required_tokens) >= 3 else 1
+    return len(required_matches) >= minimum_matches
+
+
 def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float, dict]]:
     """Rerank Azure candidates with query coverage and corpus-relative weights."""
     query_tokens = set(tokenize(user_message))
@@ -360,6 +468,15 @@ def retrieve_azure_search_evidence(
             )
         ]
 
+    authorized_records = [
+        record for record in candidate_records if _record_has_authorized_provenance(record)
+    ]
+    country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
+    candidate_records = [
+        record
+        for record in country_scoped_records
+        if _has_minimum_content_coverage(record, user_message)
+    ]
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
         return []
@@ -398,28 +515,77 @@ def retrieve_azure_search_evidence(
 
 def _document_pages(document_path: Path) -> list[tuple[int | None, str]]:
     """Extract text by page so a search result keeps its original context."""
-    if document_path.suffix.lower() == ".pdf":
+    if document_path.stat().st_size == 0:
+        return []
+    extension = document_path.suffix.lower()
+    if extension == ".pdf":
         reader = PdfReader(str(document_path))
         return [
             (page_number, page.extract_text() or "")
             for page_number, page in enumerate(reader.pages, start=1)
         ]
+    if extension == ".docx":
+        from docx import Document
+
+        document = Document(str(document_path))
+        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                parts.append(" | ".join(cell.text for cell in row.cells))
+        return [(None, "\n".join(parts))]
+    if extension == ".xlsx":
+        from openpyxl import load_workbook
+
+        workbook = load_workbook(str(document_path), read_only=True, data_only=True)
+        parts: list[str] = []
+        for worksheet in workbook.worksheets:
+            parts.append(f"Hoja: {worksheet.title}")
+            for row in worksheet.iter_rows(values_only=True):
+                values = [str(value) for value in row if value is not None]
+                if values:
+                    parts.append(" | ".join(values))
+        workbook.close()
+        return [(None, "\n".join(parts))]
     return [(None, document_path.read_text(encoding="utf-8", errors="replace"))]
 
 
-def _chunks(text: str, size: int = 450, overlap: int = 75) -> Iterable[str]:
-    """Split a single page into focused, overlapping retrieval chunks."""
+def _chunks(
+    text: str,
+    size: int = 450,
+    overlap: int = 75,
+    max_characters: int = 6_000,
+) -> Iterable[str]:
+    """Split text by words and characters for safe embedding requests."""
     words = text.split()
     if not words:
         return []
     chunks: list[str] = []
     start = 0
     while start < len(words):
-        end = min(start + size, len(words))
-        chunks.append(" ".join(words[start:end]))
+        end = start
+        character_count = 0
+        while end < len(words) and end < start + size:
+            word_length = len(words[end])
+            separator_length = 1 if end > start else 0
+            if end > start and character_count + separator_length + word_length > max_characters:
+                break
+            if end == start and word_length > max_characters:
+                for offset in range(0, word_length, max_characters):
+                    chunks.append(words[end][offset : offset + max_characters])
+                end += 1
+                break
+            character_count += separator_length + word_length
+            end += 1
+        split_long_word = False
+        if end == start:
+            end += 1
+        elif len(words[start]) > max_characters:
+            split_long_word = True
+        if not split_long_word:
+            chunks.append(" ".join(words[start:end]))
         if end == len(words):
             break
-        start = end - overlap
+        start = max(start + 1, end - overlap)
     return chunks
 
 
@@ -448,6 +614,22 @@ def _document_records(
     has_managed_documents = any(
         path.with_suffix(path.suffix + ".metadata.json").exists() for path in documents
     )
+    sync_state_path = source_dir / SYNC_STATE_NAME
+    synchronized_document_ids: set[str] | None = None
+    if sync_state_path.exists():
+        try:
+            sync_state = json.loads(sync_state_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"El estado de sincronización no es JSON válido: {sync_state_path}"
+            ) from error
+        if not isinstance(sync_state, dict):
+            raise RuntimeError(
+                f"El estado de sincronización debe ser un objeto JSON: {sync_state_path}"
+            )
+        synchronized_documents = sync_state.get("documents", {})
+        if isinstance(synchronized_documents, dict):
+            synchronized_document_ids = set(synchronized_documents)
     for document_path in documents:
         if has_managed_documents and not document_path.with_suffix(
             document_path.suffix + ".metadata.json"
@@ -462,6 +644,12 @@ def _document_records(
         title = metadata.get("name") or document_path.stem
         source_system = metadata.get("source_system", "local")
         document_id = str(metadata.get("document_id") or source_url)
+        if (
+            synchronized_document_ids is not None
+            and source_system == "sharepoint"
+            and document_id not in synchronized_document_ids
+        ):
+            continue
         if document_ids is not None and document_id not in document_ids:
             continue
         document_version = str(metadata.get("etag") or metadata.get("document_version") or "")
@@ -489,7 +677,7 @@ def _document_records(
                         "document_version": document_version,
                         "last_modified": last_modified,
                         "content_hash": content_hash,
-                        "document_type": "pdf",
+                        "document_type": document_path.suffix.lower().lstrip("."),
                         "folder_path": folder_path,
                         "indexed_at": datetime.now(timezone.utc).isoformat(),
                         "chunk_number": sequence,

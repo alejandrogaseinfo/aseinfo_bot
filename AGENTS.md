@@ -19,11 +19,15 @@ Antes de planificar o implementar, leer:
 
 No crear roadmaps paralelos. Actualizar `docs/produccion-semana.md` si cambia el alcance, una dependencia o el estado de producción.
 
-## Documentación aplazada
+## Fases posteriores al objetivo de esta semana
 
-`docs/planes-posteriores/` y `src/planes_posteriores/` conservan planes, arquitectura, referencias y adaptadores para fases posteriores. **No leer, importar, usar, actualizar ni implementar nada desde esas carpetas durante esta semana**, salvo que el usuario reactive explícitamente una de esas fases.
+El objetivo inmediato está definido en `docs/produccion-semana.md`. Después de cerrar producción, el orden aprobado es:
 
-Las fases aplazadas incluyen ClickUp, Jira, GitHub, MCP/DownloadAseinfo.net, arquitectura híbrida, automatización incremental con Blob Storage y planes de demo históricos.
+1. Integrar ClickUp y GitHub.
+2. Integrar Jira como fuente de documentación histórica.
+3. Crear un MCP de solo lectura para `https://downloads.aseinfo.net/home`.
+
+`docs/planes-posteriores/` y `src/planes_posteriores/` solo pueden guiar esas fases en ese orden. No introducirlas en el flujo productivo de esta semana ni crear una arquitectura paralela.
 
 ## Estado técnico relevante
 
@@ -50,10 +54,11 @@ Para producción, el acceso personal/delegado a SharePoint debe sustituirse por 
 
 ## Fuera de alcance esta semana
 
-- ClickUp, Jira, GitHub y sus conectores.
-- MCP y DownloadAseinfo.net.
+- Integración de ClickUp y GitHub.
+- Integración histórica de Jira.
+- MCP y `downloads.aseinfo.net`.
 - Nuevas fuentes documentales distintas de SharePoint/OneDrive.
-- Automatización incremental avanzada, Blob Storage y enriquecimientos posteriores.
+- Automatización incremental avanzada, Blob Storage y enriquecimientos no solicitados.
 - Cambios de arquitectura que no sean necesarios para producción.
 
 ## Reglas de implementación

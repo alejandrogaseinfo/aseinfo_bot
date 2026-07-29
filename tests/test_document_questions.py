@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -17,7 +18,12 @@ from azure_search import (
     _clear_deletion_manifest,
     _deletion_document_ids,
     _document_records,
+    _document_pages,
+    _chunks,
     _document_relevance_score,
+    _has_minimum_content_coverage,
+    _filter_records_for_requested_country,
+    _record_has_authorized_provenance,
     _entra_credential,
     _excerpt_around_query,
     _rerank_records,
@@ -174,6 +180,72 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertTrue(record["content_hash"])
         self.assertTrue(record["indexed_at"])
 
+    def test_pdf_records_ignore_sharepoint_files_outside_sync_state(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            (source_dir / ".libras-sharepoint-sync-state.json").write_text(
+                '{"documents": {"allowed-id": {"filename": "allowed.pdf"}}}',
+                encoding="utf-8",
+            )
+            for filename, document_id in (("allowed.pdf", "allowed-id"), ("stale.pdf", "stale-id")):
+                pdf_path = source_dir / filename
+                pdf_path.write_bytes(b"placeholder")
+                pdf_path.with_suffix(".pdf.metadata.json").write_text(
+                    json.dumps(
+                        {
+                            "source_system": "sharepoint",
+                            "document_id": document_id,
+                            "web_url": f"https://contoso.example/{filename}",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            with patch(
+                "azure_search._document_pages",
+                return_value=[(1, "Contenido controlado.")],
+            ):
+                records = _document_records(source_dir)
+
+        self.assertEqual({"allowed-id"}, {record["document_id"] for record in records})
+
+    def test_readable_office_files_are_extracted(self):
+        from docx import Document
+        from openpyxl import Workbook
+
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            docx_path = source_dir / "manual.docx"
+            document = Document()
+            document.add_paragraph("Paso documentado para instalar el módulo.")
+            document.save(docx_path)
+
+            xlsx_path = source_dir / "parametros.xlsx"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Configuración"
+            worksheet.append(["Parametro", "Valor"])
+            worksheet.append(["Timeout", "30"])
+            workbook.save(xlsx_path)
+
+            docx_pages = _document_pages(docx_path)
+            xlsx_pages = _document_pages(xlsx_path)
+
+        self.assertIn("Paso documentado", docx_pages[0][1])
+        self.assertIn("Configuración", xlsx_pages[0][1])
+        self.assertIn("Timeout | 30", xlsx_pages[0][1])
+
+    def test_chunks_bound_long_lines_for_embedding_limits(self):
+        chunks = list(_chunks("x" * 13_000, size=450, max_characters=6_000))
+
+        self.assertEqual([6_000, 6_000, 1_000], [len(chunk) for chunk in chunks])
+
+    def test_empty_documents_are_skipped(self):
+        with TemporaryDirectory() as directory:
+            empty_pdf = Path(directory) / "empty.pdf"
+            empty_pdf.touch()
+
+            self.assertEqual([], _document_pages(empty_pdf))
+
     def test_sync_reuses_unchanged_pdf_and_preserves_pending_deletion(self):
         class FakeSharePointClient:
             drive_id = "drive-1"
@@ -215,14 +287,14 @@ class DocumentQuestionTests(unittest.TestCase):
             fake_client.files[0]["name"] = "manual-renombrado.pdf"
             sync_pdfs(config, source_dir)
             self.assertEqual(2, fake_client.download_calls)
-            self.assertFalse((source_dir / "document_manual.pdf").exists())
-            self.assertTrue((source_dir / "document_manual-renombrado.pdf").exists())
+            self.assertFalse((source_dir / "document-1_manual.pdf").exists())
+            self.assertTrue((source_dir / "document-1_manual-renombrado.pdf").exists())
 
             fake_client.files = []
             sync_pdfs(config, source_dir)
             self.assertEqual({"document-1"}, _deletion_document_ids(source_dir))
             self.assertEqual(set(), _change_ids(source_dir / SYNC_CHANGE_MANIFEST_NAME))
-            self.assertFalse((source_dir / "document_manual-renombrado.pdf").exists())
+            self.assertFalse((source_dir / "document-1_manual-renombrado.pdf").exists())
 
             # If Azure ingestion has not yet acknowledged the deletion, a
             # subsequent sync must retain the tombstone instead of losing it.
@@ -481,6 +553,101 @@ class DocumentQuestionTests(unittest.TestCase):
 
         self.assertEqual(first_vector_result, ranked[0][1])
 
+    def test_country_specific_request_does_not_mix_evidence(self):
+        guatemala_record = {
+            "title": "Guatemala — Página 1",
+            "document_context": "Procedimiento autorizado para Guatemala.",
+            "content": "Guatemala. Ajuste de sesión.",
+        }
+        salvador_record = {
+            "title": "El Salvador — Página 1",
+            "document_context": "Procedimiento autorizado para El Salvador.",
+            "content": "El Salvador. Ajuste de sesión.",
+        }
+
+        filtered = _filter_records_for_requested_country(
+            [salvador_record, guatemala_record],
+            "¿Cómo se realiza el ajuste de sesión en Guatemala?",
+        )
+
+        self.assertEqual([guatemala_record], filtered)
+
+    def test_country_specific_request_without_matching_evidence_returns_no_records(self):
+        generic_record = {
+            "title": "Manual general",
+            "document_context": "Procedimiento técnico sin país.",
+            "content": "Ajuste de sesión.",
+        }
+
+        filtered = _filter_records_for_requested_country(
+            [generic_record], "¿Cómo se realiza el ajuste de sesión en El Salvador?"
+        )
+
+        self.assertEqual([], filtered)
+
+    def test_country_request_rejects_a_multi_country_contact_footer(self):
+        shared_footer_record = {
+            "title": "Cambios generales de Evolution",
+            "document_context": "GUATEMALA oficina central. EL SALVADOR oficina regional.",
+            "content": "Cambios de interfaz de Evolution.",
+        }
+
+        filtered = _filter_records_for_requested_country(
+            [shared_footer_record],
+            "¿Qué cambios existen para El Salvador en Evolution?",
+        )
+
+        self.assertEqual([], filtered)
+
+    def test_tangential_single_term_hit_is_not_sufficient_evidence(self):
+        vacation_policy = {
+            "title": "Políticas de pago",
+            "content": "Las vacaciones pendientes se procesan al retiro del empleado.",
+        }
+
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                vacation_policy,
+                "¿Cuál es el procedimiento oficial de Recursos Humanos para aprobar vacaciones?",
+            )
+        )
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                vacation_policy,
+                "¿Cómo se procesan las vacaciones pendientes?",
+            )
+        )
+
+    def test_out_of_scope_question_requires_three_specific_terms(self):
+        human_resources_capacity = {
+            "title": "Requerimientos de Evolution",
+            "content": "Usuarios concurrentes del departamento de Recursos Humanos.",
+        }
+
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                human_resources_capacity,
+                "¿Cuál es el procedimiento oficial de Recursos Humanos para aprobar vacaciones?",
+            )
+        )
+
+    def test_only_https_sharepoint_records_are_authorized_evidence(self):
+        self.assertTrue(
+            _record_has_authorized_provenance(
+                {"source_system": "sharepoint", "source_url": "https://contoso.example/manual.pdf"}
+            )
+        )
+        self.assertFalse(
+            _record_has_authorized_provenance(
+                {"source_system": "web", "source_url": "https://unapproved.example/manual.pdf"}
+            )
+        )
+        self.assertFalse(
+            _record_has_authorized_provenance(
+                {"source_system": "sharepoint", "source_url": "http://contoso.example/manual.pdf"}
+            )
+        )
+
     def test_unmatched_question_remains_without_evidence(self):
         evidence = [
             EvidenceSource(
@@ -522,6 +689,25 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertNotIn("Estado", response)
         self.assertNotIn("Confianza", response)
         self.assertNotIn("Ruta de investigacion", response)
+
+    def test_response_includes_verifiable_source_link(self):
+        response = format_user_response(
+            BotDecision(
+                estado="resuelto",
+                confianza="alta",
+                resumen="El procedimiento está documentado.",
+                fuentes=[
+                    EvidenceSource(
+                        tipo="sharepoint",
+                        titulo="Procedimiento de actualización",
+                        ubicacion="https://contoso.example/procedimiento.pdf",
+                        fragmento="Pasos aprobados.",
+                    )
+                ],
+            )
+        )
+
+        self.assertIn("Enlace: https://contoso.example/procedimiento.pdf", response)
 
     def test_no_evidence_response_does_not_show_tangential_source(self):
         response = format_user_response(
