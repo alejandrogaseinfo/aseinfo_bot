@@ -14,10 +14,13 @@ El objetivo de producción es que personas autorizadas de la organización pueda
 
 Antes de planificar o implementar, leer:
 
+- [docs/contexto-actual.md](docs/contexto-actual.md)
 - [docs/produccion-semana.md](docs/produccion-semana.md)
 - [docs/azure-ai-search-sharepoint.md](docs/azure-ai-search-sharepoint.md)
 
-No crear roadmaps paralelos. Actualizar `docs/produccion-semana.md` si cambia el alcance, una dependencia o el estado de producción.
+No crear roadmaps paralelos. Actualizar `docs/contexto-actual.md` y
+`docs/produccion-semana.md` si cambia el alcance, una dependencia o el estado
+de producción.
 
 ## Fases posteriores al objetivo de esta semana
 
@@ -58,6 +61,8 @@ Para producción, el acceso personal/delegado a SharePoint debe sustituirse por 
 - Integración histórica de Jira.
 - MCP y `downloads.aseinfo.net`.
 - Nuevas fuentes documentales distintas de SharePoint/OneDrive.
+- Otras bibliotecas o carpetas de SharePoint distintas de
+  `Documentos compartidos/SOLUCIONES`, salvo autorización explícita.
 - Automatización incremental avanzada, Blob Storage y enriquecimientos no solicitados.
 - Cambios de arquitectura que no sean necesarios para producción.
 
@@ -68,7 +73,8 @@ Para producción, el acceso personal/delegado a SharePoint debe sustituirse por 
 - No guardar secretos en el código ni en logs.
 - Usar rutas relativas con `pathlib` y conservar compatibilidad Windows/macOS.
 - No cambiar el alcance para experimentar con IA local u otras integraciones.
-- Antes de modificar código, leer este archivo, `README.md` y `docs/produccion-semana.md`.
+- Antes de modificar código, leer este archivo, `README.md` y
+  `docs/contexto-actual.md`.
 
 ## Archivos clave
 

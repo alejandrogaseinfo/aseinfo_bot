@@ -4,7 +4,12 @@ Bot interno de Microsoft Teams para consultar documentación aprobada. Recupera 
 
 ## Estado y alcance
 
-La prioridad actual es llevar Libras a producción con Teams, Azure AI Search y SharePoint/OneDrive. El mapa rector vigente es [docs/produccion-semana.md](docs/produccion-semana.md). No ampliar el alcance ni crear roadmaps paralelos sin actualizar ese documento.
+La prioridad actual es validar Libras en Microsoft 365 Agents Playground antes
+de solicitar autorización para publicar en Teams. La única fuente documental
+autorizada en esta fase es `Documentos compartidos/SOLUCIONES` y sus
+subcarpetas. El contexto consolidado está en
+[docs/contexto-actual.md](docs/contexto-actual.md); no ampliar el alcance ni
+crear roadmaps paralelos sin actualizarlo.
 
 El proyecto ya incluye:
 
@@ -12,7 +17,7 @@ El proyecto ya incluye:
 - backend Python modular;
 - base documental local en Markdown como respaldo;
 - Azure AI Search como índice documental principal cuando se configure;
-- sincronización opcional de PDFs autorizados desde SharePoint;
+- sincronización de documentos legibles autorizados desde SharePoint;
 - clasificación estructurada con fallback por reglas;
 
 El trabajo posterior a producción seguirá este orden: primero ClickUp + GitHub, luego Jira como fuente histórica y finalmente un MCP de solo lectura para `downloads.aseinfo.net`. El mapa y el estado de estas fases están en [docs/planes-posteriores](docs/planes-posteriores/README.md).
@@ -110,6 +115,7 @@ de secretos desde Key Vault.
 
 ## Documentación del proyecto
 
+- [Contexto actual y continuidad](docs/contexto-actual.md)
 - [Foco de producción de esta semana](docs/produccion-semana.md)
 - [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)
 - [Guía de desarrollo en macOS y Codex](docs/desarrollo-macos.md)

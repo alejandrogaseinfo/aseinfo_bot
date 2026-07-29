@@ -166,3 +166,11 @@ fuera del alcance activo y no debe consultarse ni indexarse para esta versión.
 
 La validación de fuentes, evidencia y enlaces queda limitada a `SOLUCIONES`.
 No se publicó nada ni se cambió la distribución en Teams.
+
+## Nota de continuidad — 2026-07-29
+
+La configuración del proyecto se corrigió para que la fuente activa sea solo
+`Documentos compartidos/SOLUCIONES`. Antes de solicitar publicación se debe
+reconstruir o depurar el índice y comprobar que no queden documentos de
+`ReadME Hotfixes` u otras fuentes de una validación temporal. Las pruebas
+finales deben ejecutarse nuevamente después de esa limpieza.

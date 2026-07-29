@@ -1,5 +1,11 @@
 # Producción de Libras - foco de esta semana
 
+> **Estado consolidado 2026-07-29:** consultar primero
+> [contexto-actual.md](contexto-actual.md). El alcance autorizado es
+> únicamente `Documentos compartidos/SOLUCIONES`; `ReadME Hotfixes` y otras
+> bibliotecas no están autorizadas. La publicación en Teams sigue pendiente de
+> autorización y no debe ejecutarse.
+
 ## Objetivo
 
 Poner `Libras` en producción como aplicación interna de Microsoft Teams para que la audiencia autorizada consulte documentación aprobada de una biblioteca o carpeta de SharePoint/OneDrive.

@@ -12,7 +12,10 @@ aplicación en Teams.
 - Azure AI Search: `srch-libras-prod`, índice `libras-docs`.
 - Fuente autorizada: únicamente `Documentos compartidos/SOLUCIONES` y sus
   subcarpetas. No se deben consultar otras bibliotecas de SharePoint.
-- Carga validada: 15 PDFs y 158 fragmentos.
+- La configuración de fuentes fue corregida para dejar únicamente
+  `Documentos compartidos/SOLUCIONES`; antes de la ronda final se debe
+  reconstruir o limpiar el índice para retirar cualquier documento de una
+  fuente agregada durante una validación temporal.
 - `/healthz`: HTTP 200.
 - `/readyz`: HTTP 200 con estado `ready`.
 - Teams: aún no publicado; las pruebas se harán en Playground.
@@ -103,6 +106,8 @@ Debe resumir fielmente la evidencia anterior.
 - No hay errores repetidos de backend.
 - La latencia es aceptable para uso interno.
 - Se registraron resultados y observaciones.
+- El índice contiene únicamente documentos de `SOLUCIONES`; esta comprobación
+  debe quedar respaldada por el inventario final de sincronización.
 
 ## Entregable
 
