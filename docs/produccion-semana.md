@@ -6,6 +6,16 @@
 > bibliotecas no están autorizadas. La publicación en Teams sigue pendiente de
 > autorización y no debe ejecutarse.
 
+## Fuente de verdad para el estado actual
+
+Para retomar el proyecto, usar primero [contexto-actual.md](contexto-actual.md).
+Las secciones posteriores de este documento conservan la bitácora histórica de
+infraestructura y no siempre reflejan el último estado funcional. En particular,
+las cifras de **15 PDFs y 158 fragmentos** describen una carga inicial histórica,
+no el estado final del índice. El estado actual pendiente es reconstruir o
+depurar `libras-docs` con únicamente `SOLUCIONES` y verificar el inventario antes
+de solicitar publicación.
+
 ## Objetivo
 
 Poner `Libras` en producción como aplicación interna de Microsoft Teams para que la audiencia autorizada consulte documentación aprobada de una biblioteca o carpeta de SharePoint/OneDrive.

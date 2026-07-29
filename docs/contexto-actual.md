@@ -53,6 +53,8 @@ Microsoft 365 Agents Playground / Teams
 - El backend productivo respondió `ready` durante la validación previa y las
   pruebas automatizadas pasan: **75 pruebas, OK**.
 - El commit de consolidación anterior es `d7b1222`.
+- Las cifras antiguas de 15 PDFs y 158 fragmentos que aparecen en la bitácora
+  de producción son históricas y no deben tomarse como inventario actual.
 
 ## Pruebas realizadas
 
