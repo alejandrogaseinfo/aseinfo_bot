@@ -1,4 +1,7 @@
 import os
+import logging
+
+from jwt.exceptions import PyJWTError
 from microsoft_agents.hosting.core import AgentApplication, AgentAuthConfiguration
 from microsoft_agents.hosting.aiohttp import (
     start_agent_process,
@@ -9,6 +12,8 @@ from aiohttp.web import Request, Response, Application, json_response, middlewar
 
 from agent import agent_app, config, connection_manager
 from runtime_health import readiness_payload
+
+logger = logging.getLogger(__name__)
 
 async def entry_point(req: Request) -> Response:
     agent: AgentApplication = req.app["agent_app"]
@@ -36,7 +41,13 @@ async def authorization_middleware(request: Request, handler):
     """Allow unauthenticated health probes while protecting bot activities."""
     if request.path in {"/healthz", "/readyz"}:
         return await handler(request)
-    return await jwt_authorization_middleware(request, handler)
+    try:
+        return await jwt_authorization_middleware(request, handler)
+    except (IndexError, KeyError, PyJWTError):
+        # The Agents SDK only maps ValueError to 401. PyJWT parse and signing
+        # errors must also be rejected instead of surfacing as a server error.
+        logger.warning("Rejected malformed or invalid Bot Framework JWT.")
+        return json_response({"error": "Invalid authorization token."}, status=401)
 
 
 app = Application(middlewares=[authorization_middleware])

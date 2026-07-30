@@ -1,34 +1,32 @@
 {
     "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
     "manifestVersion": "1.27",
-    "version": "1.0.0",
-    "id": "${{TEAMS_APP_ID}}",
+    "version": "0.1.0",
+    "id": "98888f43-7cf5-44c6-89ca-248a0d644919",
     "developer": {
-        "name": "Equipo de desarrollo",
-        "websiteUrl": "https://libras.example.com",
-        "privacyUrl": "https://libras.example.com/privacy",
-        "termsOfUseUrl": "https://libras.example.com/terms"
+        "name": "ASEINFO",
+        "websiteUrl": "https://www.aseinfo.com.sv/contacto/soporte",
+        "privacyUrl": "https://www.aseinfo.com.sv/politica-de-privacidad",
+        "termsOfUseUrl": "https://www.aseinfo.com.sv/terminos-y-condiciones"
     },
     "icons": {
         "color": "color.png",
         "outline": "outline.png"
     },
     "name": {
-        "short": "Libras${{APP_NAME_SUFFIX}}",
-        "full": "Libras - Asistente de Base de Conocimiento y Resolucion de Errores"
+        "short": "Libras",
+        "full": "Libras - Asistente de Base de Conocimiento y Resolución de Errores"
     },
     "description": {
-        "short": "Bot de IA para consultar soluciones a errores, estados de hotfixes y documentacion tecnica.",
-        "full": "Asistente interno para operaciones y soporte. Consulta documentación técnica aprobada en SharePoint y Azure AI Search, presenta evidencia y enlaces de origen, y escala los casos sin respaldo suficiente."
+        "short": "Asistente interno para consultar documentación técnica autorizada.",
+        "full": "Libras es un asistente interno para Operaciones que consulta documentación técnica autorizada en SharePoint, dentro de Documentos compartidos/SOLUCIONES. Responde con evidencia y enlaces al documento de origen, solicita contexto cuando la pregunta es ambigua y reconoce cuando no encuentra respaldo suficiente. No modifica documentos ni consulta fuentes fuera del alcance autorizado."
     },
     "accentColor": "#008f39",
     "supportsChannelFeatures": "tier1",
     "bots": [
         {
-            "botId": "${{BOT_ID}}",
+            "botId": "bac24639-da91-45a3-ae85-062b07188b9c",
             "scopes": [
-                "team",
-                "groupChat",
                 "personal"
             ],
             "supportsFiles": false,
@@ -67,5 +65,7 @@
         "identity",
         "messageTeamMembers"
     ],
-    "validDomains": []
+    "validDomains": [],
+    "publisherDocsUrl": "https://www.aseinfo.com.sv/contacto/soporte",
+    "defaultInstallScope": "personal"
 }
