@@ -88,7 +88,92 @@ class DocumentQuestionTests(unittest.TestCase):
         for call in fake_search.calls:
             self.assertNotIn("document_id", call["select"])
             self.assertNotIn("document_version", call["select"])
-            self.assertNotIn("folder_path", call["select"])
+            self.assertIn("folder_path", call["select"])
+
+    def test_explicit_filename_prioritizes_the_exact_indexed_document(self):
+        requested_name = "sp_anular_solicitud_vac.sql"
+
+        class FakeSearchClient:
+            def search(self, **kwargs):
+                if kwargs.get("search_text") == requested_name:
+                    return [
+                        {
+                            "id": "scripts-anular-vac",
+                            "title": f"{requested_name} — Documento",
+                            "source_url": "https://contoso.example/scripts/sp_anular_solicitud_vac.sql",
+                            "source_system": "sharepoint",
+                            "folder_path": "",
+                            "drive_id": "drive-scripts",
+                            "content": "EXEC sp_anular_solicitud_vac @id_solicitud = 123;",
+                            "content_tokens": "exec sp anular solicitud vac id solicitud",
+                        }
+                    ]
+                return [
+                    {
+                        "id": "related-config",
+                        "title": "ConfiguracionAnulacionSolicitudVac.sql — Documento",
+                        "source_url": "https://contoso.example/scripts/ConfiguracionAnulacionSolicitudVac.sql",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-scripts",
+                        "content": "Configuración relacionada con solicitudes de vacaciones.",
+                        "content_tokens": "configuracion anulacion solicitud vacaciones",
+                    }
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            sharepoint_sources=(("", "drive-scripts"),),
+        )
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "Busca exactamente el archivo sp_anular_solicitud_vac.sql. "
+                "¿Qué parámetros utiliza y qué operación realiza?",
+                config,
+            )
+
+        self.assertEqual([f"{requested_name} — Documento"], [source.titulo for source in sources])
+
+    def test_unknown_explicit_filename_does_not_fall_back_to_related_documents(self):
+        class FakeSearchClient:
+            def search(self, **kwargs):
+                return [
+                    {
+                        "id": "related-readme",
+                        "title": "Readme 1.19.1.13.pdf — Página 7",
+                        "source_url": "https://contoso.example/readme.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Validación previa a la instalación de una actualización.",
+                        "content_tokens": "validacion previa instalacion actualizacion",
+                    }
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            sharepoint_sources=(("", "drive-readme"),),
+        )
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "Busca exactamente el archivo procedimiento_inexistente.sql.", config
+            )
+
+        self.assertEqual([], sources)
 
     def test_entra_credential_is_reused_for_multiple_search_operations(self):
         config = SimpleNamespace(
@@ -161,7 +246,8 @@ class DocumentQuestionTests(unittest.TestCase):
                   "etag": "etag-2",
                   "last_modified": "2026-07-22T12:00:00Z",
                   "web_url": "https://contoso.example/manual.pdf",
-                  "folder_path": "Operaciones/Manuales"
+                  "folder_path": "Operaciones/Manuales",
+                  "drive_id": "drive-1"
                 }""",
                 encoding="utf-8",
             )
@@ -177,6 +263,7 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertEqual("etag-2", record["document_version"])
         self.assertEqual("pdf", record["document_type"])
         self.assertEqual("Operaciones/Manuales", record["folder_path"])
+        self.assertEqual("drive-1", record["drive_id"])
         self.assertTrue(record["content_hash"])
         self.assertTrue(record["indexed_at"])
 
@@ -618,6 +705,43 @@ class DocumentQuestionTests(unittest.TestCase):
             )
         )
 
+    def test_vacation_guide_without_approval_action_is_not_evidence_of_approval_procedure(self):
+        technical_guide = {
+            "title": "Guía de temas técnicos Evolution",
+            "content": (
+                "Creación y modificación de vacaciones. Para crear un periodo de "
+                "vacaciones, asigne el año inicial y valide el empleo."
+            ),
+        }
+        approval_procedure = {
+            "title": "Procedimiento de aprobación de vacaciones",
+            "content": (
+                "El jefe aprueba la solicitud de vacaciones y Recursos Humanos "
+                "confirma la aprobación antes de registrar el movimiento."
+            ),
+        }
+        question = "¿Cuál es el procedimiento oficial para aprobar vacaciones?"
+
+        self.assertFalse(_has_minimum_content_coverage(technical_guide, question))
+        self.assertTrue(_has_minimum_content_coverage(approval_procedure, question))
+
+    def test_related_vacation_evidence_without_approval_action_is_not_classified_as_resolved(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Guía de temas técnicos Evolution",
+                ubicacion="https://contoso.example/guia.docx",
+                fragmento="Creación y modificación de vacaciones para el empleo.",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "¿Cuál es el procedimiento oficial para aprobar vacaciones?", evidence
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
     def test_out_of_scope_question_requires_three_specific_terms(self):
         human_resources_capacity = {
             "title": "Requerimientos de Evolution",
@@ -645,6 +769,57 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertFalse(
             _record_has_authorized_provenance(
                 {"source_system": "sharepoint", "source_url": "http://contoso.example/manual.pdf"}
+            )
+        )
+        approved_folder = ("SOLUCIONES",)
+        self.assertTrue(
+            _record_has_authorized_provenance(
+                {
+                    "source_system": "sharepoint",
+                    "source_url": "https://contoso.example/manual.pdf",
+                    "folder_path": "SOLUCIONES",
+                },
+                approved_folder,
+            )
+        )
+        self.assertFalse(
+            _record_has_authorized_provenance(
+                {
+                    "source_system": "sharepoint",
+                    "source_url": "https://contoso.example/manual.pdf",
+                    "folder_path": "ReadME Hotfixes",
+                },
+                approved_folder,
+            )
+        )
+
+    def test_multi_library_provenance_accepts_only_approved_drive_and_path(self):
+        approved_sources = (("", "drive-readme"), ("SOLUCIONES", "drive-documents"))
+        base_record = {
+            "source_system": "sharepoint",
+            "source_url": "https://contoso.example/manual.pdf",
+        }
+
+        self.assertTrue(
+            _record_has_authorized_provenance(
+                {**base_record, "drive_id": "drive-readme", "folder_path": ""},
+                approved_sources,
+            )
+        )
+        self.assertTrue(
+            _record_has_authorized_provenance(
+                {
+                    **base_record,
+                    "drive_id": "drive-documents",
+                    "folder_path": "SOLUCIONES",
+                },
+                approved_sources,
+            )
+        )
+        self.assertFalse(
+            _record_has_authorized_provenance(
+                {**base_record, "drive_id": "drive-other", "folder_path": ""},
+                approved_sources,
             )
         )
 

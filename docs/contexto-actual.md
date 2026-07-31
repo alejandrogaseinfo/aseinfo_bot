@@ -1,14 +1,14 @@
 # Contexto actual de Libras
 
 > Documento de continuidad para cualquier persona o chat nuevo que retome el
-> proyecto. Fecha de consolidación: 2026-07-29.
+> proyecto. Fecha de consolidación: 2026-07-31.
 
 ## Objetivo
 
 Preparar `Libras`, un asistente interno, para que consulte documentación
-autorizada desde Microsoft 365 Agents Playground y posteriormente pueda
-publicarse en Microsoft Teams. La publicación en Teams todavía no está
-autorizada y no debe ejecutarse.
+autorizada desde Microsoft 365 Agents Playground y pueda publicarse como piloto
+controlado en Microsoft Teams. La infraestructura de Azure Bot ya fue creada;
+la publicación y distribución del paquete de Teams todavía están pendientes.
 
 ## Alcance documental autorizado
 
@@ -16,11 +16,13 @@ La autorización recibida se basa en este enlace de SharePoint:
 
 `https://aseinfocorp.sharepoint.com/sites/Soportealcliente/Documentos%20compartidos/Forms/AllItems.aspx?id=%2Fsites%2FSoportealcliente%2FDocumentos%20compartidos%2FSOLUCIONES`
 
-Ese enlace apunta a la carpeta `Documentos compartidos/SOLUCIONES`. Por tanto,
-el bot puede consultar cualquier documento de esa carpeta y sus subcarpetas,
-pero no otras bibliotecas o carpetas de SharePoint. En particular,
-`ReadME Hotfixes`, Manuales, Documentos de Apoyo y cualquier otra ubicación
-quedan fuera hasta recibir autorización explícita.
+El administrador autorizó la aplicación de ingesta con rol `read` sobre el sitio
+`/sites/Soportealcliente` y entregó los `Drive ID` de sus bibliotecas. El alcance
+activo se amplió a `ReadME Hotfixes`, `Documentos` (solo `SOLUCIONES`),
+`Legislaciones`, `Traslados OP/DE`, `Parches Adicionales`, `Documentos de Apoyo`,
+`Manuales` y `Scripts de Apoyo`. `Hojas de Servicio` se deja fuera del alcance
+actual por su volumen pendiente de procesar. `Teams Wiki Data` queda fuera por
+ser una biblioteca de datos de sistema.
 
 ## Arquitectura vigente
 
@@ -28,18 +30,16 @@ quedan fuera hasta recibir autorización explícita.
 Microsoft 365 Agents Playground / Teams
         -> app-libras-prod
         -> Azure AI Search: srch-libras-prod / libras-docs
-        <- sincronización de aplicación desde SharePoint/SOLUCIONES
+        <- sincronización de aplicación desde bibliotecas aprobadas de SharePoint
 ```
 
 - App Service: `app-libras-prod`, Resource Group `rg-libras-prod`, Central US.
 - Índice de producción: `libras-docs` en `srch-libras-prod`.
 - Aplicación de ingesta: `libras-sharepoint-ingestion-prod`.
-- Site ID, drive ID y secreto están en archivos de entorno/Key Vault; no se
-  deben copiar a documentación, Git, mensajes ni logs.
-- La capacidad multi-fuente que existe en el código es reutilizable, pero no
-  significa que todas las fuentes estén autorizadas. La configuración activa
-  debe contener solo el drive de `Documentos compartidos` y
-  `SHAREPOINT_FOLDER_PATH=SOLUCIONES`.
+- Site ID, drive IDs y secreto están en archivos de entorno/Key Vault; el
+  secreto no se debe copiar a documentación, Git, mensajes ni logs.
+- La configuración activa usa listas alineadas de `SHAREPOINT_DRIVE_IDS` y
+  `SHAREPOINT_FOLDER_PATHS`; una ruta vacía significa la raíz de esa biblioteca.
 
 ## Estado técnico
 
@@ -51,7 +51,35 @@ Microsoft 365 Agents Playground / Teams
 - La separación contextual Guatemala–El Salvador está cubierta por las
   pruebas de recuperación; no se deben mezclar países, versiones ni fuentes.
 - El backend productivo respondió `ready` durante la validación previa y las
-  pruebas automatizadas pasan: **75 pruebas, OK**.
+  pruebas automatizadas pasan: **79 pruebas, OK**.
+- La validación anterior encontró 250 archivos en `SOLUCIONES`, de los cuales
+  200 tenían formatos de texto admitidos. `libras-docs` fue reconstruido con
+  **2.354 fragmentos**; la carga ampliada requiere un nuevo inventario y
+  reconstrucción del índice.
+- La recuperación productiva valida la combinación autorizada de `drive_id` y
+  `folder_path`, además de procedencia SharePoint HTTPS. Así, una fuente no
+  incluida en la lista no puede usarse como evidencia aunque aparezca en el
+  índice.
+- El proveedor `Microsoft.BotService` quedó registrado en la suscripción
+  `ASEINFO Azure` el 30 de julio de 2026.
+- Se creó el recurso Azure Bot `bot-libras-prod` en `rg-libras-prod`, con plan
+  `Free`, residencia `Global` y tipo `User-Assigned Managed Identity`.
+- El Azure Bot reutiliza `id-libras-bot-prod`; no se creó una identidad nueva.
+  Su Client ID es `bac24639-da91-45a3-ae85-062b07188b9c`.
+- El despliegue del recurso terminó correctamente. El endpoint de mensajería ya
+  apunta al App Service productivo, el canal Microsoft Teams está habilitado y
+  el paquete de piloto fue generado.
+- La validación en Test in Web Chat del 30 de julio detectó un falso positivo:
+  una guía técnica sobre creación y modificación de vacaciones se presentó como
+  procedimiento de aprobación. La corrección fue redeplegada; la consulta debe
+  volver a validarse antes del piloto y responder sin evidencia.
+- La prueba en Test in Web Chat también detectó que una solicitud de clave API
+  podía llegar a Azure AI Search. Se añadió una barrera de rechazo previa a la
+  búsqueda y se redeplegó correctamente; falta validar el caso P10 de
+  solicitudes de secretos en Test in Web Chat.
+- Se detectaron falsas respuestas ante solicitudes de datos de clientes, pagos
+  atrasados e inventario del sitio. La barrera de rechazo previa a la búsqueda
+  ya fue redeplegada; falta validar el caso P11 en Test in Web Chat.
 - El commit de consolidación anterior es `d7b1222`.
 - Las cifras antiguas de 15 PDFs y 158 fragmentos que aparecen en la bitácora
   de producción son históricas y no deben tomarse como inventario actual.
@@ -64,19 +92,25 @@ autorizado; P4 El Salvador recuperó evidencia específica sin mezclar una
 fuente guatemalteca. El detalle está en
 [evaluacion-piloto.md](evaluacion-piloto.md).
 
-## Pendientes antes de solicitar publicación
+## Pendientes para completar el piloto de Teams
 
-1. Ejecutar una sincronización/reconstrucción del índice con el alcance
-   corregido: solo `SOLUCIONES`.
-2. Confirmar que el índice no conserva documentos de `ReadME Hotfixes` ni de
-   otras fuentes.
-3. Repetir en Playground una prueba positiva con enlace de `SOLUCIONES`, una
-   pregunta sin evidencia y las pruebas de separación Guatemala–El Salvador.
-4. Registrar la evidencia final en
+1. Ejecutar en Microsoft 365 Agents Playground, con el backend productivo
+   recién desplegado, una prueba positiva con enlace de `SOLUCIONES` y una
+   pregunta sin evidencia. La validación técnica de SharePoint y el índice ya
+   está cerrada.
+2. Repetir las pruebas de separación Guatemala–El Salvador cuando haya
+   evidencia aplicable dentro de `SOLUCIONES`; no sustituir evidencia de otro
+   país.
+3. Registrar la evidencia final en
    [plan-pruebas-playground.md](plan-pruebas-playground.md) y
    [evaluacion-piloto.md](evaluacion-piloto.md).
-5. Solo después de completar lo anterior, preparar la solicitud de autorización
-   para publicación en Teams. No publicar automáticamente.
+4. [x] Configurar en `bot-libras-prod` el endpoint de mensajería productivo.
+5. [x] Habilitar el canal Microsoft Teams.
+6. [x] Completar los IDs reales del manifiesto y generar el paquete `.zip`.
+7. Instalar el paquete como aplicación personalizada y validar el piloto con
+   las cinco personas autorizadas de Operaciones.
+8. Solicitar posteriormente la distribución controlada desde Teams Admin
+   Center. No publicar automáticamente para toda la organización.
 
 ## Cómo retomar el trabajo
 

@@ -6,12 +6,13 @@ permisos distintos.
 
 ```mermaid
 flowchart LR
-    teams["Colaborador en Teams"] --> app["app-libras-prod<br/>Libras en Azure"]
+    teams["Colaborador en Teams"] --> bot["bot-libras-prod<br/>Azure Bot / Teams"]
+    bot --> app["app-libras-prod<br/>Libras en Azure"]
     app --> search["srch-libras-prod<br/>Azure AI Search"]
     search --> index[("libras-docs<br/>Índice documental")]
     app --> openai["OpenAI<br/>modelo y respuestas"]
 
-    sharepoint["SharePoint<br/>Documentos compartidos/SOLUCIONES"] --> ingest["Job de ingesta<br/>sharepoint_sync + azure_search_ingest"]
+    sharepoint["SharePoint<br/>bibliotecas documentales aprobadas"] --> ingest["Job de ingesta<br/>sharepoint_sync + azure_search_ingest"]
     identity["libras-sharepoint-ingestion-prod<br/>Sites.Selected + read<br/>Search Index Data Contributor"] -. "autentica" .-> ingest
     ingest --> openai
     ingest --> search

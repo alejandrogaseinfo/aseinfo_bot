@@ -1,20 +1,22 @@
 # Producción de Libras - foco de esta semana
 
-> **Estado consolidado 2026-07-29:** consultar primero
-> [contexto-actual.md](contexto-actual.md). El alcance autorizado es
-> únicamente `Documentos compartidos/SOLUCIONES`; `ReadME Hotfixes` y otras
-> bibliotecas no están autorizadas. La publicación en Teams sigue pendiente de
-> autorización y no debe ejecutarse.
+> **Estado consolidado 2026-07-31:** consultar primero
+> [contexto-actual.md](contexto-actual.md). El alcance autorizado incluye las
+> bibliotecas documentales aprobadas del sitio `Soportealcliente`; en la
+> biblioteca `Documentos` se mantiene la carpeta `SOLUCIONES` como ruta
+> seleccionada. `Hojas de Servicio` y `Teams Wiki Data` permanecen fuera del
+> alcance actual. La publicación en Teams sigue pendiente de
+> configuración del canal y de distribución controlada.
 
 ## Fuente de verdad para el estado actual
 
 Para retomar el proyecto, usar primero [contexto-actual.md](contexto-actual.md).
 Las secciones posteriores de este documento conservan la bitácora histórica de
-infraestructura y no siempre reflejan el último estado funcional. En particular,
-las cifras de **15 PDFs y 158 fragmentos** describen una carga inicial histórica,
-no el estado final del índice. El estado actual pendiente es reconstruir o
-depurar `libras-docs` con únicamente `SOLUCIONES` y verificar el inventario antes
-de solicitar publicación.
+infraestructura y no siempre reflejan el último estado funcional. La validación
+de SharePoint se cerró el 29 de julio: se inventariaron 250 archivos en
+`SOLUCIONES`, se indexaron 2.354 fragmentos de los 200 formatos legibles y la
+comprobación del índice confirmó cero registros fuera de esa carpeta. Las cifras
+de **15 PDFs y 158 fragmentos** describen una carga inicial histórica.
 
 ## Objetivo
 
@@ -32,10 +34,10 @@ Usuario interno en Teams
 - Teams es el único canal de usuarios.
 - Azure AI Search es el índice documental de producción.
 - SharePoint/OneDrive es la única fuente documental de esta semana.
-- La biblioteca inicial debe tener una audiencia y permisos claros.
+- Las bibliotecas incluidas deben tener una audiencia y permisos claros.
 - El índice local se conserva solo para desarrollo y diagnóstico.
 
-## Estado actual: backend publicado, pendiente de configuración del bot
+## Estado actual: Azure Bot conectado y paquete de piloto listo
 
 La habilitación inicial fue confirmada. Datos recibidos:
 
@@ -52,9 +54,18 @@ Los permisos de SharePoint y la configuración documental ya fueron validados co
 El siguiente bloqueo fue configurar la conexión del bot en el App Service. Ya
 está resuelto: el App Service conserva su identidad `SystemAssigned` y tiene
 además la identidad `UserAssigned` dedicada `id-libras-bot-prod` para el canal
-Bot Framework. No existe aún un recurso `Bot Service` en la suscripción.
+Bot Framework. El recurso `bot-libras-prod` ya existe en la suscripción y está
+conectado al endpoint productivo con el canal de Teams habilitado.
 
 El App Service está en `Central US`, igual que Azure AI Search. Esta ubicación es técnicamente válida para las integraciones HTTPS con SharePoint/Microsoft Graph, ClickUp y GitHub. El plan B1 fue autorizado. Para el recurso Azure Bot se usa la identidad `UserManagedIdentity` dedicada, porque `SystemAssignedMsi` no es un `msaAppType` admitido por Azure Bot.
+
+El 30 de julio de 2026 se registró el proveedor `Microsoft.BotService` en la
+suscripción. Se creó `bot-libras-prod` en `rg-libras-prod` con residencia
+`Global`, plan `Free` y tipo `User-Assigned Managed Identity`, reutilizando
+`id-libras-bot-prod` (Client ID
+`bac24639-da91-45a3-ae85-062b07188b9c`). El despliegue de Azure terminó con
+estado **complete**. El endpoint de mensajería y el canal de Teams ya están
+configurados; queda pendiente instalar el paquete y ejecutar el piloto.
 
 Estado anterior ya resuelto:
 
@@ -187,8 +198,10 @@ Libras está disponible en Teams para la audiencia autorizada, responde con evid
 - [ ] Consulta con evidencia real validada desde Teams.
 - [ ] Consulta sin evidencia y control de acceso validados desde Teams.
 - [ ] Piloto conversacional aprobado en Microsoft 365 Agents Playground antes de solicitar publicación en Teams.
-- [ ] Proveedor `Microsoft.BotService` registrado y Bot Service productivo conectado al endpoint de `app-libras-prod` (requiere permiso administrativo `Microsoft.BotService/register/action`).
-- [ ] Paquete de Teams generado con `TEAMS_APP_ID` y `BOT_ID` reales.
+- [x] Proveedor `Microsoft.BotService` registrado en `ASEINFO Azure`.
+- [x] Azure Bot `bot-libras-prod` creado en `rg-libras-prod` con `Free` y `id-libras-bot-prod`.
+- [x] Endpoint de mensajería configurado en el Azure Bot y canal Microsoft Teams habilitado.
+- [x] Paquete de Teams generado con `TEAMS_APP_ID` y `BOT_ID` reales.
 - [ ] Aplicación instalada y validada en Teams.
 
 ## Orden posterior aprobado

@@ -20,9 +20,11 @@ PowerShell, BAT y JSON. Imágenes, vídeos, ejecutables, DLL y archivos
 comprimidos se mantienen fuera del índice porque no ofrecen texto RAG fiable.
 Todo miembro autorizado de Libras puede consultar el contenido indexado; no hay
 permisos distintos por documento en esta fase. El alcance productivo autorizado
-en esta fase es únicamente la carpeta `Documentos compartidos/SOLUCIONES` y
-sus subcarpetas. Otras bibliotecas, incluida `ReadME Hotfixes`, no se consultan
-ni se indexan.
+incluye las bibliotecas documentales aprobadas del sitio `Soportealcliente`.
+En `Documentos` se consulta únicamente la carpeta `SOLUCIONES`; las demás
+bibliotecas aprobadas se consultan desde su raíz. `Hojas de Servicio` queda
+fuera del alcance actual por su volumen pendiente de procesar. `Teams Wiki Data`
+queda fuera por ser una biblioteca de datos de sistema.
 
 Cada fragmento cargado en Azure AI Search conserva `document_id`, versión
 (`etag`), fecha de modificación, URL de SharePoint, sitio, drive, carpeta,
@@ -30,6 +32,9 @@ hash de contenido, tipo documental y número de fragmento. La identidad estable
 es `document_id`, no el nombre del archivo. Si un archivo cambia, sus fragmentos se
 reemplazan; si se elimina de SharePoint, la sincronización emite su
 `document_id` para que la ingesta elimine todos los fragmentos asociados.
+En el servicio de búsqueda `Free` se usa `OPENAI_EMBEDDING_DIMENSIONS=512`
+para mantener el índice dentro de la cuota de almacenamiento; el modelo
+`text-embedding-3-small` admite esa reducción.
 Al aplicar este contrato a un índice piloto que ya existe, se debe ejecutar una
 vez la ingesta con `--reset-index` para recrear el esquema con los campos de
 metadatos.
@@ -40,9 +45,11 @@ metadatos.
 
 Antes de publicar Libras se debe cambiar esa sincronización a la App Registration corporativa `libras-sharepoint-ingestion-prod`, con acceso de solo lectura limitado al sitio aprobado. El acceso requiere tres pasos separados: agregar `Sites.Selected`, obtener consentimiento administrativo y conceder explícitamente el rol `read` sobre el sitio mediante Microsoft Graph.
 
-Cuando se reciban los datos de A y B, configurar `SHAREPOINT_AUTH_MODE=application`,
-`SHAREPOINT_TENANT_ID`, `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_SITE_ID`,
-`SHAREPOINT_DRIVE_ID` y la carpeta autorizada. El secreto de la App Registration
+Configurar `SHAREPOINT_AUTH_MODE=application`, `SHAREPOINT_TENANT_ID`,
+`SHAREPOINT_CLIENT_ID`, `SHAREPOINT_SITE_ID`, `SHAREPOINT_DRIVE_ID`,
+`SHAREPOINT_DRIVE_IDS` y `SHAREPOINT_FOLDER_PATHS`. Las dos listas deben estar
+alineadas: una ruta vacía representa la raíz de la biblioteca correspondiente.
+El secreto de la App Registration
 debe llegar mediante una referencia de Key Vault como `SHAREPOINT_CLIENT_SECRET`;
 nunca se guarda en Git. En este modo Libras no usa `/me/drive` ni el inicio de
 sesión delegado: consulta únicamente el drive explícitamente aprobado.
@@ -63,7 +70,8 @@ Esperar y registrar:
 2. Crear Azure AI Search y usar autenticación Microsoft Entra/RBAC para el acceso de producción.
 3. Crear el índice `libras-docs` y configurar sus metadatos de documento, URL de origen y fragmentos.
 4. Crear Key Vault con Azure RBAC y preparar referencias de secretos para App Service.
-5. Definir la biblioteca o carpeta de SharePoint/OneDrive que será la única fuente inicial.
+5. Definir las bibliotecas y carpetas aprobadas de SharePoint/OneDrive que
+   serán las fuentes documentales.
 6. Preparar el paquete de Teams de producción.
 
 ## Permisos productivos requeridos
@@ -97,4 +105,4 @@ Esta prueba no autoriza ni sustituye la configuración de producción.
 2. Libras recupera un documento real de SharePoint/OneDrive mediante Azure AI Search y muestra su enlace de origen.
 3. Una consulta sin coincidencia responde sin evidencia y no inventa una solución.
 4. El acceso a SharePoint no depende de la cuenta personal del desarrollador.
-5. No se muestran secretos ni documentos fuera de la biblioteca autorizada.
+5. No se muestran secretos ni documentos fuera de las bibliotecas y carpetas autorizadas.

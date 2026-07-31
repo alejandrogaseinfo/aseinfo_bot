@@ -39,7 +39,7 @@ from azure.search.documents.models import VectorizedQuery
 from openai import OpenAI
 from pypdf import PdfReader
 
-from document_index import tokenize
+from document_index import has_requested_action_coverage, tokenize
 from models import EvidenceSource
 
 
@@ -67,14 +67,16 @@ MAX_CANDIDATES = 30
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
-# Keep query fields compatible with indexes created before the optional
-# SharePoint provenance fields were added. The richer metadata is read with
-# ``dict.get`` below when the active index provides it.
+# ``folder_path`` and ``drive_id`` are part of the provenance boundary:
+# production retrieval must reject records outside the approved SharePoint
+# libraries/folders.
 SEARCH_SELECT_FIELDS = [
     "id",
     "title",
     "source_url",
     "source_system",
+    "folder_path",
+    "drive_id",
     CONTEXT_FIELD,
     CONTENT_FIELD,
     "content_tokens",
@@ -99,6 +101,10 @@ GENERIC_QUERY_TOKENS = {
     "realizar",
     "tema",
 }
+_EXPLICIT_FILENAME_PATTERN = re.compile(
+    r"(?<![\w-])([\w.-]+(?:" + "|".join(re.escape(extension) for extension in SUPPORTED_EXTENSIONS) + r"))(?![\w-])",
+    re.IGNORECASE,
+)
 
 
 @lru_cache(maxsize=1)
@@ -132,6 +138,7 @@ def _embed_texts(texts: list[str], config, client=None) -> list[list[float]]:
     response = embedding_client.embeddings.create(
         model=config.openai_embedding_model,
         input=texts,
+        dimensions=config.openai_embedding_dimensions,
     )
     return [item.embedding for item in response.data]
 
@@ -221,6 +228,19 @@ def _result_fragment(result: dict, user_message: str) -> str:
     return _excerpt_around_query(str(result.get(CONTENT_FIELD, "")), user_message)
 
 
+def _requested_file_names(user_message: str) -> tuple[str, ...]:
+    """Return explicit, supported filenames mentioned in a user question."""
+    return tuple(
+        dict.fromkeys(match.group(1).casefold() for match in _EXPLICIT_FILENAME_PATTERN.finditer(user_message))
+    )
+
+
+def _record_matches_file_name(record: dict, file_names: tuple[str, ...]) -> bool:
+    """Match a requested file against the indexed title, not a related topic."""
+    title = str(record.get("title") or "").casefold()
+    return any(file_name in title for file_name in file_names)
+
+
 def _query_phrases(user_message: str) -> set[str]:
     tokens = tokenize(user_message)
     return {
@@ -279,12 +299,35 @@ def _requested_country(user_message: str) -> str | None:
     return None
 
 
-def _record_has_authorized_provenance(record: dict) -> bool:
-    """Accept only HTTPS SharePoint items from the approved document index."""
-    return (
+def _record_has_authorized_provenance(
+    record: dict, allowed_sources: tuple = ()
+) -> bool:
+    """Accept only HTTPS SharePoint items from configured libraries/folders.
+
+    ``allowed_sources`` is normally a tuple of ``(folder_path, drive_id)``
+    pairs from ``Config.sharepoint_sources``. A tuple of folder strings is
+    still accepted for compatibility with older callers and tests.
+    """
+    has_sharepoint_provenance = (
         record.get("source_system") == "sharepoint"
         and str(record.get("source_url") or "").startswith("https://")
     )
+    if not has_sharepoint_provenance:
+        return False
+    if not allowed_sources:
+        return True
+    record_folder_path = str(record.get("folder_path") or "").strip("/")
+    record_drive_id = str(record.get("drive_id") or "").strip()
+    if all(isinstance(source, (tuple, list)) and len(source) == 2 for source in allowed_sources):
+        return any(
+            record_folder_path == str(folder_path or "").strip("/")
+            and record_drive_id == str(drive_id or "").strip()
+            for folder_path, drive_id in allowed_sources
+        )
+    # Legacy single-library configurations only had folder_path available.
+    return record_folder_path in {
+        str(path or "").strip("/") for path in allowed_sources if path is not None
+    }
 
 
 def _filter_records_for_requested_country(
@@ -342,7 +385,13 @@ def _has_minimum_content_coverage(record: dict, user_message: str) -> bool:
         minimum_matches = 3
     else:
         minimum_matches = 2 if len(required_tokens) >= 3 else 1
-    return len(required_matches) >= minimum_matches
+    return (
+        len(required_matches) >= minimum_matches
+        and has_requested_action_coverage(
+            user_message,
+            f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}",
+        )
+    )
 
 
 def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float, dict]]:
@@ -415,6 +464,7 @@ def retrieve_azure_search_evidence(
         "connection_timeout": SEARCH_TIMEOUT_SECONDS,
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
     }
+    requested_file_names = _requested_file_names(user_message)
 
     # The vector query is generic: it compares the meaning of a question with
     # every indexed chunk. The keyword pass complements it for exact policy
@@ -468,15 +518,59 @@ def retrieve_azure_search_evidence(
             )
         ]
 
+    # A filename is an unambiguous document request. Resolve it through the
+    # title field before applying semantic relevance so a related script cannot
+    # displace the document the user explicitly named.
+    if requested_file_names:
+        records_by_id = {
+            str(record.get("id", "")): record for record in candidate_records
+        }
+        try:
+            for file_name in requested_file_names:
+                for result in search_client.search(
+                    search_text=file_name,
+                    search_fields=["title"],
+                    **search_args,
+                ):
+                    record = dict(result)
+                    if not _record_matches_file_name(record, (file_name,)):
+                        continue
+                    record["_explicit_filename_match"] = True
+                    records_by_id[str(record.get("id", ""))] = record
+            candidate_records = list(records_by_id.values())
+        except Exception:
+            # The regular keyword/vector candidates still provide a safe
+            # fallback when a title-only query is temporarily unavailable.
+            pass
+
+    allowed_sources = getattr(config, "sharepoint_sources", None)
+    if allowed_sources is None:
+        allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
     authorized_records = [
-        record for record in candidate_records if _record_has_authorized_provenance(record)
+        record
+        for record in candidate_records
+        if _record_has_authorized_provenance(record, allowed_sources)
     ]
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
-    candidate_records = [
+    explicit_file_records = [
         record
         for record in country_scoped_records
-        if _has_minimum_content_coverage(record, user_message)
+        if record.get("_explicit_filename_match")
+        and _record_matches_file_name(record, requested_file_names)
     ]
+    if requested_file_names:
+        # An explicit filename is a strict lookup. Returning a related file
+        # when it does not exist would falsely imply that the requested
+        # document was found.
+        if not explicit_file_records:
+            return []
+        candidate_records = explicit_file_records
+    else:
+        candidate_records = [
+            record
+            for record in country_scoped_records
+            if _has_minimum_content_coverage(record, user_message)
+        ]
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
         return []
@@ -485,7 +579,7 @@ def retrieve_azure_search_evidence(
     # stronger match. Multiple pages are retained when they are similarly
     # relevant, which still supports answers that span a section boundary.
     best_score = ranked_records[0][0]
-    if best_score < 8:
+    if best_score < 8 and not explicit_file_records:
         return []
     relevant_records = [
         item for item in ranked_records if item[0] >= best_score * 0.80
@@ -655,6 +749,7 @@ def _document_records(
         document_version = str(metadata.get("etag") or metadata.get("document_version") or "")
         last_modified = str(metadata.get("last_modified") or "")
         folder_path = str(metadata.get("folder_path") or "")
+        drive_id = str(metadata.get("drive_id") or "")
         # Later pages frequently omit the country/product named on the cover.
         # Store a compact document-level context with every chunk so retrieval
         # can keep that context without merging documents or pages.
@@ -679,6 +774,7 @@ def _document_records(
                         "content_hash": content_hash,
                         "document_type": document_path.suffix.lower().lstrip("."),
                         "folder_path": folder_path,
+                        "drive_id": drive_id,
                         "indexed_at": datetime.now(timezone.utc).isoformat(),
                         "chunk_number": sequence,
                         "content_tokens": " ".join(tokenize(chunk)),
@@ -710,7 +806,12 @@ def ensure_index(config) -> None:
         credential=_credential(config),
     )
     try:
-        index_client.get_index(config.azure_search_index_name)
+        index = index_client.get_index(config.azure_search_index_name)
+        if "drive_id" not in {field.name for field in index.fields}:
+            raise RuntimeError(
+                "El índice existente no contiene drive_id; ejecute la ingesta con --reset-index "
+                "para migrar al alcance multi-biblioteca."
+            )
         return
     except ResourceNotFoundError:
         pass
@@ -735,6 +836,7 @@ def ensure_index(config) -> None:
         SimpleField(name="content_hash", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="document_type", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="folder_path", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="drive_id", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="indexed_at", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="chunk_number", type=SearchFieldDataType.Int32, filterable=True),
         SearchableField(name="content_tokens", type=SearchFieldDataType.String, searchable=True),

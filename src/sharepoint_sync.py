@@ -77,11 +77,21 @@ class SharePointGraphClient:
         folder_path = self.config.sharepoint_folder_path if folder_path is None else folder_path
         drive_id = drive_id or self.drive_id
         pending = [self._children_url(folder_path, drive_id)]
+        visited_urls: set[str] = set()
         files: list[dict] = []
         while pending:
-            page = self._get(pending.pop())
+            page_url = pending.pop()
+            if page_url in visited_urls:
+                continue
+            visited_urls.add(page_url)
+            if len(visited_urls) % 50 == 0:
+                print(
+                    f"Carpetas/páginas recorridas: {len(visited_urls)} drive={drive_id[:12]}",
+                    flush=True,
+                )
+            page = self._get(page_url)
             for item in page.get("value", []):
-                if "folder" in item:
+                if "folder" in item and "remoteItem" not in item:
                     pending.append(f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/children")
                 elif "file" in item:
                     extension = Path(str(item.get("name", ""))).suffix.lower()
@@ -102,12 +112,17 @@ class SharePointGraphClient:
         folder_path = self.config.sharepoint_folder_path if folder_path is None else folder_path
         drive_id = drive_id or self.drive_id
         pending = [self._children_url(folder_path, drive_id)]
+        visited_urls: set[str] = set()
         files: list[dict] = []
         folder_count = 0
         while pending:
-            page = self._get(pending.pop())
+            page_url = pending.pop()
+            if page_url in visited_urls:
+                continue
+            visited_urls.add(page_url)
+            page = self._get(page_url)
             for item in page.get("value", []):
-                if "folder" in item:
+                if "folder" in item and "remoteItem" not in item:
                     folder_count += 1
                     pending.append(
                         f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/children"
@@ -122,9 +137,16 @@ class SharePointGraphClient:
         drive_id = item.get("_libras_drive_id") or self.drive_id
         content_url = f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/content"
         response = requests.get(
-            content_url, headers=self.headers, timeout=90, allow_redirects=True
+            content_url, headers=self.headers, timeout=30, allow_redirects=False
         )
         response.raise_for_status()
+        download_url = response.headers.get("location")
+        if download_url:
+            # Graph redirects to a short-lived SharePoint URL. Do not forward
+            # the Graph bearer token to that host; the redirect URL carries
+            # its own temporary authorization.
+            response = requests.get(download_url, timeout=90, allow_redirects=True)
+            response.raise_for_status()
         destination.write_bytes(response.content)
 
 
@@ -186,9 +208,11 @@ def create_sharepoint_client(config: Config) -> SharePointGraphClient:
     raise RuntimeError("SHAREPOINT_AUTH_MODE debe ser delegated o application.")
 
 
-def inventory_summary(client: SharePointGraphClient, folder_path: str) -> dict:
+def inventory_summary(
+    client: SharePointGraphClient, folder_path: str, drive_id: str | None = None
+) -> dict:
     """Return a compact, read-only inventory of the configured source folder."""
-    inventory = client.inventory()
+    inventory = client.inventory(folder_path, drive_id)
     files = inventory["files"]
     extensions = Counter(
         Path(str(item.get("name", ""))).suffix.lower() or "[sin extension]"
@@ -196,6 +220,7 @@ def inventory_summary(client: SharePointGraphClient, folder_path: str) -> dict:
     )
     return {
         "folder_path": folder_path,
+        "drive_id": drive_id or client.drive_id,
         "folder_count": inventory["folder_count"],
         "file_count": len(files),
         "files_by_extension": dict(sorted(extensions.items())),
@@ -212,21 +237,16 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     client = create_sharepoint_client(config)
-    list_files = client.list_supported_files if hasattr(client, "list_supported_files") else client.list_pdfs
-    files = []
+    list_files = (
+        client.list_supported_files
+        if hasattr(client, "list_supported_files")
+        else client.list_pdfs
+    )
     sources = getattr(
         config,
         "sharepoint_sources",
         ((getattr(config, "sharepoint_folder_path", ""), client.drive_id),),
     )
-    for folder_path, drive_id in sources:
-        if hasattr(client, "list_supported_files"):
-            try:
-                files.extend(list_files(folder_path, drive_id))
-            except TypeError:
-                files.extend(list_files())
-        else:
-            files.extend(list_files())
     state_path = output_dir / SYNC_STATE_NAME
     previous_state = _load_json(state_path)
     previous_documents = previous_state.get("documents", {})
@@ -235,59 +255,120 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
     current_documents: dict[str, dict] = {}
     pending_changes = _change_ids(output_dir / CHANGE_MANIFEST_NAME)
     changed_document_ids = set(pending_changes)
+    multiple_sources = len(sources) > 1
+    file_count = 0
 
-    for item in files:
-        # Prefix prevents collisions between same-named PDFs in different folders.
-        # Use the full Graph item ID: SharePoint can contain duplicate names
-        # and many IDs share the same initial characters.
-        filename = f"{item['id']}_{_safe_filename(item['name'])}"
-        destination = output_dir / filename
-        etag = item.get("eTag", "")
-        prior = previous_documents.get(item["id"], {})
-        prior_filename = prior.get("filename", "")
-        source_folder_path = (
-            item["_libras_folder_path"]
-            if "_libras_folder_path" in item
-            else sources[0][0]
+    for folder_path, drive_id in sources:
+        print(
+            f"Sincronizando SharePoint: drive={drive_id[:12]} ruta={folder_path or '[raiz]'}",
+            flush=True,
         )
-        metadata_signature = {
-            "filename": filename,
-            "etag": etag,
-            "web_url": item.get("webUrl", ""),
-            "last_modified": item.get("lastModifiedDateTime", ""),
-            "folder_path": source_folder_path,
-        }
-        if prior_filename and prior_filename != filename:
-            old_destination = output_dir / prior_filename
-            old_metadata_path = old_destination.with_suffix(old_destination.suffix + ".metadata.json")
-            if old_destination.exists():
-                old_destination.unlink()
-            if old_metadata_path.exists():
-                old_metadata_path.unlink()
-        has_changed = (
-            not destination.exists()
-            or any(prior.get(key) != value for key, value in metadata_signature.items())
+        if hasattr(client, "list_supported_files"):
+            try:
+                source_files = list_files(folder_path, drive_id)
+            except TypeError:
+                source_files = list_files()
+        else:
+            source_files = list_files()
+        print(f"Archivos legibles encontrados: {len(source_files)}", flush=True)
+
+        for raw_item in source_files:
+            # Keep the source attached even when a test or legacy client does
+            # not add the internal synchronization markers itself.
+            item = dict(raw_item)
+            item.setdefault("_libras_folder_path", folder_path)
+            item.setdefault("_libras_drive_id", drive_id)
+            file_count += 1
+            source_drive_id = item.get("_libras_drive_id") or client.drive_id
+            # Drive item IDs are scoped to a library. Prefixing the item ID with
+            # its drive keeps staging, sync state and Azure AI Search keys unique
+            # when multiple SharePoint libraries are synchronized.
+            document_id = (
+                f"{source_drive_id}:{item['id']}" if multiple_sources else item["id"]
+            )
+            filename = f"{_safe_filename(document_id)}_{_safe_filename(item['name'])}"
+            destination = output_dir / filename
+            etag = item.get("eTag", "")
+            prior = previous_documents.get(document_id, {})
+            legacy_prior = {}
+            if multiple_sources and source_drive_id == client.drive_id:
+                # The previous single-library staging used the raw item ID.
+                # Reuse that file during the one-time migration when its
+                # SharePoint version is unchanged instead of downloading it
+                # again under the new drive-scoped identity.
+                legacy_prior = previous_documents.get(item["id"], {})
+                if not prior and legacy_prior:
+                    prior = legacy_prior
+            prior_filename = prior.get("filename", "")
+            source_folder_path = (
+                item["_libras_folder_path"]
+                if "_libras_folder_path" in item
+                else sources[0][0]
+            )
+            metadata_signature = {
+                "filename": filename,
+                "etag": etag,
+                "web_url": item.get("webUrl", ""),
+                "last_modified": item.get("lastModifiedDateTime", ""),
+                "folder_path": source_folder_path,
+                "drive_id": source_drive_id,
+            }
+            reused_legacy_file = False
+            if prior_filename and prior_filename != filename:
+                old_destination = output_dir / prior_filename
+                old_metadata_path = old_destination.with_suffix(old_destination.suffix + ".metadata.json")
+                reusable_legacy = bool(
+                    legacy_prior
+                    and (old_destination.exists() or destination.exists())
+                    and prior.get("etag") == etag
+                    and prior.get("web_url") == item.get("webUrl", "")
+                    and prior.get("last_modified") == item.get("lastModifiedDateTime", "")
+                    and prior.get("folder_path") == source_folder_path
+                )
+                if reusable_legacy:
+                    if old_destination.exists() and not destination.exists():
+                        old_destination.replace(destination)
+                    new_metadata_path = destination.with_suffix(destination.suffix + ".metadata.json")
+                    if old_metadata_path.exists():
+                        old_metadata_path.replace(new_metadata_path)
+                    reused_legacy_file = True
+                else:
+                    if old_destination.exists():
+                        old_destination.unlink()
+                    if old_metadata_path.exists():
+                        old_metadata_path.unlink()
+            comparison_prior = dict(prior)
+            if reused_legacy_file:
+                comparison_prior["filename"] = filename
+                comparison_prior["drive_id"] = source_drive_id
+            has_changed = (
+                not destination.exists()
+                or any(comparison_prior.get(key) != value for key, value in metadata_signature.items())
+            )
+            if has_changed:
+                client.download(item, destination)
+            metadata = {
+                "source_system": "sharepoint",
+                "name": item["name"],
+                "web_url": item.get("webUrl", ""),
+                "document_id": document_id,
+                "drive_item_id": item["id"],
+                "drive_id": source_drive_id,
+                "site_id": config.sharepoint_site_id,
+                "folder_path": source_folder_path,
+                "etag": etag,
+                "last_modified": item.get("lastModifiedDateTime", ""),
+            }
+            destination.with_suffix(destination.suffix + ".metadata.json").write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            current_documents[document_id] = metadata_signature
+            if has_changed:
+                changed_document_ids.add(document_id)
+        print(
+            f"Fuente completada: drive={drive_id[:12]} ruta={folder_path or '[raiz]'}",
+            flush=True,
         )
-        if has_changed:
-            client.download(item, destination)
-        metadata = {
-            "source_system": "sharepoint",
-            "name": item["name"],
-            "web_url": item.get("webUrl", ""),
-            "document_id": item["id"],
-            "drive_item_id": item["id"],
-            "drive_id": item.get("_libras_drive_id") or client.drive_id,
-            "site_id": config.sharepoint_site_id,
-            "folder_path": source_folder_path,
-            "etag": etag,
-            "last_modified": item.get("lastModifiedDateTime", ""),
-        }
-        destination.with_suffix(destination.suffix + ".metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        current_documents[item["id"]] = metadata_signature
-        if has_changed:
-            changed_document_ids.add(item["id"])
 
     pending_deletions = _deletion_ids(output_dir / DELETION_MANIFEST_NAME)
     deleted_document_ids = sorted(
@@ -317,7 +398,7 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
         {"changed_document_ids": sorted(changed_document_ids)},
     )
     _write_json(state_path, {"documents": current_documents})
-    return len(files)
+    return file_count
 
 
 def _load_json(path: Path) -> dict:
@@ -367,7 +448,16 @@ def main() -> None:
     config = Config(os.environ)
     if args.inventory:
         client = create_sharepoint_client(config)
-        print(json.dumps(inventory_summary(client, config.sharepoint_folder_path), ensure_ascii=False))
+        sources = getattr(
+            config,
+            "sharepoint_sources",
+            ((config.sharepoint_folder_path, client.drive_id),),
+        )
+        summaries = [
+            inventory_summary(client, folder_path, drive_id)
+            for folder_path, drive_id in sources
+        ]
+        print(json.dumps(summaries, ensure_ascii=False))
         return
     count = sync_pdfs(config, Path(args.output_dir).resolve())
     print(f"Descargados {count} archivo(s) legible(s) de SharePoint.")

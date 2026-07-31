@@ -122,6 +122,14 @@ def data_access_checks(config) -> list[CheckResult]:
             "El secreto o referencia de Key Vault de la App Registration está disponible.",
         )
     )
+    if hasattr(config, "sharepoint_sources"):
+        checks.append(
+            CheckResult(
+                "sharepoint_sources",
+                bool(getattr(config, "sharepoint_sources", ())),
+                "Los Drive ID y las rutas SharePoint están alineados y forman fuentes aprobadas.",
+            )
+        )
     return checks
 
 

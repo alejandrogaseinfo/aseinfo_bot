@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -84,6 +85,21 @@ class SharePointSyncTests(unittest.TestCase):
             config.sharepoint_folder_paths,
         )
 
+    def test_multiple_drives_and_paths_remain_aligned_including_library_roots(self):
+        config = Config(
+            {
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_DRIVE_IDS": "drive-1,drive-2,drive-3",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+                "SHAREPOINT_FOLDER_PATHS": ",SOLUCIONES,",
+            }
+        )
+
+        self.assertEqual(
+            (("", "drive-1"), ("SOLUCIONES", "drive-2"), ("", "drive-3")),
+            config.sharepoint_sources,
+        )
+
     def test_inventory_counts_all_files_without_downloading(self):
         config = self._application_config()
         client = SharePointGraphClient(config, "token", "drive-id")
@@ -136,6 +152,27 @@ class SharePointSyncTests(unittest.TestCase):
         self.assertIn(".docx", SUPPORTED_EXTENSIONS)
         self.assertNotIn(".mp4", SUPPORTED_EXTENSIONS)
 
+    def test_download_does_not_forward_graph_bearer_to_sharepoint_redirect(self):
+        config = self._application_config()
+        client = SharePointGraphClient(config, "graph-token", "drive-id")
+        graph_response = Mock(status_code=302, headers={"location": "https://sharepoint.example/temp"})
+        redirected_response = Mock(status_code=200, content=b"document-bytes")
+
+        with patch(
+            "sharepoint_sync.requests.get",
+            side_effect=[graph_response, redirected_response],
+        ) as get:
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory() as directory:
+                destination = Path(directory) / "manual.pdf"
+                client.download({"id": "item-1"}, destination)
+                self.assertEqual(b"document-bytes", destination.read_bytes())
+
+        self.assertEqual("https://graph.microsoft.com/v1.0/drives/drive-id/items/item-1/content", get.call_args_list[0].args[0])
+        self.assertEqual({"Authorization": "Bearer graph-token"}, get.call_args_list[0].kwargs["headers"])
+        self.assertNotIn("headers", get.call_args_list[1].kwargs)
+
     def test_sync_filename_uses_full_item_id_for_duplicate_names(self):
         from tempfile import TemporaryDirectory
 
@@ -174,6 +211,54 @@ class SharePointSyncTests(unittest.TestCase):
         self.assertEqual(2, len(files))
         self.assertTrue(any("same-prefix-aaaa" in path.name for path in files))
         self.assertTrue(any("same-prefix-bbbb" in path.name for path in files))
+
+    def test_multi_library_sync_scopes_document_ids_by_drive(self):
+        from tempfile import TemporaryDirectory
+
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def list_supported_files(self, folder_path, drive_id):
+                return [
+                    {
+                        "id": "same-item-id",
+                        "name": f"manual-{drive_id}.txt",
+                        "eTag": f'"{drive_id}"',
+                        "webUrl": f"https://contoso.example/{drive_id}.txt",
+                        "lastModifiedDateTime": "2026-07-22T12:00:00Z",
+                    }
+                ]
+
+            def download(self, item, destination):
+                destination.write_text(item["name"], encoding="utf-8")
+
+        config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_DRIVE_IDS": "drive-1,drive-2",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+                "SHAREPOINT_FOLDER_PATHS": "SOLUCIONES,",
+            }
+        )
+        with TemporaryDirectory() as directory:
+            with patch(
+                "sharepoint_sync.create_sharepoint_client",
+                return_value=FakeSharePointClient(),
+            ):
+                from sharepoint_sync import sync_pdfs
+
+                sync_pdfs(config, Path(directory))
+
+            metadata = sorted(Path(directory).glob("*.txt.metadata.json"))
+            self.assertEqual(2, len(metadata))
+            document_ids = {
+                json.loads(path.read_text(encoding="utf-8"))["document_id"]
+                for path in metadata
+            }
+            self.assertEqual(
+                {"drive-1:same-item-id", "drive-2:same-item-id"}, document_ids
+            )
 
 
 if __name__ == "__main__":

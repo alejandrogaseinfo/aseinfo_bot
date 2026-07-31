@@ -1,5 +1,10 @@
 # Despliegue productivo de Libras
 
+> Para el estado vigente, consultar primero [contexto-actual.md](contexto-actual.md).
+> Las cifras de 15 PDFs y 158 fragmentos que aparecen abajo son históricas: el
+> índice fue reconstruido el 29 de julio con 2.354 fragmentos de
+> `SOLUCIONES` y sin fuentes fuera de alcance.
+
 Esta guía deja preparado `app-libras-prod` para ejecutar Libras con una
 identidad administrada y consultar `srch-libras-prod` sin usar una cuenta
 personal.
@@ -21,7 +26,7 @@ personal.
 - Acceso explícito `Read` al sitio SharePoint: creado (`201 Created`)
 - `Search Index Data Contributor` para ingesta: asignado sobre `srch-libras-prod`
 - Key Vault: `kv-libras-prod` usa Azure RBAC; el App Service tiene `Key Vault Secrets User` y el responsable técnico `Key Vault Secrets Officer`
-- Avance: los secretos `OPENAI-API-KEY` y `SHAREPOINT-CLIENT-SECRET` ya existen en `kv-libras-prod`; la referencia de `OPENAI_API_KEY` ya fue agregada a `app-libras-prod`. El código está publicado y la ingesta inicial está completada. Pendiente: configurar la conexión del bot en el App Service y verificar `/healthz`, `/readyz` y consultas reales.
+- Avance: los secretos `OPENAI-API-KEY` y `SHAREPOINT-CLIENT-SECRET` ya existen en `kv-libras-prod`; la referencia de `OPENAI_API_KEY` ya fue agregada a `app-libras-prod`. El código está publicado, la ingesta inicial está completada y la conexión del bot responde correctamente en `/healthz` y `/readyz`. El endpoint y el canal Teams ya están configurados; queda instalar el paquete y ejecutar el piloto.
 
 ## Evidencia confirmada el 28 de julio de 2026
 
@@ -180,8 +185,16 @@ SHAREPOINT_CLIENT_ID
 SHAREPOINT_SITE_ID
 SHAREPOINT_DRIVE_ID
 SHAREPOINT_FOLDER_PATH
+SHAREPOINT_DRIVE_IDS
+SHAREPOINT_FOLDER_PATHS
 SHAREPOINT_AUTH_MODE=application
 ```
+
+`SHAREPOINT_DRIVE_IDS` y `SHAREPOINT_FOLDER_PATHS` deben tener la misma
+cantidad de elementos y conservar el mismo orden. Una ruta vacía significa la
+raíz de esa biblioteca; para `Documentos` se usa `SOLUCIONES`. `Teams Wiki
+Data` queda fuera de la lista aprobada. `Hojas de Servicio` también queda fuera
+del alcance actual por su volumen pendiente de procesar.
 
 El secreto de la App Registration debe quedar en Key Vault y configurarse como
 `SHAREPOINT_CLIENT_SECRET`; nunca debe guardarse en Git.
@@ -215,18 +228,21 @@ Después de corregir la conexión del bot:
 ## Registro y publicación en Teams
 
 `/healthz` y `/readyz` validan el backend, pero no publican automáticamente la
-aplicación en Teams. Actualmente `Libras` no aparece en un nuevo chat porque
-solo fue probado desde Microsoft 365 Agents Playground; además, no se encontró
-un recurso `Microsoft.BotService/botServices` en la suscripción y el manifiesto
-de Teams aún contiene `${{TEAMS_APP_ID}}` y `${{BOT_ID}}`.
+aplicación en Teams. El proveedor `Microsoft.BotService` ya está registrado y
+el recurso Azure Bot `bot-libras-prod` fue creado correctamente en
+`rg-libras-prod` con plan `Free` y la identidad `id-libras-bot-prod`.
+Libras todavía no aparece en un nuevo chat hasta instalar el paquete como
+aplicación personalizada; el endpoint, el canal Teams y el paquete con IDs
+reales ya están listos.
 
-El siguiente trabajo debe registrar el Bot Service con el endpoint:
+El Bot Service quedó configurado con el endpoint:
 
 ```text
 https://app-libras-prod-h0azhpfef6d4fyax.centralus-01.azurewebsites.net/api/messages
 ```
 
-Después debe generar el paquete de Teams con los IDs reales, instalarlo como
+El paquete de Teams con los IDs reales está generado en
+`appPackage/build/Libras-Teams-pilot-2026-07-30.zip`. Falta instalarlo como
 aplicación personalizada para la prueba piloto y finalmente publicarlo en el
 catálogo de la organización. No ejecutar `atk provision` sin revisar el YAML,
 porque podría crear recursos duplicados en Azure en lugar de reutilizar

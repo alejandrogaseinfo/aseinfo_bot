@@ -19,7 +19,7 @@
     },
     "description": {
         "short": "Asistente interno para consultar documentación técnica autorizada.",
-        "full": "Libras es un asistente interno para Operaciones que consulta documentación técnica autorizada en SharePoint, dentro de Documentos compartidos/SOLUCIONES. Responde con evidencia y enlaces al documento de origen, solicita contexto cuando la pregunta es ambigua y reconoce cuando no encuentra respaldo suficiente. No modifica documentos ni consulta fuentes fuera del alcance autorizado."
+        "full": "Libras es un asistente interno para Operaciones que consulta documentación técnica autorizada en las bibliotecas aprobadas del sitio SharePoint Soportealcliente. En Documentos consulta la carpeta SOLUCIONES. Responde con evidencia y enlaces al documento de origen, solicita contexto cuando la pregunta es ambigua y reconoce cuando no encuentra respaldo suficiente. No modifica documentos ni consulta fuentes fuera del alcance autorizado."
     },
     "accentColor": "#008f39",
     "supportsChannelFeatures": "tier1",

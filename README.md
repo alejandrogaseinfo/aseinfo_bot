@@ -5,9 +5,10 @@ Bot interno de Microsoft Teams para consultar documentación aprobada. Recupera 
 ## Estado y alcance
 
 La prioridad actual es validar Libras en Microsoft 365 Agents Playground antes
-de solicitar autorización para publicar en Teams. La única fuente documental
-autorizada en esta fase es `Documentos compartidos/SOLUCIONES` y sus
-subcarpetas. El contexto consolidado está en
+de solicitar autorización para publicar en Teams. La fuente documental
+autorizada son las bibliotecas documentales aprobadas del sitio
+`Soportealcliente`; `SOLUCIONES` se consulta como carpeta dentro de
+`Documentos`. `Teams Wiki Data` queda fuera inicialmente. El contexto consolidado está en
 [docs/contexto-actual.md](docs/contexto-actual.md); no ampliar el alcance ni
 crear roadmaps paralelos sin actualizarlo.
 

@@ -95,7 +95,11 @@ class Config:
             if configured_paths
             else ((self.sharepoint_folder_path,) if self.sharepoint_folder_path else ())
         )
-        self.sharepoint_sources = tuple(zip(self.sharepoint_folder_paths, self.sharepoint_drive_ids))
+        self.sharepoint_sources = (
+            tuple(zip(self.sharepoint_folder_paths, self.sharepoint_drive_ids))
+            if len(self.sharepoint_folder_paths) == len(self.sharepoint_drive_ids)
+            else ()
+        )
         self.bot_name = "Libras"
         self.bot_role = "Asistente de Base de Conocimiento y Resolucion de Errores"
         self.response_language = "es"
@@ -152,4 +156,5 @@ class Config:
             and self.sharepoint_drive_id
             and self.sharepoint_sources
             and len(self.sharepoint_sources) == len(self.sharepoint_folder_paths)
+            and len(self.sharepoint_sources) == len(self.sharepoint_drive_ids)
         )
