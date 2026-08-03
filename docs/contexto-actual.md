@@ -5,10 +5,63 @@
 
 ## Objetivo
 
-Preparar `Libras`, un asistente interno, para que consulte documentación
-autorizada desde Microsoft 365 Agents Playground y pueda publicarse como piloto
-controlado en Microsoft Teams. La infraestructura de Azure Bot ya fue creada;
-la publicación y distribución del paquete de Teams todavía están pendientes.
+Operar `Libras` como piloto controlado en Microsoft Teams, usando documentación
+autorizada de SharePoint, y completar las pruebas de calidad y seguridad antes
+de promocionarlo para usuarios de Aseinfo.
+
+> **Límite de alcance:** Libras no es Bot-Salvador ni usa la carpeta histórica
+> de planillas de México, El Salvador y Guatemala. Sus únicas fuentes son las
+> bibliotecas autorizadas del sitio SharePoint `Soportealcliente`, descritas en
+> este documento. Cualquier referencia a esas planillas en bitácoras antiguas
+> es antecedente de un entorno distinto y no define pruebas, evidencia ni
+> comportamiento esperado para Libras.
+
+## Actualización de estado — 2026-07-31
+
+- La aplicación ya está instalada y responde desde Microsoft Teams. También se
+  validó en Azure Bot Test in Web Chat.
+- La recuperación multi-biblioteca funciona: se comprobó una respuesta con
+  `ReadME Hotfixes` y otra con `SOLUCIONES`, ambas con enlaces SharePoint
+  verificables. Las bibliotecas activas son las indicadas en este documento.
+- Las consultas que nombran bibliotecas fuera del alcance, como `Hojas de
+  Servicio` y `Teams Wiki Data`, se rechazan antes de buscar para evitar que
+  una respuesta de otra biblioteca parezca válida.
+- Se corrigió la consulta por versión: una petición por `Evolution 1.19.1.10`
+  recupera solamente el `Readme 1.19.1.10.pdf` y responde desde el fragmento
+  citado, sin mezclar `1.19.1.0`, `1.19.1.3` ni `1.19.1.13`.
+- Las preguntas por una sección concreta de un Readme priorizan esa sección y
+  no la portada, el índice ni un PDF de actualización relacionado. Por ejemplo,
+  los nuevos requisitos de software de `Readme 1.19.1.11` responden
+  `Ninguno.` tal como consta en el documento.
+- El backend productivo fue redeplegado y reiniciado después de esta corrección;
+  `/readyz` respondió HTTP 200 y la suite automatizada registra **96 pruebas,
+  OK**.
+
+### Decisión temporal de acceso
+
+Durante el piloto, cualquier persona de Aseinfo que pueda usar Microsoft Teams
+puede interactuar con Libras. Libras consulta un índice creado con la identidad
+de la aplicación; no implementa filtrado individual equivalente a los permisos
+de SharePoint. Por tanto, este escenario solo es aceptable mientras el contenido
+indexado se considere **interno general** para toda Aseinfo.
+
+Antes de promocionar la aplicación, se realizará una revisión controlada de los
+documentos sincronizados para detectar y excluir, redactar o mover contenido
+con datos de clientes, contratos, credenciales, finanzas o información personal.
+La revisión combinará detección automatizada de candidatos y validación manual
+con los dueños documentales.
+
+### Siguiente etapa
+
+La prioridad inmediata es dejar el chat sólido en este escenario de acceso
+interno general mediante pruebas controladas de alcance, relevancia, versiones,
+solicitudes confidenciales e inyecciones de instrucciones. Dos comportamientos
+detectados quedan pendientes de corrección: las preguntas sobre las capacidades
+del bot deben responder con su alcance sin buscar documentos, y las solicitudes
+de Internet deben indicar que Libras no navega ni consulta datos en tiempo real.
+
+Después de cerrar estas pruebas y decidir el tratamiento del contenido sensible,
+la siguiente fase será la integración con ClickUp.
 
 ## Alcance documental autorizado
 
@@ -48,10 +101,12 @@ Microsoft 365 Agents Playground / Teams
   RDLC, ASPX, PowerShell, BAT y JSON.
 - La respuesta exige evidencia recuperada y enlace SharePoint; sin evidencia,
   el bot debe reconocer la limitación y no inventar.
-- La separación contextual Guatemala–El Salvador está cubierta por las
-  pruebas de recuperación; no se deben mezclar países, versiones ni fuentes.
+- La recuperación conserva filtros genéricos de contexto cuando un documento
+  autorizado los aporte, pero no se debe asumir que existen políticas de
+  planilla por país en las fuentes de Libras. Las pruebas de relevancia deben
+  partir de documentos realmente indexados desde `Soportealcliente`.
 - El backend productivo respondió `ready` durante la validación previa y las
-  pruebas automatizadas pasan: **79 pruebas, OK**.
+  pruebas automatizadas pasan: **96 pruebas, OK**.
 - La validación anterior encontró 250 archivos en `SOLUCIONES`, de los cuales
   200 tenían formatos de texto admitidos. `libras-docs` fue reconstruido con
   **2.354 fragmentos**; la carga ampliada requiere un nuevo inventario y
@@ -87,9 +142,9 @@ Microsoft 365 Agents Playground / Teams
 ## Pruebas realizadas
 
 En Microsoft 365 Agents Playground se validaron los casos P1, P2, P3, P5,
-P6, P7, P8 y P9. P4 Guatemala respondió sin evidencia cuando no había respaldo
-autorizado; P4 El Salvador recuperó evidencia específica sin mezclar una
-fuente guatemalteca. El detalle está en
+P6, P7, P8 y P9. El antiguo P4 de Guatemala/El Salvador pertenece al entorno
+anterior de Bot-Salvador y queda descartado como evidencia o criterio de
+Libras. El detalle y la corrección de alcance están en
 [evaluacion-piloto.md](evaluacion-piloto.md).
 
 ## Pendientes para completar el piloto de Teams
@@ -98,19 +153,21 @@ fuente guatemalteca. El detalle está en
    recién desplegado, una prueba positiva con enlace de `SOLUCIONES` y una
    pregunta sin evidencia. La validación técnica de SharePoint y el índice ya
    está cerrada.
-2. Repetir las pruebas de separación Guatemala–El Salvador cuando haya
-   evidencia aplicable dentro de `SOLUCIONES`; no sustituir evidencia de otro
-   país.
+2. Ejecutar pruebas de relevancia con preguntas coloquiales sobre documentos
+   realmente indexados en las bibliotecas autorizadas de `Soportealcliente`;
+   comprobar que Libras no sustituya una respuesta por un documento que solo
+   comparte términos generales.
 3. Registrar la evidencia final en
    [plan-pruebas-playground.md](plan-pruebas-playground.md) y
    [evaluacion-piloto.md](evaluacion-piloto.md).
 4. [x] Configurar en `bot-libras-prod` el endpoint de mensajería productivo.
 5. [x] Habilitar el canal Microsoft Teams.
 6. [x] Completar los IDs reales del manifiesto y generar el paquete `.zip`.
-7. Instalar el paquete como aplicación personalizada y validar el piloto con
-   las cinco personas autorizadas de Operaciones.
-8. Solicitar posteriormente la distribución controlada desde Teams Admin
-   Center. No publicar automáticamente para toda la organización.
+7. [x] Instalar el paquete como aplicación personalizada y validar su respuesta
+   en Teams.
+8. Completar las pruebas controladas de calidad, alcance y seguridad descritas
+   en la actualización de estado antes de promover la aplicación para usuarios
+   de Aseinfo.
 
 ## Cómo retomar el trabajo
 
@@ -125,4 +182,4 @@ Leer en este orden:
    pruebas.
 
 Antes de cambiar código, comprobar `git status`, no imprimir secretos y
-mantener `ReadME Hotfixes` fuera del alcance activo.
+mantener la recuperación limitada a las bibliotecas activamente autorizadas.

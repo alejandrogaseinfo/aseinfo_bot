@@ -48,6 +48,27 @@ class Config:
         self.use_llm_intent_classifier = env.get(
             "USE_LLM_INTENT_CLASSIFIER", "true"
         ).lower() == "true"
+        # Disabled by default so existing Teams deployments keep their current
+        # behaviour until the guard has been observed and explicitly enabled.
+        self.use_context_guard = env.get("USE_CONTEXT_GUARD", "false").lower() == "true"
+        self.context_guard_model_name = env.get(
+            "CONTEXT_GUARD_MODEL", self.openai_intent_model_name
+        ).strip()
+        configured_guard_mode = env.get("CONTEXT_GUARD_MODE", "observe").strip().lower()
+        self.context_guard_mode = (
+            configured_guard_mode if configured_guard_mode in {"observe", "enforce"} else "observe"
+        )
+        self.context_guard_timeout_seconds = float(
+            env.get("CONTEXT_GUARD_TIMEOUT_SECONDS", "2")
+        )
+        configured_failure_policy = env.get(
+            "CONTEXT_GUARD_FAILURE_POLICY", "block"
+        ).strip().lower()
+        self.context_guard_failure_policy = (
+            configured_failure_policy
+            if configured_failure_policy in {"allow", "block"}
+            else "block"
+        )
         self.openai_embedding_model = env.get(
             "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
         ).strip()
@@ -94,6 +115,12 @@ class Config:
             tuple("" if path in {"", "/", "."} else path.strip("/") for path in raw_paths)
             if configured_paths
             else ((self.sharepoint_folder_path,) if self.sharepoint_folder_path else ())
+        )
+        configured_source_labels = env.get("LIBRAS_SHAREPOINT_SOURCE_LABELS", "")
+        self.sharepoint_source_labels = tuple(
+            label.strip()
+            for label in configured_source_labels.replace(";", ",").split(",")
+            if label.strip()
         )
         self.sharepoint_sources = (
             tuple(zip(self.sharepoint_folder_paths, self.sharepoint_drive_ids))

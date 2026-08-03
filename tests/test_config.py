@@ -30,6 +30,28 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(12, config.retrieval_timeout_seconds)
         self.assertEqual(12, config.classification_timeout_seconds)
 
+    def test_context_guard_is_opt_in_and_defaults_to_observe(self):
+        config = Config({})
+
+        self.assertFalse(config.use_context_guard)
+        self.assertEqual("gpt-4o-mini", config.context_guard_model_name)
+        self.assertEqual("observe", config.context_guard_mode)
+        self.assertEqual(2, config.context_guard_timeout_seconds)
+        self.assertEqual("block", config.context_guard_failure_policy)
+
+    def test_context_guard_normalizes_invalid_modes(self):
+        config = Config(
+            {
+                "USE_CONTEXT_GUARD": "true",
+                "CONTEXT_GUARD_MODE": "unexpected",
+                "CONTEXT_GUARD_FAILURE_POLICY": "unexpected",
+            }
+        )
+
+        self.assertTrue(config.use_context_guard)
+        self.assertEqual("observe", config.context_guard_mode)
+        self.assertEqual("block", config.context_guard_failure_policy)
+
     def test_model_endpoint_requires_http_url_when_custom_endpoint_is_set(self):
         invalid_config = Config(
             {"OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": "localhost:11434/v1"}
@@ -53,6 +75,20 @@ class ConfigTests(unittest.TestCase):
 
         self.assertFalse(config.sharepoint_configured)
         self.assertFalse(config.sharepoint_application_configured)
+
+    def test_sharepoint_source_labels_are_parsed_for_user_visible_scope(self):
+        config = Config(
+            {
+                "LIBRAS_SHAREPOINT_SOURCE_LABELS": (
+                    "ReadME Hotfixes; Documentos/SOLUCIONES, Manuales"
+                )
+            }
+        )
+
+        self.assertEqual(
+            ("ReadME Hotfixes", "Documentos/SOLUCIONES", "Manuales"),
+            config.sharepoint_source_labels,
+        )
 
     def test_local_document_fallback_is_disabled_in_production(self):
         local_config = Config({"LIBRAS_ENV": "local"})

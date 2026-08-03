@@ -1,6 +1,7 @@
 import json
+import re
 
-from document_index import tokenize
+from document_index import has_requested_action_coverage, tokenize
 from models import BotDecision, EvidenceSource
 
 
@@ -31,6 +32,7 @@ Reglas:
 - Use "sin_evidencia" si la evidencia es insuficiente o inexistente.
 - Si faltan pruebas solidas, marque requiere_escalamiento=true.
 """.strip()
+VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
 
 
 def _combined_evidence_text(evidence: list[EvidenceSource]) -> str:
@@ -79,6 +81,43 @@ def _is_direct_document_question(user_message: str, evidence: list[EvidenceSourc
     return False
 
 
+def _requested_version(user_message: str) -> str | None:
+    match = VERSION_PATTERN.search(user_message or "")
+    return match.group(1) if match else None
+
+
+def has_explicit_version_request(user_message: str) -> bool:
+    return _requested_version(user_message) is not None
+
+
+def _version_document_summary(version: str, evidence: list[EvidenceSource]) -> str:
+    """Answer a version lookup from its cited text without inventing changes."""
+    details = " ".join(source.fragmento.strip() for source in evidence[:2] if source.fragmento.strip())
+    details = " ".join(details.split())
+    if not details:
+        return f"Se encontró documentación para Evolution {version}, pero el fragmento recuperado no contiene detalles suficientes."
+    if len(details) > 900:
+        details = f"{details[:900].rsplit(' ', 1)[0]}..."
+    return f"Para Evolution {version}, la documentación indica: {details}"
+
+
+def _version_answer_is_none(user_message: str, evidence: list[EvidenceSource]) -> bool:
+    """Keep an explicit 'Ninguno' result concise instead of expanding a heading."""
+    asks_for_software_requirements = bool(
+        re.search(r"nuevos?\s+requisitos?\s+de\s+software", user_message or "", re.IGNORECASE)
+    )
+    if not asks_for_software_requirements:
+        return False
+    return any(
+        re.search(
+            r"nuevos?\s+requisitos?\s+de\s+software.{0,120}\bninguno\b",
+            source.fragmento,
+            re.IGNORECASE | re.DOTALL,
+        )
+        for source in evidence
+    )
+
+
 def classify_case_by_rules(
     user_message: str,
     evidence: list[EvidenceSource],
@@ -94,6 +133,37 @@ def classify_case_by_rules(
             fuentes=[],
             siguiente_accion="Escale el caso al equipo de desarrollo para una revision manual.",
             requiere_escalamiento=True,
+        )
+
+    if not any(
+        has_requested_action_coverage(
+            user_message, f"{source.titulo} {source.fragmento}"
+        )
+        for source in evidence
+    ):
+        return BotDecision(
+            estado="sin_evidencia",
+            confianza="baja",
+            resumen="No se encontro evidencia suficiente en las fuentes documentales consultadas.",
+            fuentes=[],
+            siguiente_accion="Escale el caso al equipo de desarrollo para una revision manual.",
+            requiere_escalamiento=True,
+        )
+
+    requested_version = _requested_version(user_message)
+    if requested_version:
+        summary = (
+            "Ninguno."
+            if _version_answer_is_none(user_message, evidence)
+            else _version_document_summary(requested_version, evidence)
+        )
+        return BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen=summary,
+            fuentes=evidence,
+            siguiente_accion="Revise el Readme citado antes de aplicar los cambios de esa versión.",
+            requiere_escalamiento=False,
         )
 
     if _is_direct_document_question(user_message, evidence):

@@ -31,6 +31,33 @@ class IntentTests(unittest.TestCase):
 
         self.assertEqual("ayuda", result.name)
         self.assertFalse(result.requires_context)
+        self.assertEqual("ayuda", result.conversation_purpose)
+
+    def test_classify_intent_recognizes_capability_paraphrases(self):
+        result = classify_intent(
+            "¿Cómo me puedes apoyar?",
+            self._client_with_content(
+                '{"intencion":"ayuda","proposito_conversacional":"capacidad",'
+                '"requiere_contexto":false}'
+            ),
+            "test-model",
+        )
+
+        self.assertEqual("ayuda", result.name)
+        self.assertEqual("capacidad", result.conversation_purpose)
+
+    def test_classify_intent_recognizes_scope_paraphrases(self):
+        result = classify_intent(
+            "¿Sobre qué carpetas puedes buscar?",
+            self._client_with_content(
+                '{"intencion":"ayuda","proposito_conversacional":"alcance",'
+                '"requiere_contexto":false}'
+            ),
+            "test-model",
+        )
+
+        self.assertEqual("ayuda", result.name)
+        self.assertEqual("alcance", result.conversation_purpose)
 
     def test_classify_intent_rejects_unknown_result(self):
         result = classify_intent(
@@ -40,6 +67,46 @@ class IntentTests(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+    def test_classify_intent_rejects_inconsistent_documentary_purpose(self):
+        result = classify_intent(
+            "¿Qué indica el manual?",
+            self._client_with_content(
+                '{"intencion":"consulta_documental",'
+                '"proposito_conversacional":"capacidad","requiere_contexto":false}'
+            ),
+            "test-model",
+        )
+
+        self.assertIsNone(result)
+
+    def test_classify_intent_normalizes_clarification_purpose_for_an_error(self):
+        result = classify_intent(
+            "Algo falla en Evolution",
+            self._client_with_content(
+                '{"intencion":"reporte_error","proposito_conversacional":"none",'
+                '"requiere_contexto":true}'
+            ),
+            "test-model",
+        )
+
+        self.assertEqual("reporte_error", result.name)
+        self.assertTrue(result.requires_context)
+        self.assertEqual("aclaracion", result.conversation_purpose)
+
+    def test_classify_intent_normalizes_help_without_context_request(self):
+        result = classify_intent(
+            "No sé cómo preguntarte lo que necesito",
+            self._client_with_content(
+                '{"intencion":"ayuda","proposito_conversacional":"aclaracion",'
+                '"requiere_contexto":true}'
+            ),
+            "test-model",
+        )
+
+        self.assertEqual("ayuda", result.name)
+        self.assertFalse(result.requires_context)
+        self.assertEqual("ayuda", result.conversation_purpose)
 
 
 if __name__ == "__main__":

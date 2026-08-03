@@ -71,6 +71,30 @@ def tokenize(text: str) -> list[str]:
     ]
 
 
+def has_requested_action_coverage(question: str, source_text: str) -> bool:
+    """Require explicit support for a specific action requested by the user.
+
+    A broad technical guide can mention an entity such as ``vacaciones`` without
+    documenting every action a user might ask about.  When the question uses a
+    sufficiently specific infinitive (for example, ``aprobar``), evidence must
+    contain that action or a close inflection (``aprobación``) before it can be
+    presented as a direct answer.
+    """
+    action_stems = {
+        token[:-2]
+        for token in tokenize(question)
+        if token.endswith(("ar", "er", "ir")) and len(token[:-2]) >= 5
+    }
+    if not action_stems:
+        return True
+
+    source_tokens = set(tokenize(source_text))
+    return all(
+        any(source_token.startswith(stem) for source_token in source_tokens)
+        for stem in action_stems
+    )
+
+
 def split_into_chunks(content: str) -> list[str]:
     sections = [section.strip() for section in re.split(r"\n\s*\n", content) if section.strip()]
     return [section for section in sections if not section.startswith("#")]

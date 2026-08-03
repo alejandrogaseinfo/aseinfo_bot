@@ -8,7 +8,8 @@ permisos distintos.
 flowchart LR
     teams["Colaborador en Teams"] --> bot["bot-libras-prod<br/>Azure Bot / Teams"]
     bot --> app["app-libras-prod<br/>Libras en Azure"]
-    app --> search["srch-libras-prod<br/>Azure AI Search"]
+    app --> guard["ContextGuard opcional<br/>bloqueo previo a búsqueda"]
+    guard --> search["srch-libras-prod<br/>Azure AI Search"]
     search --> index[("libras-docs<br/>Índice documental")]
     app --> openai["OpenAI<br/>modelo y respuestas"]
 
@@ -35,6 +36,10 @@ flowchart LR
 - `libras-docs` conserva fragmentos, enlaces y metadatos de origen. Azure AI
   Search es el servicio que contiene el índice; no es una fuente documental
   adicional.
+- El ContextGuard es una defensa semántica opcional antes de la recuperación.
+  Las reglas determinísticas de secretos, datos confidenciales y bibliotecas
+  fuera de alcance siguen ejecutándose primero. Se habilita inicialmente en
+  modo `observe`; solo el modo `enforce` puede bloquear la solicitud.
 
 La configuración operativa y los comandos de despliegue están en
 [despliegue-produccion.md](despliegue-produccion.md) y la sincronización está

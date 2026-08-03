@@ -1,15 +1,17 @@
 import asyncio
 import re
+import unicodedata
 from collections.abc import Callable
 from time import perf_counter
 
-from classification import classify_case, classify_case_by_rules
+from classification import classify_case, classify_case_by_rules, has_explicit_version_request
 from conversation import generate_conversational_response
+from context_guard import evaluate_context_guard
 from document_index import tokenize
 from formatting import format_user_response
 from intent import IntentResult, classify_intent
 from logging_utils import get_logger
-from models import BotDecision
+from models import BotDecision, EvidenceSource
 from retrieval import retrieve_evidence
 
 logger = get_logger()
@@ -41,6 +43,67 @@ HELP_TOKENS = {"ayuda", "orientar", "orientacion", "guiar", "guia"}
 # ``click`` + ``up`` before stop-word filtering.
 CAPABILITY_TOKENS = {"pued", "consultar"}
 UNAVAILABLE_INTEGRATIONS = {"click"}
+CAPABILITY_SELF_DESCRIPTION_TOKENS = {
+    "ayud",
+    "ayudar",
+    "apoy",
+    "apoyar",
+    "hacer",
+    "servir",
+    "funcion",
+    "funcionar",
+    "ofrec",
+    "ofrecer",
+}
+SCOPE_FALLBACK_TOKENS = {"carpeta", "biblioteca", "alcance", "fuente"}
+SCOPE_ACTION_TOKENS = {"pued", "buscar", "consultar", "tien", "disponibl"}
+SCOPE_QUESTION_PATTERN = re.compile(
+    r"\b(?:sobre\s+que|en\s+que|cuales?)\s+"
+    r"(?:carpetas?|bibliotecas?|fuentes?)\s+"
+    r"(?:puedes?|puedo|tienes?)\s+(?:buscar|consultar)|"
+    r"\b(?:que\s+)?(?:carpetas?|bibliotecas?|fuentes?)\s+"
+    r"(?:puedes?|tienes?)\s+(?:buscar|consultar)|"
+    r"\bdonde\s+(?:puedo|puedes?)\s+(?:buscar|consultar)"
+)
+SCOPE_DOCUMENTATION_PATTERN = re.compile(
+    r"\bdonde\s+(?:puedo|puedes?)\s+consultar\s+(?:la\s+)?documentacion\b"
+)
+CAPABILITY_QUESTION_PATTERN = re.compile(
+    r"\b(?:en\s+que|que\s+tipo\s+de)\s+"
+    r"(?:tipo(?:s)?\s+de\s+)?(?:informacion|temas?|consultas?|documentos?)\s+"
+    r"(?:puedes?\s+)?(?:ayudar(?:me)?|apoyar(?:me)?|atender|manejar)\b"
+)
+SENSITIVE_SECRET_PATTERN = re.compile(
+    r"\b(?:api[\s_-]*keys?|clave(?:s)?[\s_-]*(?:api|privada)|password|contrasena|"
+    r"tokens?|secret(?:o|os|s)?|credencial(?:es)?|connection[\s_-]*string|"
+    r"cadena[\s_-]*de[\s_-]*conexion)\b"
+)
+SECRET_DISCLOSURE_PATTERN = re.compile(
+    r"\b(?:dame|darme|muestra(?:me)?|mostrar(?:me)?|ensena(?:me)?|revela(?:me)?|"
+    r"comparte|proporciona|envia|entrega|extrae|lista|imprime|expone|devuelve|"
+    r"cual(?:es)?|que[\s_-]*valor|valor[\s_-]*de)\b"
+)
+CUSTOMER_CONFIDENTIAL_PATTERN = re.compile(
+    r"\b(?:dato(?:s)?[\s_-]*de[\s_-]*contacto|contrato(?:s)?|"
+    r"cliente(?:s)?\b.{0,80}\b(?:pago(?:s)?|atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)|"
+    r"(?:pago(?:s)?|atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)\b.{0,80}\bcliente(?:s)?)\b"
+)
+PERSONAL_CONFIDENTIAL_PATTERN = re.compile(
+    r"\b(?:salario(?:s)?|cuenta(?:s)?[\s_-]*bancaria(?:s)?|numero[\s_-]*de[\s_-]*identificacion|"
+    r"telefono(?:s)?|correo(?:s)?[\s_-]*personal(?:es)?|dato(?:s)?[\s_-]*personales?)\b"
+)
+SITE_INVENTORY_PATTERN = re.compile(
+    r"\b(?:enumera|lista|muestra|dame|comparte|inventario)\b.{0,80}"
+    r"\b(?:todos?[\s_-]*los?[\s_-]*)?(?:archivo(?:s)?|documento(?:s)?)\b.{0,80}"
+    r"\b(?:sitio|sharepoint|soporte[\s_-]*regional)\b"
+)
+# These libraries are deliberately outside the pilot scope.  Retrieval already
+# filters documents by their approved provenance, but a user can name an
+# excluded library directly.  Reject that request before search so a loosely
+# related result from an approved library is not presented as an answer.
+RESTRICTED_LIBRARY_PATTERN = re.compile(
+    r"\b(?:hojas?[\s_-]*de[\s_-]*servicio|teams?[\s_-]*wiki[\s_-]*data)\b"
+)
 GENERIC_ISSUE_TOKENS = {
     "error",
     "problema",
@@ -77,9 +140,13 @@ DOCUMENTARY_TOKENS = {
 
 
 def _is_summary_follow_up(user_message: str) -> bool:
-    normalized = _normalize_command(user_message)
-    return "resum" in normalized and (
-        "paso" in normalized or "lista" in normalized
+    normalized = _normalized_sensitive_text(user_message)
+    return bool(
+        re.search(
+            r"\bresum\w*\b|\bpuntos?\s+principales?\b|"
+            r"\bexplica(?:me|r|rlo|rla)?\b.{0,40}\b(?:sencilla|simple)\b",
+            normalized,
+        )
     )
 
 
@@ -108,11 +175,185 @@ def _summarize_previous_documentary_response(previous_response: str) -> str:
     return response
 
 
+VERSION_REFERENCE_PATTERN = re.compile(
+    r"\b(?:esa|dicha|la mencionada|la anterior)\s+"
+    r"(?:versi[oó]n|actualizaci[oó]n|release|edici[oó]n)\b|"
+    r"\b(?:en|de)\s+esa\b"
+)
+DOCUMENT_REFERENCE_PATTERN = re.compile(
+    r"\b(?:ese|esa|dicho|dicha|el|la)\s+"
+    r"(?:documento|archivo|readme|manual|hotfix|release|cambio|actualizacion)\b|"
+    r"\b(?:esos|esas|dichos|dichas)\s+"
+    r"(?:cambios|mejoras|novedades|detalles|puntos)\b"
+)
+CHANGE_REQUEST_PATTERN = re.compile(
+    r"\b(?:cambios?|modificaciones?|mejoras?|novedades?|correcciones?)\b"
+)
+VERSION_PATTERN = re.compile(r"\b\d+(?:\.\d+){2,}\b")
+EXPLICIT_PRODUCT_PATTERN = re.compile(
+    r"\b(?:producto|modulo|sistema|aplicacion)\s+(?:de\s+)?"
+    r"([a-z0-9][a-z0-9._-]*)\b"
+)
+NON_PRODUCT_WORDS = {"o", "un", "una", "el", "la", "los", "las", "este", "esta"}
+
+
+def _resolve_documentary_follow_up(
+    user_message: str,
+    previous_documentary_response: str | None,
+) -> str:
+    """Resolve a narrow document follow-up without sending full chat history.
+
+    The previous answer is already restricted to a cited documentary response.
+    If the user refers to the previous version, document, hotfix, or release,
+    carry only its explicit dotted version into retrieval. This prevents a
+    generic query from matching neighboring hotfixes while keeping the
+    original wording for the response shown to the user.
+    """
+    normalized_message = _normalized_sensitive_text(user_message)
+    if not previous_documentary_response or not (
+        VERSION_REFERENCE_PATTERN.search(normalized_message)
+        or DOCUMENT_REFERENCE_PATTERN.search(normalized_message)
+    ):
+        return user_message
+    previous_versions = VERSION_PATTERN.findall(previous_documentary_response)
+    if not previous_versions:
+        return user_message
+    version = previous_versions[0]
+    if version in user_message:
+        return user_message
+    return f"{user_message} (referencia contextual: versión {version})"
+
+
+def _enrich_change_request(user_message: str) -> str:
+    """Add retrieval-only synonyms for a request about documented changes."""
+    if not CHANGE_REQUEST_PATTERN.search(_normalized_sensitive_text(user_message)):
+        return user_message
+    return f"{user_message} (detalle técnico: mejoras modificaciones correcciones)"
+
+
+def _evidence_matches_explicit_product(
+    user_message: str,
+    evidence: list[EvidenceSource],
+) -> bool:
+    """Require a named product to be present in evidence before answering.
+
+    This applies only to phrases such as "producto Inexistente". It prevents a
+    loosely related Readme from being presented as evidence for a product the
+    index does not contain.
+    """
+    normalized_message = _normalized_sensitive_text(user_message)
+    match = EXPLICIT_PRODUCT_PATTERN.search(normalized_message)
+    if not match or match.group(1) in NON_PRODUCT_WORDS:
+        return True
+    requested_product = match.group(1)
+    return any(
+        requested_product in set(
+            tokenize(f"{source.titulo} {source.fragmento} {source.ubicacion}")
+        )
+        for source in evidence
+    )
+
+
 def _normalize_command(user_message: str) -> str:
     return " ".join((user_message or "").strip().lower().replace("/", " ").split())
 
 
-def _direct_response(user_message: str) -> str | None:
+def _is_sensitive_secret_request(user_message: str) -> bool:
+    """Reject requests that try to obtain credentials before any retrieval."""
+    normalized = unicodedata.normalize("NFKD", user_message or "").lower()
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return bool(
+        SENSITIVE_SECRET_PATTERN.search(normalized)
+        and SECRET_DISCLOSURE_PATTERN.search(normalized)
+    )
+
+
+def _normalized_sensitive_text(user_message: str) -> str:
+    normalized = unicodedata.normalize("NFKD", user_message or "").lower()
+    return "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+
+
+def _is_confidential_data_request(user_message: str) -> bool:
+    """Block requests for customer, personal, financial, or site inventory data."""
+    normalized = _normalized_sensitive_text(user_message)
+    return bool(
+        CUSTOMER_CONFIDENTIAL_PATTERN.search(normalized)
+        or PERSONAL_CONFIDENTIAL_PATTERN.search(normalized)
+        or SITE_INVENTORY_PATTERN.search(normalized)
+    )
+
+
+def _requests_restricted_library(user_message: str) -> bool:
+    """Reject direct requests for libraries that are not in the bot scope."""
+    return bool(RESTRICTED_LIBRARY_PATTERN.search(_normalized_sensitive_text(user_message)))
+
+
+def _sensitive_secret_response() -> str:
+    return (
+        "No puedo proporcionar, buscar ni mostrar claves API, contraseñas, tokens, "
+        "secretos o credenciales. Estos valores se administran de forma segura y no "
+        "están disponibles a través de Libras. Solicite el acceso por el canal "
+        "corporativo correspondiente."
+    )
+
+
+def _confidential_data_response() -> str:
+    return (
+        "No puedo buscar, enumerar ni divulgar datos confidenciales, incluyendo "
+        "datos de clientes, contratos, información personal, estados financieros "
+        "o inventarios del sitio. Libras solo responde consultas técnicas con "
+        "evidencia autorizada dentro de su alcance."
+    )
+
+
+def _restricted_library_response() -> str:
+    return (
+        "No puedo consultar esa biblioteca porque está fuera del alcance autorizado "
+        "de Libras. Puedo responder únicamente con documentación técnica de las "
+        "bibliotecas aprobadas para el piloto."
+    )
+
+
+def _context_guard_response() -> str:
+    """Avoid disclosing guard internals or echoing a risky request."""
+    return (
+        "Por seguridad, no puedo procesar esta solicitud. Libras solo atiende "
+        "consultas técnicas sobre la documentación aprobada dentro de su alcance."
+    )
+
+
+def _is_scope_question(user_message: str, query_tokens: set[str]) -> bool:
+    """Recognize clear questions about Libras's document scope before the LLM."""
+    normalized = _normalized_sensitive_text(user_message)
+    if SCOPE_DOCUMENTATION_PATTERN.search(normalized):
+        return True
+    return bool(SCOPE_QUESTION_PATTERN.search(normalized)) and bool(
+        query_tokens.intersection(SCOPE_FALLBACK_TOKENS)
+        and query_tokens.intersection(SCOPE_ACTION_TOKENS)
+    )
+
+
+def _is_capability_question(user_message: str, query_tokens: set[str]) -> bool:
+    """Recognize self-description questions without mistaking them for document requests."""
+    if _is_scope_question(user_message, query_tokens):
+        return False
+    if CAPABILITY_QUESTION_PATTERN.search(_normalized_sensitive_text(user_message)):
+        return True
+    return bool(
+        (
+            query_tokens.intersection(CAPABILITY_SELF_DESCRIPTION_TOKENS)
+            or CAPABILITY_TOKENS.issubset(query_tokens)
+        )
+        and not query_tokens.intersection(DOCUMENTARY_TOKENS)
+        and not query_tokens.intersection(GENERIC_ISSUE_TOKENS)
+    )
+
+
+def _direct_response(user_message: str, config=None) -> str | None:
     """Handle explicit bot commands that do not require model interpretation."""
     command = _normalize_command(user_message)
     if command in HELP_COMMANDS:
@@ -125,20 +366,17 @@ def _direct_response(user_message: str) -> str | None:
             "la documentación técnica aprobada disponible para este asistente."
         )
 
-    # Keep the opening capability question deterministic.  The intent model can
-    # treat it as an underspecified support request, which makes the bot ask for
-    # an error context instead of explaining its scope.
-    if (
-        CAPABILITY_TOKENS.issubset(query_tokens)
-        and not query_tokens.intersection(DOCUMENTARY_TOKENS)
-        and len(query_tokens) <= 4
-    ):
+    # These questions describe Libras itself, not the indexed content. Handle
+    # clear forms before the LLM so they can never be redirected to retrieval.
+    if _is_scope_question(user_message, query_tokens):
+        return _scope_response(config)
+    if _is_capability_question(user_message, query_tokens):
         return _capability_response()
 
     return None
 
 
-def _fallback_conversational_response(user_message: str) -> str | None:
+def _fallback_conversational_response(user_message: str, config=None) -> str | None:
     """Keep safe local conversation when the model is unavailable."""
     command = _normalize_command(user_message)
     if command in GREETING_COMMANDS:
@@ -150,6 +388,12 @@ def _fallback_conversational_response(user_message: str) -> str | None:
     query_tokens = set(tokenize(user_message or ""))
     if query_tokens.intersection(GREETING_TOKENS) and query_tokens.intersection(HELP_TOKENS):
         return _help_response()
+    # These are intentionally a small fallback, not the primary language
+    # understanding mechanism. The LLM router handles broader paraphrases.
+    if _is_scope_question(user_message, query_tokens):
+        return _scope_response(config)
+    if _is_capability_question(user_message, query_tokens):
+        return _capability_response()
     if query_tokens.intersection(GENERIC_ISSUE_TOKENS) and not (
         query_tokens.difference(GENERIC_ISSUE_TOKENS)
     ):
@@ -163,17 +407,34 @@ def _fallback_conversational_response(user_message: str) -> str | None:
 
 def _help_response() -> str:
     return (
-        "Puedo consultar la documentación técnica aprobada disponible para Libras. "
+        "Puedo consultar la documentación técnica autorizada de las bibliotecas del sitio, "
+        "incluida la carpeta SOLUCIONES. "
         "Indique el producto o módulo, la versión y su pregunta. Para reportar un error, "
-        "incluya el mensaje exacto, los pasos que lo provocan y, si aplica, el hotfix relacionado."
+        "incluya el mensaje exacto y los pasos que lo provocan."
     )
 
 
 def _capability_response() -> str:
     return (
-        "Puedo consultar la documentación técnica aprobada disponible para Libras, "
-        "incluidos procedimientos, manuales, hotfixes y actualizaciones. "
+        "Puedo consultar la documentación técnica autorizada de las bibliotecas aprobadas "
+        "del sitio, incluida la carpeta SOLUCIONES y sus subcarpetas. "
         "Indique el producto o módulo, la versión y su pregunta para buscar evidencia."
+    )
+
+
+def _scope_response(config=None) -> str:
+    """Describe only operator-configured, user-visible document sources."""
+    source_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
+    if source_labels:
+        return (
+            "Puedo buscar en las siguientes fuentes documentales autorizadas: "
+            f"{', '.join(source_labels)}. "
+            "No consulto bibliotecas ni sistemas fuera de ese alcance."
+        )
+    return (
+        "Puedo buscar únicamente en las bibliotecas y carpetas documentales "
+        "autorizadas del sitio, incluida la carpeta SOLUCIONES y sus subcarpetas. "
+        "No consulto bibliotecas ni sistemas fuera de ese alcance."
     )
 
 
@@ -183,7 +444,11 @@ def _looks_like_documentary_question(user_message: str) -> bool:
     return bool(query_tokens.intersection(DOCUMENTARY_TOKENS))
 
 
-def _intent_response(intent: IntentResult, user_message: str = "") -> str | None:
+def _intent_response(intent: IntentResult, config=None, user_message: str = "") -> str | None:
+    if intent.conversation_purpose == "capacidad":
+        return _capability_response()
+    if intent.conversation_purpose == "alcance":
+        return _scope_response(config)
     if intent.name == "saludo":
         return (
             "Hola, soy Libras. Puedo ayudarte a consultar documentación técnica aprobada. "
@@ -225,13 +490,82 @@ async def process_user_message(
     previous_documentary_response: str | None = None,
 ) -> str:
     started_at = perf_counter()
+    if _is_sensitive_secret_request(user_message):
+        logger.warning(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=solicitud_sensible_rechazada escalated=True"
+        )
+        return _sensitive_secret_response()
+
+    if _is_confidential_data_request(user_message):
+        logger.warning(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=solicitud_confidencial_rechazada escalated=True"
+        )
+        return _confidential_data_response()
+
+    if _requests_restricted_library(user_message):
+        logger.warning(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=biblioteca_fuera_de_alcance_rechazada escalated=False"
+        )
+        return _restricted_library_response()
+
     if previous_documentary_response and _is_summary_follow_up(user_message):
         return _summarize_previous_documentary_response(previous_documentary_response)
 
-    direct_response = _direct_response(user_message)
+    direct_response = _direct_response(user_message, config)
     if direct_response:
         logger.info("query_completed duration_ms=0 evidence_count=0 source_types=none decision_state=solicita_contexto escalated=False")
         return direct_response
+
+    retrieval_message = _enrich_change_request(
+        _resolve_documentary_follow_up(
+            user_message,
+            previous_documentary_response,
+        )
+    )
+
+    if (
+        getattr(config, "use_context_guard", False)
+        and getattr(config, "model_endpoint_configured", True)
+    ):
+        guard_mode = getattr(config, "context_guard_mode", "observe")
+        failure_policy = getattr(config, "context_guard_failure_policy", "block")
+        try:
+            guard_decision = await _run_blocking_with_timeout(
+                evaluate_context_guard,
+                retrieval_message,
+                client=client,
+                model=getattr(config, "context_guard_model_name", config.openai_intent_model_name),
+                timeout_seconds=getattr(config, "context_guard_timeout_seconds", 2),
+            )
+            if not guard_decision.allows_request:
+                logger.warning(
+                    "context_guard decision=%s reason_code=%s confidence=%s mode=%s",
+                    guard_decision.decision,
+                    guard_decision.reason_code,
+                    guard_decision.confidence,
+                    guard_mode,
+                )
+                if guard_mode == "enforce":
+                    logger.warning(
+                        "query_completed duration_ms=%s evidence_count=0 source_types=none "
+                        "decision_state=context_guard_blocked escalated=True",
+                        round((perf_counter() - started_at) * 1000),
+                    )
+                    return _context_guard_response()
+        except TimeoutError:
+            logger.warning(
+                "ContextGuard superó el límite de %.1f segundos.",
+                getattr(config, "context_guard_timeout_seconds", 2),
+            )
+            if guard_mode == "enforce" and failure_policy == "block":
+                return _context_guard_response()
+        except Exception:
+            logger.exception("Falló ContextGuard; se aplicará su política de fallo configurada.")
+            if guard_mode == "enforce" and failure_policy == "block":
+                return _context_guard_response()
 
     intent = None
     if getattr(config, "use_llm_intent_classifier", False) and getattr(
@@ -240,13 +574,20 @@ async def process_user_message(
         try:
             intent = await _run_blocking_with_timeout(
                 classify_intent,
-                user_message,
+                retrieval_message,
                 client=client,
                 model=config.openai_intent_model_name,
                 timeout_seconds=config.intent_timeout_seconds,
             )
-            intent_response = _intent_response(intent, user_message) if intent else None
+            intent_response = _intent_response(intent, config, retrieval_message) if intent else None
             if intent_response:
+                if intent.conversation_purpose in {"capacidad", "alcance"}:
+                    logger.info(
+                        "query_completed duration_ms=%s evidence_count=0 source_types=none decision_state=intent_%s escalated=False",
+                        round((perf_counter() - started_at) * 1000),
+                        intent.conversation_purpose,
+                    )
+                    return intent_response
                 try:
                     conversational_response = await _run_blocking_with_timeout(
                         generate_conversational_response,
@@ -281,7 +622,7 @@ async def process_user_message(
         except Exception:
             logger.exception("Falló la clasificación de intención. Se usarán reglas locales.")
 
-    fallback_conversational_response = _fallback_conversational_response(user_message)
+    fallback_conversational_response = _fallback_conversational_response(user_message, config)
     if fallback_conversational_response:
         logger.info("query_completed duration_ms=0 evidence_count=0 source_types=none decision_state=solicita_contexto escalated=False")
         return fallback_conversational_response
@@ -289,7 +630,7 @@ async def process_user_message(
     try:
         evidence = await _run_blocking_with_timeout(
             retrieve_evidence,
-            user_message,
+            retrieval_message,
             client=client,
             config=config,
             timeout_seconds=config.retrieval_timeout_seconds,
@@ -304,14 +645,31 @@ async def process_user_message(
         logger.exception("Falló la recuperación documental.")
         evidence = []
 
-    logger.info("Consulta recibida. Evidencias recuperadas: %s", len(evidence))
-    fallback_decision = classify_case_by_rules(user_message, evidence)
+    if evidence and not _evidence_matches_explicit_product(retrieval_message, evidence):
+        logger.info("La evidencia no contiene el producto solicitado explícitamente.")
+        decision = classify_case_by_rules(retrieval_message, [])
+        logger.info(
+            "query_completed duration_ms=%s evidence_count=0 source_types=none "
+            "decision_state=%s escalated=%s",
+            round((perf_counter() - started_at) * 1000),
+            decision.estado,
+            decision.requiere_escalamiento,
+        )
+        return format_user_response(decision, config=config)
 
-    if getattr(config, "model_endpoint_configured", True):
+    logger.info("Consulta recibida. Evidencias recuperadas: %s", len(evidence))
+    fallback_decision = classify_case_by_rules(retrieval_message, evidence)
+
+    # Version lookups have an exact retrieval boundary and are rendered from
+    # the cited fragments. Keeping that deterministic prevents the classifier
+    # from replacing the documented details with a generic incident summary.
+    if has_explicit_version_request(retrieval_message):
+        decision = fallback_decision
+    elif getattr(config, "model_endpoint_configured", True):
         try:
             decision = await _run_blocking_with_timeout(
                 classify_case,
-                user_message=user_message,
+                user_message=retrieval_message,
                 evidence=evidence,
                 client=client,
                 model=config.openai_model_name,

@@ -24,6 +24,7 @@ from azure_search import (
     _has_minimum_content_coverage,
     _filter_records_for_requested_country,
     _record_has_authorized_provenance,
+    _record_matches_requested_version,
     _entra_credential,
     _excerpt_around_query,
     _rerank_records,
@@ -174,6 +175,102 @@ class DocumentQuestionTests(unittest.TestCase):
             )
 
         self.assertEqual([], sources)
+
+    def test_exact_version_excludes_readmes_with_only_a_shared_prefix(self):
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return [
+                    {
+                        "id": "readme-1-19-1-0",
+                        "title": "Readme 1.19.1.0.pdf — Página 1",
+                        "source_url": "https://contoso.example/readme-1.19.1.0.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Evolution 1.19.1.0 incluye cambios de instalación.",
+                    },
+                    {
+                        "id": "readme-1-19-1-10",
+                        "title": "Readme 1.19.1.10.pdf — Página 1",
+                        "source_url": "https://contoso.example/readme-1.19.1.10.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Evolution 1.19.1.10 incorpora la actualización documentada.",
+                    },
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            sharepoint_sources=(("", "drive-readme"),),
+        )
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "Dame detalles sobre la versión de Evolution 1.19.1.10.", config
+            )
+
+        self.assertEqual(["Readme 1.19.1.10.pdf — Página 1"], [source.titulo for source in sources])
+        self.assertFalse(
+            _record_matches_requested_version(
+                {"title": "Readme 1.19.1.0.pdf"}, ("1.19.1.10",)
+            )
+        )
+
+    def test_versioned_readme_section_excludes_contents_and_update_documents(self):
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return [
+                    {
+                        "id": "update-page",
+                        "title": "Actualización 1.19.1.11.pdf — Página 1",
+                        "source_url": "https://contoso.example/update.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Mejoras de Evolution 1.19.1.11.",
+                    },
+                    {
+                        "id": "readme-contents",
+                        "title": "Readme 1.19.1.11.pdf — Página 2",
+                        "source_url": "https://contoso.example/readme.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Evolution 1.19.1.11. Tabla de contenido y recomendaciones generales.",
+                    },
+                    {
+                        "id": "readme-requirements",
+                        "title": "Readme 1.19.1.11.pdf — Página 8",
+                        "source_url": "https://contoso.example/readme.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-readme",
+                        "content": "Nuevos requisitos de software: Ninguno.",
+                    },
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            sharepoint_sources=(("", "drive-readme"),),
+        )
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "¿Qué nuevos requisitos de software necesita Evolution versión Readme 1.19.1.11?", config
+            )
+
+        self.assertEqual(["Readme 1.19.1.11.pdf — Página 8"], [source.titulo for source in sources])
 
     def test_entra_credential_is_reused_for_multiple_search_operations(self):
         config = SimpleNamespace(
@@ -570,6 +667,42 @@ class DocumentQuestionTests(unittest.TestCase):
 
         self.assertEqual("resuelto", decision.estado)
         self.assertFalse(decision.requiere_escalamiento)
+
+    def test_version_question_uses_the_retrieved_text_instead_of_a_generic_incident_message(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.10.pdf — Página 1",
+                ubicacion="https://contoso.example/readme-1.19.1.10.pdf",
+                fragmento="La versión incorpora el ajuste de instalación y requiere actualizar AppSettings.config.",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "Dame detalles sobre la versión de Evolution 1.19.1.10.", evidence
+        )
+
+        self.assertEqual("resuelto", decision.estado)
+        self.assertIn("1.19.1.10", decision.resumen)
+        self.assertIn("actualizar AppSettings.config", decision.resumen)
+        self.assertNotIn("describe el problema", decision.resumen)
+
+    def test_versioned_software_requirements_returns_none_when_documented(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.11.pdf — Página 8",
+                ubicacion="https://contoso.example/readme-1.19.1.11.pdf",
+                fragmento="Nuevos requisitos de software Ninguno.",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "¿Qué nuevos requisitos de software necesita Evolution versión Readme 1.19.1.11?",
+            evidence,
+        )
+
+        self.assertEqual("Ninguno.", decision.resumen)
 
     def test_important_numeric_terms_are_searchable(self):
         self.assertIn("37", tokenize("Bono Decreto 37-2001"))

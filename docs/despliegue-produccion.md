@@ -221,7 +221,8 @@ Después de corregir la conexión del bot:
 
 1. Abrir `/healthz` y comprobar `status=ok`.
 2. Abrir `/readyz` y comprobar `status=ready`.
-3. Consultar desde Teams un PDF de Guatemala y uno de El Salvador.
+3. Consultar desde Teams un documento realmente indexado desde las bibliotecas
+   autorizadas del sitio `Soportealcliente` y una pregunta sin evidencia.
 4. Confirmar que la respuesta no solicita inicio de sesión personal.
 5. Confirmar que la respuesta incluye la fuente de Azure AI Search.
 

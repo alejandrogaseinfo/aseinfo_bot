@@ -105,6 +105,9 @@ _EXPLICIT_FILENAME_PATTERN = re.compile(
     r"(?<![\w-])([\w.-]+(?:" + "|".join(re.escape(extension) for extension in SUPPORTED_EXTENSIONS) + r"))(?![\w-])",
     re.IGNORECASE,
 )
+# A period that begins a file extension or ends a sentence is not part of the
+# version. Only a following decimal component would make it a longer version.
+_VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
 
 
 @lru_cache(maxsize=1)
@@ -239,6 +242,37 @@ def _record_matches_file_name(record: dict, file_names: tuple[str, ...]) -> bool
     """Match a requested file against the indexed title, not a related topic."""
     title = str(record.get("title") or "").casefold()
     return any(file_name in title for file_name in file_names)
+
+
+def _requested_versions(user_message: str) -> tuple[str, ...]:
+    """Return exact dotted versions explicitly supplied by the user."""
+    return tuple(
+        dict.fromkeys(match.group(1).casefold() for match in _VERSION_PATTERN.finditer(user_message or ""))
+    )
+
+
+def _record_matches_requested_version(record: dict, versions: tuple[str, ...]) -> bool:
+    """Avoid treating a shared version prefix as an exact version match."""
+    if not versions:
+        return True
+    searchable_text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", CONTEXT_FIELD, CONTENT_FIELD)
+    ).casefold()
+    found_versions = {match.group(1).casefold() for match in _VERSION_PATTERN.finditer(searchable_text)}
+    return any(version in found_versions for version in versions)
+
+
+def _requests_readme(user_message: str) -> bool:
+    return bool(re.search(r"\breadme\b", user_message or "", re.IGNORECASE))
+
+
+def _requested_section_pattern(user_message: str) -> re.Pattern | None:
+    """Recognize a document section explicitly requested by the user."""
+    normalized = " ".join((user_message or "").casefold().split())
+    if re.search(r"nuevos?\s+requisitos?\s+de\s+software", normalized):
+        return re.compile(r"nuevos?\s+requisitos?\s+de\s+software", re.IGNORECASE)
+    return None
 
 
 def _query_phrases(user_message: str) -> set[str]:
@@ -465,6 +499,8 @@ def retrieve_azure_search_evidence(
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
     }
     requested_file_names = _requested_file_names(user_message)
+    requested_versions = _requested_versions(user_message)
+    requested_section = _requested_section_pattern(user_message)
 
     # The vector query is generic: it compares the meaning of a question with
     # every indexed chunk. The keyword pass complements it for exact policy
@@ -552,9 +588,35 @@ def retrieve_azure_search_evidence(
         if _record_has_authorized_provenance(record, allowed_sources)
     ]
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
-    explicit_file_records = [
+    version_scoped_records = [
         record
         for record in country_scoped_records
+        if _record_matches_requested_version(record, requested_versions)
+    ]
+    if requested_versions and _requests_readme(user_message):
+        readme_records = [
+            record
+            for record in version_scoped_records
+            if "readme" in str(record.get("title") or "").casefold()
+        ]
+        if readme_records:
+            version_scoped_records = readme_records
+    if requested_section:
+        section_records = [
+            record
+            for record in version_scoped_records
+            if requested_section.search(
+                f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
+                f"{record.get(CONTENT_FIELD, '')}"
+            )
+        ]
+        # A section name is an explicit constraint, but preserve the normal
+        # fallback if the index lacks that heading verbatim.
+        if section_records:
+            version_scoped_records = section_records
+    explicit_file_records = [
+        record
+        for record in version_scoped_records
         if record.get("_explicit_filename_match")
         and _record_matches_file_name(record, requested_file_names)
     ]
@@ -568,7 +630,7 @@ def retrieve_azure_search_evidence(
     else:
         candidate_records = [
             record
-            for record in country_scoped_records
+            for record in version_scoped_records
             if _has_minimum_content_coverage(record, user_message)
         ]
     ranked_records = _rerank_records(candidate_records, user_message)

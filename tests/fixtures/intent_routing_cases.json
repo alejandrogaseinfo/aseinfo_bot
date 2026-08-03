@@ -1,0 +1,212 @@
+[
+  {
+    "id": "CAP-01",
+    "message": "¿Qué puedes hacer?",
+    "intent": "ayuda",
+    "conversation_purpose": "capacidad",
+    "requires_context": false
+  },
+  {
+    "id": "CAP-02",
+    "message": "¿Cómo me puedes apoyar?",
+    "intent": "ayuda",
+    "conversation_purpose": "capacidad",
+    "requires_context": false
+  },
+  {
+    "id": "CAP-03",
+    "message": "¿Para qué sirve Libras?",
+    "intent": "ayuda",
+    "conversation_purpose": "capacidad",
+    "requires_context": false
+  },
+  {
+    "id": "CAP-04",
+    "message": "¿Cuál es el propósito de este asistente?",
+    "intent": "ayuda",
+    "conversation_purpose": "capacidad",
+    "requires_context": false
+  },
+  {
+    "id": "CAP-05",
+    "message": "¿Qué tipo de ayuda ofrece Libras?",
+    "intent": "ayuda",
+    "conversation_purpose": "capacidad",
+    "requires_context": false
+  },
+  {
+    "id": "SCP-01",
+    "message": "¿Sobre qué carpetas puedes buscar?",
+    "intent": "ayuda",
+    "conversation_purpose": "alcance",
+    "requires_context": false
+  },
+  {
+    "id": "SCP-02",
+    "message": "¿En qué bibliotecas puedes consultar?",
+    "intent": "ayuda",
+    "conversation_purpose": "alcance",
+    "requires_context": false
+  },
+  {
+    "id": "SCP-03",
+    "message": "¿Qué fuentes documentales tiene disponibles Libras?",
+    "intent": "ayuda",
+    "conversation_purpose": "alcance",
+    "requires_context": false
+  },
+  {
+    "id": "SCP-04",
+    "message": "¿Dónde puedo buscar documentación con este bot?",
+    "intent": "ayuda",
+    "conversation_purpose": "alcance",
+    "requires_context": false
+  },
+  {
+    "id": "SCP-05",
+    "message": "¿Cuáles son las fuentes autorizadas que revisas?",
+    "intent": "ayuda",
+    "conversation_purpose": "alcance",
+    "requires_context": false
+  },
+  {
+    "id": "HLP-01",
+    "message": "Ayuda",
+    "intent": "ayuda",
+    "conversation_purpose": "ayuda",
+    "requires_context": false
+  },
+  {
+    "id": "HLP-02",
+    "message": "¿Me puedes orientar para hacer una consulta?",
+    "intent": "ayuda",
+    "conversation_purpose": "ayuda",
+    "requires_context": false
+  },
+  {
+    "id": "HLP-03",
+    "message": "No sé cómo preguntarte lo que necesito.",
+    "intent": "ayuda",
+    "conversation_purpose": "ayuda",
+    "requires_context": false
+  },
+  {
+    "id": "HLP-04",
+    "message": "¿Qué información debo incluir para reportar un problema?",
+    "intent": "ayuda",
+    "conversation_purpose": "ayuda",
+    "requires_context": false
+  },
+  {
+    "id": "GRT-01",
+    "message": "Hola",
+    "intent": "saludo",
+    "conversation_purpose": "saludo",
+    "requires_context": false
+  },
+  {
+    "id": "GRT-02",
+    "message": "Buenos días, Libras",
+    "intent": "saludo",
+    "conversation_purpose": "saludo",
+    "requires_context": false
+  },
+  {
+    "id": "GRT-03",
+    "message": "Buenas tardes",
+    "intent": "saludo",
+    "conversation_purpose": "saludo",
+    "requires_context": false
+  },
+  {
+    "id": "CLR-01",
+    "message": "Tengo un error",
+    "intent": "reporte_error",
+    "conversation_purpose": "aclaracion",
+    "requires_context": true
+  },
+  {
+    "id": "CLR-02",
+    "message": "Algo falla en Evolution",
+    "intent": "reporte_error",
+    "conversation_purpose": "aclaracion",
+    "requires_context": true
+  },
+  {
+    "id": "CLR-03",
+    "message": "No funciona y necesito ayuda",
+    "intent": "reporte_error",
+    "conversation_purpose": "aclaracion",
+    "requires_context": true
+  },
+  {
+    "id": "CLR-04",
+    "message": "Necesito resolver un problema",
+    "intent": "consulta_ambigua",
+    "conversation_purpose": "aclaracion",
+    "requires_context": true
+  },
+  {
+    "id": "CLR-05",
+    "message": "¿Qué hago con este inconveniente?",
+    "intent": "consulta_ambigua",
+    "conversation_purpose": "aclaracion",
+    "requires_context": true
+  },
+  {
+    "id": "DOC-01",
+    "message": "¿Qué configuración documentada tiene MiniProfiler en Evolution?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-02",
+    "message": "¿Qué indica el Readme 1.19.1.10?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-03",
+    "message": "Busco los pasos para ampliar el tiempo de sesión en Evolution.",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-04",
+    "message": "¿Cómo se configura el archivo AppSettings.config antes de instalar la actualización?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-05",
+    "message": "¿Hay un hotfix documentado para este mensaje de error de instalación?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-06",
+    "message": "¿Qué nuevos requisitos de software indica Evolution 1.19.1.11?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-07",
+    "message": "¿Dónde está documentado el procedimiento para actualizar Evolution?",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  },
+  {
+    "id": "DOC-08",
+    "message": "Necesito consultar el manual de configuración de IIS para Evolution.",
+    "intent": "consulta_documental",
+    "conversation_purpose": "none",
+    "requires_context": false
+  }
+]
