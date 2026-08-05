@@ -1,0 +1,68 @@
+[
+  {
+    "id": "RAG-01",
+    "message": "¿Cómo se pueden administrar documentos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"]
+  },
+  {
+    "id": "RAG-02",
+    "message": "Dame ejemplos de tipos de documentos que se pueden administrar en Evolution.",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"]
+  },
+  {
+    "id": "RAG-03",
+    "message": "¿Cómo puedo arreglar vacaciones negativas con un script?",
+    "expected": "evidence",
+    "expected_title_contains": ["acc.proc_arreglar_vac_negativos"]
+  },
+  {
+    "id": "RAG-04",
+    "message": "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "RAG-04A",
+    "message": "Dame los parámetros que se relacionan con la prórroga de contratos.",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "RAG-04B",
+    "message": "Dame los parámetros que se relacionan con la prórroga de contratos en Evolution.",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "RAG-05",
+    "message": "¿Cómo se clasifican las incapacidades en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "RAG-06",
+    "message": "¿Qué parámetros se pueden modificar para incapacidades?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "RAG-07",
+    "message": "Después de reinstalar MSDTC en un servidor clonado, ¿qué hay que revisar en ambos servidores para confirmar que la comunicación DTC quedó funcionando correctamente?",
+    "expected": "evidence",
+    "expected_title_contains": ["Manual DTC Verificacion"]
+  },
+  {
+    "id": "SCOPE-01",
+    "message": "¿Qué descuentos legales existen en El Salvador?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "SCOPE-02",
+    "message": "¿Cuándo se paga el aguinaldo en El Salvador?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  }
+]

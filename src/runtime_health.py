@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+RUNTIME_REVISION = "20260804-dtc-validation-v1"
+
 
 def readiness_payload(config) -> dict[str, object]:
     """Return the configuration readiness required for this deployment mode."""
@@ -19,6 +21,7 @@ def readiness_payload(config) -> dict[str, object]:
 
     return {
         "status": "ready" if not missing else "not_ready",
+        "runtime_revision": RUNTIME_REVISION,
         "environment": getattr(config, "environment", "local"),
         "model_configured": model_ready,
         "azure_search_configured": search_ready,

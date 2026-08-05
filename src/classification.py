@@ -42,7 +42,7 @@ def _combined_evidence_text(evidence: list[EvidenceSource]) -> str:
     )
 
 
-def _is_direct_document_question(user_message: str, evidence: list[EvidenceSource]) -> bool:
+def is_direct_document_question(user_message: str, evidence: list[EvidenceSource]) -> bool:
     """Identify a factual question directly covered by a retrieved document.
 
     This prevents a policy/manual from being treated as a historical incident
@@ -68,7 +68,14 @@ def _is_direct_document_question(user_message: str, evidence: list[EvidenceSourc
         "dónde",
         "donde",
     )
-    if not any(marker in normalized_question for marker in question_markers):
+    direct_request_markers = (
+        "dame ",
+        "indica ",
+        "muestra ",
+        "enumera ",
+        "lista ",
+    )
+    if not any(marker in normalized_question for marker in (*question_markers, *direct_request_markers)):
         return False
 
     for source in evidence:
@@ -79,6 +86,31 @@ def _is_direct_document_question(user_message: str, evidence: list[EvidenceSourc
         if len(query_tokens.intersection(source_tokens)) >= required_overlap:
             return True
     return False
+
+
+def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]) -> str:
+    """Return a concise answer made only from the most relevant evidence text."""
+    query_tokens = set(tokenize(user_message))
+    candidates: list[tuple[int, str]] = []
+    for source in evidence:
+        text = " ".join((source.fragmento or "").split())
+        text = re.sub(r"^Página\s+\d+\s+", "", text, flags=re.IGNORECASE)
+        if not text:
+            continue
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", text)
+            if sentence.strip()
+        ] or [text]
+        for sentence in sentences:
+            candidates.append((len(query_tokens.intersection(tokenize(sentence))), sentence))
+
+    if not candidates:
+        return "Se recuperó documentación relacionada, pero el fragmento no contiene un detalle suficiente para responder con seguridad."
+    _, excerpt = max(candidates, key=lambda item: item[0])
+    if len(excerpt) > 520:
+        excerpt = f"{excerpt[:520].rsplit(' ', 1)[0]}..."
+    return f"Según la documentación: {excerpt}"
 
 
 def _requested_version(user_message: str) -> str | None:
@@ -166,14 +198,11 @@ def classify_case_by_rules(
             requiere_escalamiento=False,
         )
 
-    if _is_direct_document_question(user_message, evidence):
+    if is_direct_document_question(user_message, evidence):
         return BotDecision(
             estado="resuelto",
             confianza="alta",
-            resumen=(
-                "Se encontró documentación que responde directamente a la consulta. "
-                "La respuesta se fundamenta en los fragmentos citados a continuación."
-            ),
+            resumen=_grounded_document_summary(user_message, evidence),
             fuentes=evidence,
             siguiente_accion="Revise el documento citado para validar el detalle aplicable a su caso.",
             requiere_escalamiento=False,

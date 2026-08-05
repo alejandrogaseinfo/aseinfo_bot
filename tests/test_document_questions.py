@@ -18,11 +18,15 @@ from azure_search import (
     _clear_deletion_manifest,
     _deletion_document_ids,
     _document_records,
+    _searchable_filename_terms,
     _document_pages,
     _chunks,
     _document_relevance_score,
+    _diversify_candidate_records,
     _has_minimum_content_coverage,
     _filter_records_for_requested_country,
+    _focused_keyword_query,
+    _question_without_background_action,
     _record_has_authorized_provenance,
     _record_matches_requested_version,
     _entra_credential,
@@ -31,7 +35,8 @@ from azure_search import (
     retrieve_azure_search_evidence,
     index_directory,
 )
-from classification import classify_case_by_rules
+from document_index import has_requested_action_coverage
+from classification import classify_case_by_rules, is_direct_document_question
 from document_index import tokenize
 from formatting import format_user_response
 from models import EvidenceSource
@@ -361,8 +366,207 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertEqual("pdf", record["document_type"])
         self.assertEqual("Operaciones/Manuales", record["folder_path"])
         self.assertEqual("drive-1", record["drive_id"])
+        self.assertIn("manual", record["content_tokens"])
+        self.assertIn("Título del archivo", record["document_context"])
         self.assertTrue(record["content_hash"])
         self.assertTrue(record["indexed_at"])
+
+    def test_filename_conventions_are_exposed_as_searchable_terms(self):
+        terms = _searchable_filename_terms("acc.proc_arreglar_vac_negativos.sql")
+
+        self.assertEqual("acc proc arreglar vac negativos sql", terms)
+
+    def test_sql_identifiers_keep_concepts_searchable(self):
+        tokens = set(tokenize("vac_vacaciones acc.proc_arreglar_vac_negativos.sql"))
+
+        self.assertIn("vacacion", tokens)
+        self.assertIn("arreglar", tokens)
+        self.assertIn("negativo", tokens)
+
+    def test_document_context_participates_in_relevance_score(self):
+        question = "¿Cómo puedo arreglar vacaciones negativas con un script?"
+        record = {
+            "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+            "document_context": "Título del archivo: acc.proc_arreglar_vac_negativos.sql. "
+            "CREATE PROCEDURE para corregir vacaciones con saldo negativo.",
+            "content_tokens": "acc proc arreglar vac vacacion negativo sql",
+            "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos",
+            "document_type": "sql",
+        }
+
+        self.assertGreaterEqual(_document_relevance_score(record, question), 12)
+
+    def test_title_concept_outweighs_incidental_fragment_match(self):
+        question = "¿Cómo puedo arreglar vacaciones negativas con un script?"
+        named_procedure = {
+            "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+            "document_context": "Procedimiento para corregir vacaciones con saldo negativo.",
+            "content_tokens": "arreglar vacacion negativo sql",
+            "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos",
+            "document_type": "sql",
+        }
+        incidental_sql = {
+            "title": "ConfiguracionAnulacionSolicitudVac.sql — Documento",
+            "document_context": "Configuración de solicitudes de vacaciones.",
+            "content_tokens": "solicitud vacacion sql",
+            "content": "EXEC sp_anular_solicitud_vac",
+            "document_type": "sql",
+        }
+
+        self.assertGreater(
+            _document_relevance_score(named_procedure, question),
+            _document_relevance_score(incidental_sql, question),
+        )
+
+    def test_content_coverage_accepts_morphology_but_rejects_one_term_country_noise(self):
+        from azure_search import _has_minimum_content_coverage
+
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+                    "document_context": "Procedimiento para corregir vacaciones con saldo negativo.",
+                    "content_tokens": "arreglar vacacion negativo sql",
+                    "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos",
+                    "document_type": "sql",
+                },
+                "¿Cómo puedo arreglar vacaciones negativas con un script?",
+            )
+        )
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Readme.pdf — Página 1",
+                    "document_context": "El Salvador. Incidencia sobre descuentos cíclicos.",
+                    "content_tokens": "salvador descuento ciclico",
+                    "content": "Incidencia técnica sin legislación vigente.",
+                },
+                "¿Qué descuentos legales existen en El Salvador?",
+            )
+        )
+
+    def test_content_coverage_rejects_navigation_page_for_operational_question(self):
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Gestion de documentos.pdf — Página 2",
+                    "content_tokens": "gestion documentos administrar",
+                    "content": (
+                        "Página 2 Tabla de contenido Gestión de documentos 2 "
+                        "Tipos de documentos gestionados 3 Áreas de documentos "
+                        "gestionados 4 Administrar documentos gestionados 5 "
+                        "Agregue una nueva versión 7 Descargue documentos 9"
+                    ),
+                    "document_type": "pdf",
+                },
+                "¿Cómo se pueden administrar documentos en Evolution?",
+            )
+        )
+
+    def test_action_coverage_recognizes_conjugated_action(self):
+        self.assertTrue(
+            has_requested_action_coverage(
+                "¿Cómo se clasifican las incapacidades?",
+                "Tipos de incapacidad y clasificaciones establecidas por la compañía.",
+            )
+        )
+
+    def test_focused_keyword_query_removes_question_scaffolding(self):
+        self.assertEqual(
+            _focused_keyword_query(
+                "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?"
+            ),
+            "parametro configurar prorroga contrato evolution",
+        )
+        self.assertEqual(
+            _focused_keyword_query(
+                "Dame los parámetros que se relacionan con la prórroga de contratos"
+            ),
+            "parametro prorroga contrato",
+        )
+
+    def test_content_coverage_accepts_configuration_variant_in_same_fragment(self):
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Acciones de personal.pdf — Página 18",
+                    "content_tokens": (
+                        "parametro prorroga contrato configuracion "
+                        "prorrogacontratodiasatrasiniciorangofechafincontrato"
+                    ),
+                    "content": (
+                        "Parámetros para prórroga de contratos en la configuración "
+                        "de los parámetros de infraestructura."
+                    ),
+                    "document_type": "pdf",
+                },
+                "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?",
+            )
+        )
+
+    def test_direct_document_request_accepts_imperative_wording(self):
+        evidence = [
+            EvidenceSource(
+                tipo="azure_ai_search",
+                titulo="Acciones de personal.pdf — Página 18",
+                ubicacion="https://contoso.example/acciones.pdf",
+                fragmento="Parámetros para prórroga de contratos en Evolution.",
+            )
+        ]
+        self.assertTrue(
+            is_direct_document_question(
+                "Dame los parámetros de prórroga de contratos en Evolution.",
+                evidence,
+            )
+        )
+
+    def test_background_action_is_not_required_from_validation_fragment(self):
+        question = (
+            "Después de reinstalar MSDTC en un servidor clonado, ¿qué hay que revisar "
+            "en ambos servidores para confirmar la comunicación DTC?"
+        )
+        self.assertEqual(
+            _question_without_background_action(question),
+            "¿qué hay que revisar en ambos servidores para confirmar la comunicación DTC?",
+        )
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Manual DTC Verificacion.pdf — Página 3",
+                    "content_tokens": "validar ambos servidor servicio dtc comunicacion",
+                    "content": "Validar en ambos servidores que estos servicios están corriendo.",
+                    "document_type": "pdf",
+                },
+                question,
+            )
+        )
+        self.assertFalse(
+            has_requested_action_coverage(
+                "¿Cómo se clasifican las incapacidades?",
+                "Las incapacidades se registran en las mismas tablas de nómina.",
+            )
+        )
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Carrera y Sucesión.pdf — Página 16",
+                    "content_tokens": "carrera sucesion cuadrante modificar parametro infraestructura",
+                    "content": "Los cuadrantes se pueden modificar mediante un parámetro de infraestructura.",
+                },
+                "¿Qué parámetros se pueden modificar para incapacidades?",
+            )
+        )
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Configuracion de infraestructura.pdf — Página 44",
+                    "document_context": "El documento completo contiene referencias a incapacidades.",
+                    "content_tokens": "configuracion infraestructura parametro tablero indicador",
+                    "content": "Parámetros del tablero: código, nombre, tipo y origen de datos.",
+                },
+                "¿Qué parámetros se pueden configurar para incapacidades en Evolution?",
+            )
+        )
 
     def test_pdf_records_ignore_sharepoint_files_outside_sync_state(self):
         with TemporaryDirectory() as directory:
@@ -772,6 +976,39 @@ class DocumentQuestionTests(unittest.TestCase):
         ranked = _rerank_records([later_vector_result, first_vector_result], question)
 
         self.assertEqual(first_vector_result, ranked[0][1])
+
+    def test_semantic_reranking_accepts_a_supported_action_paraphrase(self):
+        record = {
+            "title": "Gestión de documentos.pdf — Página 1",
+            "content": "Evolution permite gestionar documentos asociados a colaboradores.",
+            "@search.reranker_score": 2.3,
+        }
+
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                record, "¿Cómo se pueden administrar documentos en Evolution?"
+            )
+        )
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                record,
+                "¿Cómo se pueden administrar documentos en Evolution?",
+                semantic_enabled=True,
+            )
+        )
+
+    def test_candidate_diversification_limits_repeated_chunks_of_one_document(self):
+        records = [
+            {"id": f"manual-{number}", "document_id": "manual", "_vector_rank": number}
+            for number in range(1, 6)
+        ] + [
+            {"id": "guide-1", "document_id": "guide", "_vector_rank": 6},
+        ]
+
+        diversified = _diversify_candidate_records(records)
+
+        self.assertEqual(3, sum(record["document_id"] == "manual" for record in diversified))
+        self.assertIn("guide", {record["document_id"] for record in diversified})
 
     def test_country_specific_request_does_not_mix_evidence(self):
         guatemala_record = {

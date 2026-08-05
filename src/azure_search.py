@@ -64,6 +64,12 @@ CONTEXT_FIELD = "document_context"
 CONTENT_VECTOR_FIELD = "content_vector"
 SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
+# The first candidate pool must be wider than the final answer set. Otherwise
+# a large spreadsheet, SQL dump or manual can occupy all nearest-neighbour
+# slots and hide a relevant smaller document before reranking can inspect it.
+CANDIDATE_POOL_SIZE = 100
+MAX_CANDIDATES_PER_DOCUMENT = 3
+SEMANTIC_ACTION_MIN_SCORE = 2.0
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
@@ -86,17 +92,51 @@ COUNTRY_TOKENS = {
     "guatemala": {"guatemala", "guatemalteco", "guatemalteca"},
     "el_salvador": {"salvador", "salvadoreno", "salvadoreño", "salvadorena", "salvadoreña"},
 }
+# Terms that make a country-scoped query dependent on authoritative legal or
+# payroll evidence. They are domain anchors, not aliases for any one question.
+COUNTRY_SENSITIVE_ANCHORS = {
+    "legal",
+    "legislacion",
+    "descuento",
+    "aguinaldo",
+    "impuesto",
+    "renta",
+    "nomina",
+}
+OPERATIONAL_QUERY_TOKENS = {
+    "administrar",
+    "aplicar",
+    "arreglar",
+    "calcular",
+    "clasificar",
+    "configurar",
+    "crear",
+    "eliminar",
+    "gestionar",
+    "instalar",
+    "modificar",
+    "pagar",
+    "parametro",
+    "procesar",
+    "restaurar",
+    "actualizar",
+}
 GENERIC_QUERY_TOKENS = {
     "cambio",
     "como",
     "configur",
     "document",
     "documentacion",
+    "dame",
     "existir",
     "hacer",
     "informacion",
     "oficial",
     "paso",
+    "puede",
+    "pueden",
+    "podria",
+    "podrian",
     "procedimiento",
     "realizar",
     "tema",
@@ -108,6 +148,21 @@ _EXPLICIT_FILENAME_PATTERN = re.compile(
 # A period that begins a file extension or ends a sentence is not part of the
 # version. Only a following decimal component would make it a longer version.
 _VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
+_BACKGROUND_ACTION_CLAUSE = re.compile(
+    r"(?:^|[.?!]\s*)(?:despu[eé]s)\s+de\s+[^,;:.!?]{1,220}[,;:]\s*",
+    re.IGNORECASE,
+)
+
+
+def _question_without_background_action(user_message: str) -> str:
+    """Remove a leading temporal circumstance from the evidence requirement.
+
+    In ``Después de reiniciar X, ¿qué debo revisar?``, restarting X explains
+    when the question happens; the evidence sought is the verification step.
+    Keeping the circumstance as a mandatory per-page term rejects valid
+    multi-page procedures whose validation is documented separately.
+    """
+    return _BACKGROUND_ACTION_CLAUSE.sub(" ", user_message or "").strip()
 
 
 @lru_cache(maxsize=1)
@@ -153,7 +208,14 @@ def _attach_embeddings(records: list[dict], config) -> None:
     for offset in range(0, len(records), 20):
         batch = records[offset : offset + 20]
         embeddings = _embed_texts(
-            [str(record[CONTENT_FIELD]) for record in batch], config
+            [
+                "\n".join(
+                    str(record.get(field) or "")
+                    for field in ("title", CONTEXT_FIELD, CONTENT_FIELD)
+                )
+                for record in batch
+            ],
+            config,
         )
         if len(embeddings) != len(batch):
             raise RuntimeError("No se recibió un embedding para cada fragmento.")
@@ -166,6 +228,13 @@ def _clean_text(text: str, limit: int = 500) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[:limit].rsplit(' ', 1)[0]}..."
+
+
+def _searchable_filename_terms(title: str) -> str:
+    """Expose filename conventions as searchable words without changing facts."""
+    separated = re.sub(r"(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ])", " ", title or "")
+    separated = re.sub(r"[_\-.]+", " ", separated)
+    return " ".join(separated.split())
 
 
 def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
@@ -276,12 +345,44 @@ def _requested_section_pattern(user_message: str) -> re.Pattern | None:
 
 
 def _query_phrases(user_message: str) -> set[str]:
-    tokens = tokenize(user_message)
+    # Question scaffolding (for example, ``qué se pueden``) does not identify
+    # a manual section. Phrase scoring should describe the subject the user is
+    # looking for, so headings such as "Parámetros para prórroga de contratos"
+    # are not displaced by a page that merely resembles the full sentence.
+    tokens = [
+        token
+        for token in tokenize(_question_without_background_action(user_message))
+        if token not in GENERIC_QUERY_TOKENS
+    ]
     return {
         " ".join(tokens[start : start + phrase_size])
         for phrase_size in (2, 3)
         for start in range(len(tokens) - phrase_size + 1)
     }
+
+
+def _focused_keyword_query(user_message: str) -> str:
+    """Compress question wording to its searchable domain concepts.
+
+    This is intentionally based on stop-like query terms, never on document
+    titles or individual support cases.  It complements the natural-language
+    query with a heading-friendly keyword pass.
+    """
+    # In ``parámetros que se relacionan con X``, the relative clause describes
+    # the requested parameters; it is not a request for database relations.
+    # Remove that clause only after ``que se`` so a direct question such as
+    # ``¿cómo se relacionan las tablas?`` keeps its technical verb.
+    compact_source = _question_without_background_action(user_message)
+    compact_source = re.sub(
+        r"\bque\s+se\s+[a-záéíóúñ]+(?:an|en)\b",
+        " ",
+        user_message.casefold(),
+    )
+    return " ".join(
+        token
+        for token in tokenize(compact_source)
+        if token not in GENERIC_QUERY_TOKENS
+    )
 
 
 def _document_relevance_score(
@@ -293,7 +394,9 @@ def _document_relevance_score(
     """Score evidence with generic token coverage, phrase matches and structure."""
     query_tokens = tokenize(user_message)
     document_tokens = tokenize(
-        f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}"
+        f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
+        f"{record.get('content_tokens', '')} {record.get(CONTENT_FIELD, '')} "
+        f"{record.get('document_type', '')}"
     )
     if not query_tokens or not document_tokens:
         return 0.0
@@ -301,6 +404,13 @@ def _document_relevance_score(
     document_token_set = set(document_tokens)
     token_overlap = set(query_tokens).intersection(document_token_set)
     coverage_score = sum((token_weights or {}).get(token, 1) for token in token_overlap)
+    # A concept present in the document title is a stronger document-level
+    # signal than the same word buried in an arbitrary page fragment. This is
+    # generic metadata weighting: it improves lookup of named procedures,
+    # manuals and modules without maintaining question-specific aliases.
+    title_tokens = set(tokenize(record.get("title", "")))
+    title_overlap = set(query_tokens).intersection(title_tokens)
+    title_score = len(title_overlap) * 10
     document_text = " ".join(document_tokens)
     phrase_matches = {
         phrase for phrase in _query_phrases(user_message) if phrase in document_text
@@ -308,18 +418,59 @@ def _document_relevance_score(
     phrase_score = sum(
         (phrase_weights or {}).get(phrase, 4) for phrase in phrase_matches
     )
+    # A phrase at the beginning of the page normally represents its heading.
+    # That is stronger evidence than the same phrase appearing later in an
+    # introductory table or a broad module overview.  Use only the fragment,
+    # not the document-wide context, so a distant section cannot borrow this
+    # boost.
+    fragment_opening = " ".join(tokenize(record.get(CONTENT_FIELD, ""))[:18])
+    heading_phrase_count = sum(
+        1 for phrase in phrase_matches if phrase in fragment_opening
+    )
+    # Keep nouns such as ``parámetro`` but remove verbs such as ``configurar``
+    # when looking for a section heading. A user normally asks in a sentence;
+    # manuals normally name the section with its subject concepts.
+    heading_query_tokens = [
+        token
+        for token in query_tokens
+        if token not in GENERIC_QUERY_TOKENS
+        and token not in (OPERATIONAL_QUERY_TOKENS - {"parametro"})
+    ]
+    heading_subject_phrases = {
+        " ".join(heading_query_tokens[start : start + phrase_size])
+        for phrase_size in (2, 3)
+        for start in range(len(heading_query_tokens) - phrase_size + 1)
+    }
+    opening_text = " ".join(tokenize(record.get(CONTENT_FIELD, "")[:220]))
+    heading_subject_phrase_count = sum(
+        1 for phrase in heading_subject_phrases if phrase in opening_text
+    )
 
-    azure_score = float(record.get("@search.reranker_score") or record.get("@search.score") or 0)
+    semantic_score = float(record.get("@search.reranker_score") or 0)
+    azure_score = float(record.get("@search.score") or 0)
     # Coverage across the question's concepts matters more than one isolated
     # exact phrase. This prevents a page that merely lists a decree number
     # from outranking the page that explains its calculation.
     return (
         (coverage_score * 6)
-        + phrase_score
+        + title_score
+        # A phrase that follows the user's wording is stronger evidence than
+        # isolated token overlap. This is especially important for manuals
+        # whose section headings describe an operation directly.
+        + (phrase_score * 5)
+        + (heading_phrase_count * 90)
+        + (heading_subject_phrase_count * 140)
         # Vector similarity finds paraphrases; lexical rank favors pages that
         # explicitly contain the terms requested. Neither source wins alone.
         + max(0, MAX_CANDIDATES - int(record.get("_vector_rank", MAX_CANDIDATES))) * 3.0
         + max(0, MAX_CANDIDATES - int(record.get("_keyword_rank", MAX_CANDIDATES))) * 0.2
+        # A compact lexical query favors a section heading made of the user's
+        # meaningful concepts over filler words from the natural question.
+        + max(0, MAX_CANDIDATES - int(record.get("_focused_keyword_rank", MAX_CANDIDATES))) * 1.5
+        # Semantic reranking has already compared the full question with the
+        # candidate passage. Give it material weight when enabled, rather than
+        # letting a one-token lexical advantage suppress a direct paraphrase.
+        + (semantic_score * 25)
         + (azure_score / 1_000)
         - (int(record.get("_missing_anchor_count", 0)) * 8)
     )
@@ -398,34 +549,144 @@ def _record_matches_only_requested_country(record: dict, country_tokens: set[str
     return not other_country_tokens.intersection(record_tokens)
 
 
-def _has_minimum_content_coverage(record: dict, user_message: str) -> bool:
+def _has_minimum_content_coverage(
+    record: dict, user_message: str, semantic_enabled: bool = False
+) -> bool:
     """Reject a tangential hit that shares only one broad term with the query."""
     country_tokens = set().union(*COUNTRY_TOKENS.values())
-    required_tokens = set(tokenize(user_message)).difference(
+    coverage_message = _question_without_background_action(user_message)
+    required_tokens = set(tokenize(coverage_message)).difference(
         GENERIC_QUERY_TOKENS, country_tokens
     )
     if not required_tokens:
         return True
 
     record_tokens = set(
-        tokenize(f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}")
+        tokenize(
+            f"{record.get('title', '')} {record.get('content_tokens', '')} "
+            f"{record.get(CONTENT_FIELD, '')} "
+            f"{record.get('document_type', '')}"
+        )
     )
-    required_matches = required_tokens.intersection(record_tokens)
+    # Accept ordinary gender/number variants (``negativa``/``negativo``)
+    # without maintaining aliases for individual questions or documents.
+    required_matches = {
+        token
+        for token in required_tokens
+        if token in record_tokens
+        or any(
+            len(token) >= 5
+            and len(candidate) >= 5
+            and (token.startswith(candidate[:5]) or candidate.startswith(token[:5]))
+            for candidate in record_tokens
+        )
+    }
+    subject_tokens = required_tokens.difference(OPERATIONAL_QUERY_TOKENS)
+    subject_matches = subject_tokens.intersection(required_matches)
     if _requested_country(user_message) is not None:
-        # Country filtering above already requires an exclusive country match;
-        # one domain term can be sufficient for a short country-specific query.
-        minimum_matches = 1
+        # A country name can appear in boilerplate. Require two independent
+        # concepts for a country-scoped query so a generic Readme cannot be
+        # presented as legal/payroll evidence because of one incidental term.
+        minimum_matches = (
+            2
+            if len(required_tokens) >= 3
+            and set(tokenize(user_message)).intersection(COUNTRY_SENSITIVE_ANCHORS)
+            else 1
+        )
     elif len(required_tokens) >= 4:
         minimum_matches = 3
     else:
         minimum_matches = 2 if len(required_tokens) >= 3 else 1
-    return (
-        len(required_matches) >= minimum_matches
-        and has_requested_action_coverage(
-            user_message,
-            f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}",
-        )
+    action_is_covered = has_requested_action_coverage(
+        user_message,
+        f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}",
     )
+    # A semantic reranker can validate ordinary paraphrases such as
+    # ``administrar documentos`` and ``gestión de documentos``. It is only an
+    # alternative to literal action matching when semantic search is explicitly
+    # enabled and its score is strong; lexical concept coverage remains
+    # mandatory.
+    semantic_action_is_covered = (
+        semantic_enabled
+        and float(record.get("@search.reranker_score") or 0) >= SEMANTIC_ACTION_MIN_SCORE
+    )
+    if (
+        semantic_enabled
+        and _requested_country(user_message) is not None
+        and float(record.get("@search.reranker_score") or 0) < SEMANTIC_ACTION_MIN_SCORE
+    ):
+        # Country names often occur in boilerplate or contact sections. A weak
+        # semantic match must not turn that incidental mention into evidence
+        # for a legal or payroll question.
+        return False
+    # An operation (for example, ``modificar``) is not evidence unless the
+    # subject requested by the user is present in the same chunk. This avoids
+    # returning a generic infrastructure page for a module-specific question.
+    if subject_tokens and not subject_matches:
+        return False
+    if subject_matches and required_matches.intersection(OPERATIONAL_QUERY_TOKENS):
+        direct_tokens = tokenize(
+            f"{record.get('title', '')} {record.get('content_tokens', '')} "
+            f"{record.get(CONTENT_FIELD, '')}"
+        )
+        window_size = 48
+        operational_matches = required_matches.intersection(OPERATIONAL_QUERY_TOKENS)
+        def window_covers(token: str, window: list[str]) -> bool:
+            return token in window or any(
+                len(token) >= 5
+                and len(candidate) >= 5
+                and (token.startswith(candidate[:5]) or candidate.startswith(token[:5]))
+                for candidate in window
+            )
+        compact_match = any(
+            any(window_covers(token, direct_tokens[start : start + window_size]) for token in subject_matches)
+            and all(
+                window_covers(token, direct_tokens[start : start + window_size])
+                for token in operational_matches
+            )
+            for start in range(len(direct_tokens))
+        )
+        if not compact_match:
+            return False
+        # A table of contents or alphabetical index can contain every query
+        # term, but it only points to an answer elsewhere in the document.  Do
+        # not present navigation pages as evidence for an operational question.
+        # This is deliberately structural (rather than a list of document
+        # names), so it applies to new manuals as they are indexed.
+        fragment = str(record.get(CONTENT_FIELD, ""))
+        normalized_fragment = " ".join(fragment.lower().split())
+        page_references = re.findall(r",\s*\d{1,3}(?=\s|$)", normalized_fragment)
+        is_navigation_fragment = (
+            "tabla de contenido" in normalized_fragment
+            or len(page_references) >= 6
+        )
+        if is_navigation_fragment:
+            return False
+    return len(required_matches) >= minimum_matches and (
+        action_is_covered or semantic_action_is_covered
+    )
+
+
+def _diversify_candidate_records(records: list[dict]) -> list[dict]:
+    """Keep a broad candidate pool without letting one document monopolize it."""
+    def candidate_rank(record: dict) -> int:
+        ranks = [
+            int(record[field])
+            for field in ("_vector_rank", "_keyword_rank", "_focused_keyword_rank")
+            if record.get(field) is not None
+        ]
+        return min(ranks) if ranks else CANDIDATE_POOL_SIZE
+
+    per_document_count: dict[str, int] = {}
+    diversified: list[dict] = []
+    for record in sorted(records, key=candidate_rank):
+        document_key = str(record.get("document_id") or record.get("title") or record.get("id"))
+        count = per_document_count.get(document_key, 0)
+        if count >= MAX_CANDIDATES_PER_DOCUMENT:
+            continue
+        per_document_count[document_key] = count + 1
+        diversified.append(record)
+    return diversified
 
 
 def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float, dict]]:
@@ -493,7 +754,7 @@ def retrieve_azure_search_evidence(
         credential=_credential(config),
     )
     search_args = {
-        "top": MAX_CANDIDATES,
+        "top": CANDIDATE_POOL_SIZE,
         "select": SEARCH_SELECT_FIELDS,
         "connection_timeout": SEARCH_TIMEOUT_SECONDS,
         "read_timeout": SEARCH_TIMEOUT_SECONDS,
@@ -501,6 +762,15 @@ def retrieve_azure_search_evidence(
     requested_file_names = _requested_file_names(user_message)
     requested_versions = _requested_versions(user_message)
     requested_section = _requested_section_pattern(user_message)
+    keyword_search_args = dict(search_args)
+    if getattr(config, "azure_search_use_semantic", False):
+        keyword_search_args.update(
+            {
+                "query_type": "semantic",
+                "semantic_configuration_name": config.azure_search_semantic_configuration,
+                "query_caption": "extractive",
+            }
+        )
 
     # The vector query is generic: it compares the meaning of a question with
     # every indexed chunk. The keyword pass complements it for exact policy
@@ -509,7 +779,7 @@ def retrieve_azure_search_evidence(
         query_embedding = _embed_texts([user_message], config, client=client)[0]
         vector_query = VectorizedQuery(
             vector=query_embedding,
-            k_nearest_neighbors=MAX_CANDIDATES,
+            k_nearest_neighbors=CANDIDATE_POOL_SIZE,
             fields=CONTENT_VECTOR_FIELD,
         )
         records_by_id: dict[str, dict] = {}
@@ -529,7 +799,7 @@ def retrieve_azure_search_evidence(
             search_client.search(
                 search_text=user_message,
                 search_fields=["title", CONTENT_FIELD, "content_tokens"],
-                **search_args,
+                **keyword_search_args,
             ),
             start=1,
         ):
@@ -539,20 +809,55 @@ def retrieve_azure_search_evidence(
             if existing is None:
                 existing = record
                 records_by_id[record_id] = existing
+            else:
+                vector_rank = existing.get("_vector_rank")
+                existing.update(record)
+                if vector_rank is not None:
+                    existing["_vector_rank"] = vector_rank
             existing["_keyword_rank"] = rank
-        candidate_records = list(records_by_id.values())
+        focused_query = _focused_keyword_query(user_message)
+        if focused_query and focused_query != " ".join(tokenize(user_message)):
+            for rank, result in enumerate(
+                search_client.search(
+                    search_text=focused_query,
+                    search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                    **keyword_search_args,
+                ),
+                start=1,
+            ):
+                record = dict(result)
+                record_id = str(record.get("id", ""))
+                existing = records_by_id.get(record_id)
+                if existing is None:
+                    existing = record
+                    records_by_id[record_id] = existing
+                else:
+                    vector_rank = existing.get("_vector_rank")
+                    keyword_rank = existing.get("_keyword_rank")
+                    existing.update(record)
+                    if vector_rank is not None:
+                        existing["_vector_rank"] = vector_rank
+                    if keyword_rank is not None:
+                        existing["_keyword_rank"] = keyword_rank
+                existing["_focused_keyword_rank"] = rank
+        candidate_records = _diversify_candidate_records(list(records_by_id.values()))
     except Exception:
-        # Keep a usable, lower-quality fallback if embeddings or a legacy index
-        # are temporarily unavailable. It deliberately has no topic-specific
-        # behavior, and the caller still rejects weak evidence below.
-        candidate_records = [
-            dict(result)
-            for result in search_client.search(
+        # Embeddings can be unavailable to a read-only diagnostic session.
+        # Preserve semantic keyword retrieval in that case; only fall back to
+        # plain keyword search if the index itself lacks semantic support.
+        try:
+            fallback_results = search_client.search(
+                search_text=user_message,
+                search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                **keyword_search_args,
+            )
+        except Exception:
+            fallback_results = search_client.search(
                 search_text=user_message,
                 search_fields=["title", CONTENT_FIELD, "content_tokens"],
                 **search_args,
             )
-        ]
+        candidate_records = [dict(result) for result in fallback_results]
 
     # A filename is an unambiguous document request. Resolve it through the
     # title field before applying semantic relevance so a related script cannot
@@ -631,7 +936,11 @@ def retrieve_azure_search_evidence(
         candidate_records = [
             record
             for record in version_scoped_records
-            if _has_minimum_content_coverage(record, user_message)
+            if _has_minimum_content_coverage(
+                record,
+                user_message,
+                semantic_enabled=getattr(config, "azure_search_use_semantic", False),
+            )
         ]
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
@@ -814,8 +1123,14 @@ def _document_records(
         drive_id = str(metadata.get("drive_id") or "")
         # Later pages frequently omit the country/product named on the cover.
         # Store a compact document-level context with every chunk so retrieval
-        # can keep that context without merging documents or pages.
-        document_context = _clean_text(full_text, limit=900)
+        # can keep that context without merging documents or pages. The
+        # normalized filename is metadata, not an invented answer: it makes
+        # code names such as ``acc.proc_x_y.sql`` searchable as words.
+        readable_title = _searchable_filename_terms(title)
+        document_context = _clean_text(
+            f"Título del archivo: {title}. Términos del nombre: {readable_title}. {full_text}",
+            limit=900,
+        )
         content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
         document_key = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         sequence = 0
@@ -839,7 +1154,9 @@ def _document_records(
                         "drive_id": drive_id,
                         "indexed_at": datetime.now(timezone.utc).isoformat(),
                         "chunk_number": sequence,
-                        "content_tokens": " ".join(tokenize(chunk)),
+                        "content_tokens": " ".join(
+                            tokenize(f"{title} {readable_title} {chunk}")
+                        ),
                     }
                 )
                 sequence += 1

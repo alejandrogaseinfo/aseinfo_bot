@@ -4,7 +4,12 @@ import unicodedata
 from collections.abc import Callable
 from time import perf_counter
 
-from classification import classify_case, classify_case_by_rules, has_explicit_version_request
+from classification import (
+    classify_case,
+    classify_case_by_rules,
+    has_explicit_version_request,
+    is_direct_document_question,
+)
 from conversation import generate_conversational_response
 from context_guard import evaluate_context_guard
 from document_index import tokenize
@@ -84,9 +89,14 @@ SECRET_DISCLOSURE_PATTERN = re.compile(
     r"cual(?:es)?|que[\s_-]*valor|valor[\s_-]*de)\b"
 )
 CUSTOMER_CONFIDENTIAL_PATTERN = re.compile(
-    r"\b(?:dato(?:s)?[\s_-]*de[\s_-]*contacto|contrato(?:s)?|"
-    r"cliente(?:s)?\b.{0,80}\b(?:pago(?:s)?|atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)|"
-    r"(?:pago(?:s)?|atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)\b.{0,80}\bcliente(?:s)?)\b"
+    # A contract is a valid technical domain concept in Evolution. Treat it
+    # as confidential only when the request connects it to a client record or
+    # a financial/customer attribute; otherwise a question such as "prórroga
+    # de contratos" must reach documentary retrieval.
+    r"\bcliente(?:s)?\b.{0,80}\b(?:dato(?:s)?[\s_-]*de[\s_-]*contacto|"
+    r"contrato(?:s)?|pago(?:s)?|atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)\b|"
+    r"\b(?:dato(?:s)?[\s_-]*de[\s_-]*contacto|contrato(?:s)?|pago(?:s)?|"
+    r"atrasad\w*|mora|saldo(?:s)?|deuda(?:s)?|factura(?:s)?)\b.{0,80}\bcliente(?:s)?\b"
 )
 PERSONAL_CONFIDENTIAL_PATTERN = re.compile(
     r"\b(?:salario(?:s)?|cuenta(?:s)?[\s_-]*bancaria(?:s)?|numero[\s_-]*de[\s_-]*identificacion|"
@@ -103,6 +113,15 @@ SITE_INVENTORY_PATTERN = re.compile(
 # related result from an approved library is not presented as an answer.
 RESTRICTED_LIBRARY_PATTERN = re.compile(
     r"\b(?:hojas?[\s_-]*de[\s_-]*servicio|teams?[\s_-]*wiki[\s_-]*data)\b"
+)
+# This is intentionally a high-confidence deterministic pattern. Broader
+# prompt-injection detection remains a semantic guard concern, but explicit
+# attempts to discard Libras's own instructions must never be routed as a
+# generic support question while that guard is unavailable or in observation.
+INSTRUCTION_OVERRIDE_PATTERN = re.compile(
+    r"\b(?:ignora|olvida)\s+(?:todas?\s+)?(?:las?\s+)?"
+    r"(?:instrucciones|reglas|politicas|indicaciones)\s+"
+    r"(?:que\s+)?(?:tienes|recibiste|sigues|anteriores|previas)\b"
 )
 GENERIC_ISSUE_TOKENS = {
     "error",
@@ -290,6 +309,11 @@ def _is_confidential_data_request(user_message: str) -> bool:
 def _requests_restricted_library(user_message: str) -> bool:
     """Reject direct requests for libraries that are not in the bot scope."""
     return bool(RESTRICTED_LIBRARY_PATTERN.search(_normalized_sensitive_text(user_message)))
+
+
+def _attempts_instruction_override(user_message: str) -> bool:
+    """Reject explicit instruction override attempts before any model call."""
+    return bool(INSTRUCTION_OVERRIDE_PATTERN.search(_normalized_sensitive_text(user_message)))
 
 
 def _sensitive_secret_response() -> str:
@@ -511,6 +535,13 @@ async def process_user_message(
         )
         return _restricted_library_response()
 
+    if _attempts_instruction_override(user_message):
+        logger.warning(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=instruction_override_rejected escalated=True"
+        )
+        return _context_guard_response()
+
     if previous_documentary_response and _is_summary_follow_up(user_message):
         return _summarize_previous_documentary_response(previous_documentary_response)
 
@@ -664,6 +695,11 @@ async def process_user_message(
     # the cited fragments. Keeping that deterministic prevents the classifier
     # from replacing the documented details with a generic incident summary.
     if has_explicit_version_request(retrieval_message):
+        decision = fallback_decision
+    elif is_direct_document_question(retrieval_message, evidence):
+        # Direct document answers are rendered deterministically from the
+        # retrieved fragment. This prevents a generic or invented model
+        # summary from replacing evidence the user can verify.
         decision = fallback_decision
     elif getattr(config, "model_endpoint_configured", True):
         try:

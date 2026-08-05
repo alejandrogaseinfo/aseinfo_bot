@@ -41,6 +41,15 @@ STOP_WORDS = {
     "ya",
 }
 
+# Small action families express the same verification intent in technical
+# manuals without binding retrieval to a product or a document.
+ACTION_EQUIVALENT_STEMS = {
+    "revis": {"revis", "valid", "verif", "confirm"},
+    "valid": {"revis", "valid", "verif", "confirm"},
+    "verif": {"revis", "valid", "verif", "confirm"},
+    "confirm": {"revis", "valid", "verif", "confirm"},
+}
+
 
 def _normalize_token(token: str) -> str:
     normalized = unicodedata.normalize("NFKD", token.strip().lower())
@@ -62,6 +71,10 @@ def tokenize(text: str) -> list[str]:
     # a natural-language query can match them without per-document aliases.
     separated_text = re.sub(r"(?<=[a-záéíóúñ])(?=[A-ZÁÉÍÓÚÑ])", " ", text)
     separated_text = re.sub(r"(?<=[A-ZÁÉÍÓÚÑ])(?=[A-ZÁÉÍÓÚÑ][a-záéíóúñ])", " ", separated_text)
+    # Identifiers from SQL/scripts commonly join concepts with underscores
+    # (``vac_vacaciones``). Treat the separator like punctuation so the
+    # natural-language concept remains searchable without document aliases.
+    separated_text = re.sub(r"[_\-.]+", " ", separated_text)
     normalized_text = _normalize_token(separated_text)
     tokens = [_normalize_token(token) for token in re.findall(r"[a-zA-Z0-9_]+", normalized_text)]
     return [
@@ -80,17 +93,35 @@ def has_requested_action_coverage(question: str, source_text: str) -> bool:
     contain that action or a close inflection (``aprobación``) before it can be
     presented as a direct answer.
     """
+    temporal_context = re.sub(
+        r"(?:^|[.?!]\s*)(?:despu[eé]s)\s+de\s+[^,;:.!?]{1,220}[,;:]\s*",
+        " ",
+        question or "",
+        flags=re.IGNORECASE,
+    )
     action_stems = {
         token[:-2]
-        for token in tokenize(question)
+        for token in tokenize(temporal_context)
         if token.endswith(("ar", "er", "ir")) and len(token[:-2]) >= 5
     }
+    # Questions often use a conjugated action (``¿cómo se clasifican ...?``)
+    # rather than the infinitive.  Interpret the verb after ``se`` as an
+    # action too, while ignoring common auxiliaries such as ``se puede``.
+    auxiliary_verbs = {"puede", "pueden", "podria", "podrian", "debe", "deben"}
+    normalized_question = _normalize_token(temporal_context)
+    for verb in re.findall(r"\b(?:como|cómo)\s+se\s+([a-z]+(?:an|en))\b", normalized_question):
+        if verb not in auxiliary_verbs and len(verb[:-2]) >= 5:
+            action_stems.add(verb[:-2])
     if not action_stems:
         return True
 
     source_tokens = set(tokenize(source_text))
     return all(
-        any(source_token.startswith(stem) for source_token in source_tokens)
+        any(
+            source_token.startswith(equivalent_stem)
+            for equivalent_stem in ACTION_EQUIVALENT_STEMS.get(stem, {stem})
+            for source_token in source_tokens
+        )
         for stem in action_stems
     )
 
