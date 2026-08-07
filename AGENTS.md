@@ -94,3 +94,12 @@ Para producción, el acceso personal/delegado a SharePoint debe sustituirse por 
 - Probar una consulta sin evidencia.
 - Verificar que el bot no expone secretos ni datos fuera de la biblioteca autorizada.
 - Verificar que una persona de la audiencia objetivo puede instalar y usar Libras en Teams.
+
+## Convención de commits
+
+- Escribir siempre los mensajes de commit en español.
+- Usar un formato breve y descriptivo, preferiblemente `tipo: descripción`, por
+  ejemplo: `fix: corrige la recuperación de parámetros`.
+- Mantener en español el tipo, la descripción y cualquier cuerpo del commit;
+  conservar nombres propios, identificadores técnicos y nombres de archivos en
+  su forma original cuando corresponda.
