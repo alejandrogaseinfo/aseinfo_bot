@@ -46,6 +46,11 @@ class RetrievalQualityEvaluationTests(unittest.TestCase):
         self.assertEqual(2, report["summary"]["passed_count"])
         self.assertEqual(1.0, report["summary"]["evidence_recall"])
         self.assertEqual(1.0, report["summary"]["correct_abstention_rate"])
+        self.assertEqual(2, len(report["results"]))
+        self.assertTrue(all(result["latency_ms"] >= 0 for result in report["results"]))
+        self.assertIsNotNone(report["summary"]["retrieval_latency_ms_p95"])
+        self.assertIn("answer_state", report["results"][0])
+        self.assertIn("single_source_rate", report["summary"])
 
     def test_loader_rejects_evidence_case_without_a_reviewed_document(self):
         with TemporaryDirectory() as directory:
@@ -66,6 +71,55 @@ class RetrievalQualityEvaluationTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 load_cases(path)
+
+    def test_loader_rejects_unknown_quality_category(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "DOC-01",
+                            "message": "Pregunta documental revisada.",
+                            "expected": "evidence",
+                            "expected_title_contains": ["Gestión"],
+                            "category": "unknown",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                load_cases(path)
+
+    def test_underspecified_case_skips_retrieval_and_counts_as_correct_abstention(self):
+        cases = [
+            {
+                "id": "INSUF-01",
+                "message": "¿Qué se debe revisar?",
+                "expected": "sin_evidencia",
+                "expected_title_contains": [],
+            }
+        ]
+        calls = []
+
+        def retriever(message):
+            calls.append(message)
+            return [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Documento tangencial",
+                    ubicacion="https://contoso.example/doc.pdf",
+                    fragmento="Texto relacionado.",
+                )
+            ]
+
+        report = evaluate_cases(cases, retriever)
+
+        self.assertEqual([], calls)
+        self.assertEqual(1.0, report["summary"]["correct_abstention_rate"])
+        self.assertEqual("sin_evidencia", report["results"][0]["answer_state"])
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ personal.
 - Acceso explícito `Read` al sitio SharePoint: creado (`201 Created`)
 - `Search Index Data Contributor` para ingesta: asignado sobre `srch-libras-prod`
 - Key Vault: `kv-libras-prod` usa Azure RBAC; el App Service tiene `Key Vault Secrets User` y el responsable técnico `Key Vault Secrets Officer`
-- Avance: los secretos `OPENAI-API-KEY` y `SHAREPOINT-CLIENT-SECRET` ya existen en `kv-libras-prod`; la referencia de `OPENAI_API_KEY` ya fue agregada a `app-libras-prod`. El código está publicado, la ingesta inicial está completada y la conexión del bot responde correctamente en `/healthz` y `/readyz`. El endpoint y el canal Teams ya están configurados; queda instalar el paquete y ejecutar el piloto.
+- Avance: los secretos `OPENAI-API-KEY` y `SHAREPOINT-CLIENT-SECRET` ya existen en `kv-libras-prod`; la referencia de `OPENAI_API_KEY` ya fue agregada a `app-libras-prod`. El código está publicado, la ingesta inicial está completada y la conexión del bot responde correctamente en `/healthz` y `/readyz`. El endpoint, el canal Teams y la aplicación aprobada ya están configurados; queda revalidar el piloto.
 
 ## Evidencia confirmada el 28 de julio de 2026
 
@@ -232,9 +232,10 @@ Después de corregir la conexión del bot:
 aplicación en Teams. El proveedor `Microsoft.BotService` ya está registrado y
 el recurso Azure Bot `bot-libras-prod` fue creado correctamente en
 `rg-libras-prod` con plan `Free` y la identidad `id-libras-bot-prod`.
-Libras todavía no aparece en un nuevo chat hasta instalar el paquete como
-aplicación personalizada; el endpoint, el canal Teams y el paquete con IDs
-reales ya están listos.
+Libras ya aparece como aplicación diseñada para la organización en Teams. El
+backend puede actualizarse mediante ZipDeploy sin reinstalar el paquete; el
+paquete con IDs reales solo se necesita cuando cambia el manifiesto o se debe
+instalar la aplicación en otra audiencia.
 
 El Bot Service quedó configurado con el endpoint:
 
@@ -243,9 +244,8 @@ https://app-libras-prod-h0azhpfef6d4fyax.centralus-01.azurewebsites.net/api/mess
 ```
 
 El paquete de Teams con los IDs reales está generado en
-`appPackage/build/Libras-Teams-pilot-2026-07-30.zip`. Falta instalarlo como
-aplicación personalizada para la prueba piloto y finalmente publicarlo en el
-catálogo de la organización. No ejecutar `atk provision` sin revisar el YAML,
+`appPackage/build/Libras-Teams-pilot-2026-08-05-v0.1.1.zip`. No es necesario
+instalarlo de nuevo para un cambio exclusivo del backend. No ejecutar `atk provision` sin revisar el YAML,
 porque podría crear recursos duplicados en Azure en lugar de reutilizar
 `app-libras-prod`.
 

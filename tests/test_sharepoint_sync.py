@@ -15,10 +15,53 @@ from sharepoint_sync import (
     SUPPORTED_EXTENSIONS,
     create_sharepoint_client,
     inventory_summary,
+    _descriptive_fields,
+    _selected_sources,
 )
 
 
 class SharePointSyncTests(unittest.TestCase):
+    def test_descriptive_sharepoint_columns_accept_display_name_variants(self):
+        fields = _descriptive_fields(
+            {
+                "listItem": {
+                    "fields": {
+                        "Detalle": "Corrige vacaciones con saldo negativo.",
+                        "Dependencia0": "Requiere respaldo de base de datos.",
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            {
+                "description": "Corrige vacaciones con saldo negativo.",
+                "dependency": "Requiere respaldo de base de datos.",
+            },
+            fields,
+        )
+
+    def test_script_fields_are_enriched_from_embedded_list_item_columns(self):
+        config = self._application_config()
+        client = SharePointGraphClient(config, "token", "drive-id")
+        root = client._children_url(config.sharepoint_folder_path)
+        with patch.object(
+            client,
+            "_get",
+            return_value={
+                "value": [
+                    {
+                        "id": "script-1",
+                        "name": "acc.proc_arreglar_vac_negativos.sql",
+                        "file": {},
+                        "listItem": {"fields": {"Detalle": "Corrige saldos negativos."}},
+                    }
+                ]
+            },
+        ):
+            files = client.list_supported_files()
+
+        self.assertEqual("Corrige saldos negativos.", files[0]["_libras_description"])
     def _application_config(self):
         return Config(
             {
@@ -84,6 +127,16 @@ class SharePointSyncTests(unittest.TestCase):
             ("SOLUCIONES", "ReadME Hotfixes", "Manuales"),
             config.sharepoint_folder_paths,
         )
+
+    def test_selected_sources_preserve_explicit_priority_and_validate_bounds(self):
+        sources = (("", "readmes"), ("SOLUCIONES", "solutions"), ("", "scripts"))
+
+        self.assertEqual(
+            (("", "readmes"), ("", "scripts")),
+            _selected_sources(sources, (1, 3, 1)),
+        )
+        with self.assertRaisesRegex(ValueError, "entre 1 y 3"):
+            _selected_sources(sources, (4,))
 
     def test_multiple_drives_and_paths_remain_aligned_including_library_roots(self):
         config = Config(
@@ -259,6 +312,197 @@ class SharePointSyncTests(unittest.TestCase):
             self.assertEqual(
                 {"drive-1:same-item-id", "drive-2:same-item-id"}, document_ids
             )
+
+    def test_partial_sync_does_not_delete_documents_from_omitted_sources(self):
+        from tempfile import TemporaryDirectory
+
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def list_supported_files(self, folder_path, drive_id):
+                if drive_id == "drive-1":
+                    return []
+                return [
+                    {
+                        "id": "item-2",
+                        "name": "manual.txt",
+                        "eTag": '"etag-2"',
+                        "webUrl": "https://contoso.example/manual.txt",
+                        "lastModifiedDateTime": "2026-08-06T12:00:00Z",
+                    }
+                ]
+
+            def download(self, item, destination):
+                destination.write_text("manual", encoding="utf-8")
+
+        config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_DRIVE_IDS": "drive-1,drive-2",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+                "SHAREPOINT_FOLDER_PATHS": "SOLUCIONES,",
+            }
+        )
+        with TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with patch("sharepoint_sync.create_sharepoint_client", return_value=FakeSharePointClient()):
+                from sharepoint_sync import sync_pdfs
+
+                sync_pdfs(config, output_dir)
+                sync_pdfs(config, output_dir, source_indexes=(1,))
+
+            state = json.loads(
+                (output_dir / ".libras-sharepoint-sync-state.json").read_text(encoding="utf-8")
+            )
+            deletions = json.loads(
+                (output_dir / ".libras-sharepoint-deletions.json").read_text(encoding="utf-8")
+            )
+
+        self.assertIn("drive-2:item-2", state["documents"])
+        self.assertNotIn("drive-2:item-2", deletions["deleted_document_ids"])
+
+    def test_partial_sync_keeps_drive_scoped_identity_for_a_multi_source_scope(self):
+        from tempfile import TemporaryDirectory
+
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def list_supported_files(self, folder_path, drive_id):
+                return [
+                    {
+                        "id": "same-item-id",
+                        "name": "script.sql",
+                        "eTag": '"etag-1"',
+                        "webUrl": "https://contoso.example/script.sql",
+                        "lastModifiedDateTime": "2026-08-06T12:00:00Z",
+                    }
+                ]
+
+            def download(self, item, destination):
+                destination.write_text("select 1", encoding="utf-8")
+
+        config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_DRIVE_IDS": "drive-1,drive-2",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+                "SHAREPOINT_FOLDER_PATHS": "SOLUCIONES,",
+            }
+        )
+        with TemporaryDirectory() as directory:
+            with patch(
+                "sharepoint_sync.create_sharepoint_client", return_value=FakeSharePointClient()
+            ):
+                from sharepoint_sync import sync_pdfs
+
+                sync_pdfs(config, Path(directory), source_indexes=(1,))
+            state = json.loads(
+                (Path(directory) / ".libras-sharepoint-sync-state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertIn("drive-1:same-item-id", state["documents"])
+        self.assertNotIn("same-item-id", state["documents"])
+
+    def test_identity_migration_marks_new_key_before_deleting_legacy_key(self):
+        from tempfile import TemporaryDirectory
+
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def list_supported_files(self, folder_path, drive_id):
+                return [
+                    {
+                        "id": "item-1",
+                        "name": "script.sql",
+                        "eTag": '"etag-1"',
+                        "webUrl": "https://contoso.example/script.sql",
+                        "lastModifiedDateTime": "2026-08-06T12:00:00Z",
+                    }
+                ]
+
+            def download(self, item, destination):
+                destination.write_text("select 1", encoding="utf-8")
+
+        legacy_config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+            }
+        )
+        multi_source_config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_DRIVE_IDS": "drive-1,drive-2",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+                "SHAREPOINT_FOLDER_PATHS": "SOLUCIONES,",
+            }
+        )
+        with TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with patch(
+                "sharepoint_sync.create_sharepoint_client", return_value=FakeSharePointClient()
+            ):
+                from sharepoint_sync import sync_pdfs
+
+                sync_pdfs(legacy_config, output_dir)
+                sync_pdfs(multi_source_config, output_dir, source_indexes=(1,))
+            changes = json.loads(
+                (output_dir / ".libras-sharepoint-changes.json").read_text(encoding="utf-8")
+            )
+            deletions = json.loads(
+                (output_dir / ".libras-sharepoint-deletions.json").read_text(encoding="utf-8")
+            )
+
+        self.assertIn("drive-1:item-1", changes["changed_document_ids"])
+        self.assertIn("item-1", deletions["deleted_document_ids"])
+
+    def test_unchanged_document_preserves_approved_quality_review(self):
+        from tempfile import TemporaryDirectory
+
+        item = {
+            "id": "sql-1",
+            "name": "vacaciones.sql",
+            "eTag": '"etag-1"',
+            "webUrl": "https://contoso.example/vacaciones.sql",
+            "lastModifiedDateTime": "2026-08-06T12:00:00Z",
+        }
+
+        class FakeSharePointClient:
+            drive_id = "drive-1"
+
+            def list_supported_files(self, folder_path, drive_id):
+                return [item]
+
+            def download(self, current_item, destination):
+                destination.write_text("select 1", encoding="utf-8")
+
+        config = Config(
+            {
+                "SHAREPOINT_SITE_ID": "site-id",
+                "SHAREPOINT_DRIVE_ID": "drive-1",
+                "SHAREPOINT_FOLDER_PATH": "SOLUCIONES",
+            }
+        )
+        with TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with patch("sharepoint_sync.create_sharepoint_client", return_value=FakeSharePointClient()):
+                from sharepoint_sync import sync_pdfs
+
+                sync_pdfs(config, output_dir)
+                metadata_path = next(output_dir.glob("*.sql.metadata.json"))
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata["libras"] = {"quality_status": "aprobado", "artifact_role": "script"}
+                metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                sync_pdfs(config, output_dir)
+
+            refreshed = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("aprobado", refreshed["libras"]["quality_status"])
+        self.assertEqual("script", refreshed["libras"]["artifact_role"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-# Integraciones aplazadas
+# Prototipos de integraciones posteriores
 
-Este directorio conserva adaptadores e importadores fuera del alcance de la entrega actual: ClickUp, Jira y fuentes locales o de repositorio.
+Este directorio conserva prototipos para las fases posteriores al cierre de producción: ClickUp + GitHub, Jira histórico y el MCP de `downloads.aseinfo.net`.
 
-No importar, ejecutar ni modificar estos módulos durante la ruta de producción de Libras, que se limita a Teams, Azure AI Search y SharePoint/OneDrive.
+No se consideran integraciones productivas ni forman parte del flujo actual de recuperación. Antes de usarlos deben validarse contratos, permisos, secretos, timeouts y pruebas de evidencia.

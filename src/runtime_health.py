@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-RUNTIME_REVISION = "20260804-dtc-validation-v1"
+DEFAULT_RUNTIME_REVISION = "unversioned"
 
 
 def readiness_payload(config) -> dict[str, object]:
@@ -21,8 +21,9 @@ def readiness_payload(config) -> dict[str, object]:
 
     return {
         "status": "ready" if not missing else "not_ready",
-        "runtime_revision": RUNTIME_REVISION,
+        "runtime_revision": getattr(config, "runtime_revision", DEFAULT_RUNTIME_REVISION),
         "environment": getattr(config, "environment", "local"),
+        "retrieval_strategy": getattr(config, "retrieval_strategy", "legacy"),
         "model_configured": model_ready,
         "azure_search_configured": search_ready,
         "azure_search_required": require_search,

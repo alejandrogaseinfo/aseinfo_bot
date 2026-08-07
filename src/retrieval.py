@@ -1,7 +1,7 @@
 from azure_search import retrieve_azure_search_evidence
 from document_index import retrieve_document_evidence
 from logging_utils import get_logger
-from models import EvidenceSource
+from models import EvidenceSource, RetrievalTrace
 
 
 logger = get_logger()
@@ -27,7 +27,9 @@ def _dedupe_evidence(sources: list[EvidenceSource], limit: int = 4) -> list[Evid
     return unique_sources
 
 
-def retrieve_evidence(user_message: str, client=None, config=None) -> list[EvidenceSource]:
+def retrieve_evidence(
+    user_message: str, client=None, config=None, return_trace: bool = False
+) -> list[EvidenceSource] | RetrievalTrace:
     """
     Recupera evidencia desde Azure AI Search; el índice local solo respalda
     entornos que lo permiten explícitamente.
@@ -38,16 +40,27 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
         getattr(config, "azure_search_configured", False),
     ):
         try:
-            evidence = retrieve_azure_search_evidence(
-                user_message, config=config, client=client
+            result = retrieve_azure_search_evidence(
+                user_message, config=config, client=client, return_trace=return_trace
             )
+            evidence = result.sources if isinstance(result, RetrievalTrace) else result
             logger.info(
                 "Consulta resuelta con Azure AI Search. index_name=%s evidencias=%s",
                 config.azure_search_index_name,
                 len(evidence),
             )
             if evidence:
-                return _dedupe_evidence(evidence, limit=4)
+                deduped = _dedupe_evidence(evidence, limit=4)
+                if isinstance(result, RetrievalTrace):
+                    result.sources = deduped
+                    return result
+                return deduped
+            # V2 deliberately abstains when Azure AI Search cannot establish
+            # direct evidence. Falling back to the local development corpus
+            # turns that safe abstention into an unrelated answer and makes a
+            # staging evaluation differ from the deployed index.
+            if getattr(config, "retrieval_strategy", "legacy") == "v2":
+                return result
         except Exception:
             logger.exception("Falló Azure AI Search.")
 
@@ -56,7 +69,8 @@ def retrieve_evidence(user_message: str, client=None, config=None) -> list[Evide
             "No se usará el índice local. environment=%s",
             getattr(config, "environment", "unknown"),
         )
-        return []
+        return RetrievalTrace() if return_trace else []
 
     document_evidence = retrieve_document_evidence(user_message)
-    return _dedupe_evidence(document_evidence, limit=4)
+    deduped = _dedupe_evidence(document_evidence, limit=4)
+    return RetrievalTrace(sources=deduped, direct_evidence_count=len(deduped)) if return_trace else deduped

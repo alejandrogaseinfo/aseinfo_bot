@@ -262,3 +262,79 @@ evidencia.
 | 2026-08-04 | Se detectó una diferencia entre preguntas interrogativas e imperativas con la misma evidencia. | Las solicitudes como “Dame los parámetros…” ahora se reconocen como preguntas documentales directas, sin dejar que el clasificador las convierta en abstención. Se publicó la corrección; 143 pruebas pasan y `/readyz=ready`. |
 | 2026-08-04 | Una pregunta de validación DTC tras reinstalación fue descartada aunque el manual estaba indexado. | Se separó la circunstancia temporal (“después de reinstalar”) de la acción realmente solicitada y se normalizó la familia revisar/validar/verificar/confirmar. El caso recupera `Manual DTC Verificacion.pdf` páginas 3 y 4. |
 | 2026-08-05 | Se verificó la consulta DTC desde Teams después de una publicación limpia del App Service. | Libras recupera `Manual DTC Verificacion.pdf` páginas 3, 4 y 5. La respuesta cita la validación de firewall/DTC en ambos servidores; la recuperación, procedencia y enlace ya son correctos. Queda como mejora futura sintetizar también servicios y `Local DTC` de las tres páginas. |
+| 2026-08-05 | Prueba aleatoria desde Teams sobre `Upgrade 1.24.1.1`. | La primera respuesta usó portada/tabla de contenido como evidencia. Se añadió regresión para rechazar navegación en preguntas sustantivas; la corrección recupera una instrucción directa de respaldo en la página 6 y conserva fuente/enlace de SharePoint. |
+| 2026-08-05 | Pruebas aleatorias desde Teams sobre `Reiniciar appjob` y `Ofuscación de datos.sql`. | Appjob recupera la instrucción de reinicio, pero no demuestra la validación posterior; la consulta directa de ofuscación no recupera el SQL autorizado. Se añadió `RAG-08` para este último caso. La evaluación productiva ampliada queda en 9/12 (recall 0.778; abstención correcta 0.667); `RAG-03`, `RAG-06` y `RAG-08` quedan pendientes de corregir en ranking/cobertura e índice. |
+| 2026-08-05 | Se publicó el filtro refinado de navegación en `app-libras-prod` mediante OneDeploy `a0efcafa-d916-481c-a18d-3b0300a0bb61`. | Despliegue sin errores; `/healthz=200` y `/readyz=200`. La suite automatizada queda en 146 pruebas exitosas. No se reindexó producción: el fallo de los SQL requiere una corrección separada y reversible de recuperación/índice. |
+
+## Reconstrucción v2 — estado de implementación (2026-08-05)
+
+Se implementó localmente una estrategia reversible `RETRIEVAL_STRATEGY=v2`.
+La estrategia queda desactivada por defecto (`legacy`) y el índice productivo
+no ha sido modificado durante esta fase.
+
+- `QueryPlan` separa requisitos, versión, artefacto e identificadores; las
+  cláusulas de contexto se omiten de forma determinista y las paráfrasis
+  funcionales se normalizan sin relacionarlas con un documento concreto.
+- La recuperación une vector, consulta completa y conceptos normalizados antes
+  de validar; la diversidad se aplica después de evaluar los fragmentos para
+  no expulsar la página factual de un documento grande.
+- Una fuente v2 solo se emite si un fragmento cubre un requisito. Portadas,
+  índices y documentos de enlaces se excluyen. Las respuestas incompletas
+  informan los requisitos no demostrados y no enlazan fuentes tangenciales.
+- La ingesta nueva agrega texto de recuperación, rol de artefacto, calidad y
+  metadatos revisados. Los SQL se separan por declaración y preservan los
+  identificadores de procedimientos. Los campos funcionales solo se leen del
+  bloque explícito `libras` del sidecar, nunca de una inferencia automática.
+- El verificador semántico opcional (`USE_LLM_EVIDENCE_VERIFIER=true`) está
+  limitado a ocho documentos candidatos y falla cerrado. Debe conservar las
+  anclas técnicas del requisito y, para código, el nombre de la operación.
+
+### Evidencia de la candidata local
+
+Se construyó una candidata local reproducible sobre `data/sharepoint`: 722
+archivos produjeron 4,575 fragmentos y embeddings de 512 dimensiones. La cola
+focalizada contiene 343 documentos: 22 dominantes, 30 duplicados y 93 scripts
+sin operación estructural. Los SQL de vacaciones y ofuscación están incluidos.
+
+La evaluación con verificación semántica y el corpus vigente terminó en 8/12:
+recuperación top-3 0.60, fuente directa correcta 0.60, abstención correcta 1.0
+y ninguna fuente sin evidencia validada. No supera las puertas de promoción
+(0.90/0.95/0.95/0), así que quedan prohibidos el respaldo con fines de cambio,
+la reconstrucción de `libras-docs`, la activación de v2 y cualquier despliegue
+en `app-libras-prod` hasta una nueva medición aprobada.
+
+El caso `RAG-06` se corrigió en el contrato: la página 37 de `Acciones de
+personal.pdf` sí documenta directamente los parámetros de riesgos de
+incapacidad. El SQL de vacaciones permanece pendiente de aprobación humana:
+el identificador `vac` no se expandirá automáticamente a una operación
+funcional.
+
+### Siguiente ventana autorizable
+
+1. Completar la revisión humana de los 343 documentos focalizados mediante
+   `src/apply_index_review.py`, empezando por los SQL críticos, duplicados y
+   documentos dominantes.
+2. Ampliar el conjunto de retención estratificado y repetir
+   `src/evaluate_local_retrieval_candidate.py` con 512 dimensiones y el
+   verificador semántico habilitado. No ajustar el ranking con sus paráfrasis.
+3. Solo si todas las puertas pasan, restaurar conectividad de Azure, exportar
+   `libras-docs` con `src/backup_search_index.py`, verificar su manifiesto,
+   reconstruir con `src/azure_search_ingest.py --reset-index`, habilitar v2 y
+   validar desde Teams. `src/restore_search_index.py --reset-index` es la ruta
+   de reversión verificada por conteo y hash.
+
+| Fecha | Cambio o evidencia | Resultado |
+|---|---|---|
+| 2026-08-05 | Se implementó la reconstrucción v2, cola de revisión, respaldo/restauración verificables y candidata local reanudable. | 156 pruebas automatizadas pasan. La estrategia continúa en `legacy`; no se modificó ni desplegó producción porque las puertas de calidad fallan. |
+| 2026-08-05 | Se comprobó el candidato local completo con 512 dimensiones y verificación semántica limitada. | La abstención alcanza 100% y no hay fuentes no validadas, pero la recuperación/fuente directa es 60%; promoción bloqueada. |
+| 2026-08-05 | Se incorporaron las brechas observadas en la prueba funcional de Teams: solicitud de credenciales, listado total del sitio y evidencia de intención tangencial. | Las solicitudes con “pasar” credenciales y “listar” documentos se bloquean antes de recuperar evidencia. Un changelog no responde requisitos de software, un tipo documental no responde un procedimiento de versionado y una frase sin detalle no responde una lista de parámetros. Los SQL se resumen sin pegar código ejecutable. La suite completa tiene 181 pruebas exitosas; no se desplegó producción. |
+| 2026-08-05 | Se corrigió la composición de diagnósticos documentales. | Libras reúne validaciones completas de varias páginas y las presenta como lista numerada. Un encabezado truncado no se usa como respuesta para una solicitud de servicios o validaciones. La suite completa tiene 183 pruebas exitosas; no se desplegó producción. |
+| 2026-08-05 | Se ajustó la recuperación de precauciones de actualización y el límite de diagnóstico de descargas. | Las preguntas previas a instalar una actualización buscan también los encabezados documentales de preparación, respaldo y configuración; una regresión valida la recuperación de esa evidencia. Una ruta normal de descarga ya no se presenta como solución cuando el usuario reporta que la descarga falla: para ello se exige evidencia diagnóstica explícita. La suite completa tiene 184 pruebas exitosas; no se desplegó producción. |
+| 2026-08-05 | Se amplió y validó la candidata local v2 con los casos observados en Teams. | El corpus pasó de 12 a 14 casos e incluye precauciones de actualización y descarga fallida. Se reforzó el anclaje semántico para conservar equivalencias operativas legítimas sin asociar encabezados o tablas de base de datos con acciones funcionales no documentadas. La evaluación final con verificador semántico obtuvo 14/14, recuperación/fuente directa/abstención de 1.0 y cero fuentes no sustentadas; p95 local de 10.9 s. La suite completa tiene 188 pruebas exitosas. La promoción o despliegue sigue sin ejecutarse. |
+| 2026-08-05 | Se acotó el piloto productivo sin reindexar. | `app-libras-prod` solo autoriza ReadME Hotfixes, Documentos/SOLUCIONES, Manuales y Scripts de Apoyo mediante pares `drive_id`/`folder_path`. Se excluyeron las demás bibliotecas, incluidos los nueve documentos curados de Documentos de Apoyo para no habilitar la biblioteca completa. El índice se preservó con 2,665 fragmentos, existe respaldo previo verificable y `/healthz`/`/readyz` devolvieron HTTP 200. |
+| 2026-08-06 | Se corrigió la respuesta de AppJob y se endureció el tratamiento de procedencia heredada. | La inspección del índice confirmó que `Configuración SMTP Evolution - 1.19.docx` pertenece a `SOLUCIONES`; el problema no era una fuga de Documentos de Apoyo sino un fragmento excesivamente amplio. Los registros heredados sin `drive_id`/`folder_path` ahora fallan cerrados salvo que su URL pruebe una de las cuatro bibliotecas del piloto. Los documentos con pasos numerados se recortan al paso pertinente, evitando exponer configuración SMTP incidental. Las regresiones y la suite completa pasan con 190 pruebas. Se publicaron OneDeploy `a5ce4d3b-7512-4181-8cde-e9bc3c1cb78b` y `d3d07873-1b24-4d71-9d7a-8a3eb9e8b874`; `/healthz` y `/readyz` devolvieron HTTP 200. La confirmación visual posterior desde Teams queda pendiente porque el navegador agotó su espera al leer el chat. |
+| 2026-08-06 | Se habilitó la relación entre carpetas descriptivas y archivos genéricos. | La recuperación deriva en memoria el trayecto padre desde la URL segura de SharePoint y lo usa como contexto y señal de ranking; una carpeta con tres o más conceptos coincidentes prevalece sobre menciones incidentales. Los diagnósticos concretos ejecutan una pasada acotada por prefijos para reconocer rutas CamelCase como `TiempoNoTrabajado`. La consulta “Tengo un error de fechas en tiempos no trabajados” se verificó contra el índice productivo y devuelve únicamente `Indicaciones.txt` con su enlace y solución. El plan Free rechazó toda escritura por cuota agotada, por lo que no se borró ni reindexó ningún documento; el arreglo no depende de ello. La suite completa tiene 195 pruebas exitosas y OneDeploy `4ad6c6cc-e229-45e5-9b97-47ce2168901e` quedó completado; `/healthz` y `/readyz` devolvieron HTTP 200. |
+| 2026-08-06 | Se añadieron enlaces a los archivos relacionados de cada solución. | Junto al enlace del archivo citado, Teams muestra `Archivos relacionados` con la vista nativa `Forms/AllItems.aspx` de su carpeta de SharePoint. `SHAREPOINT_FOLDER_CTID` configura el identificador de la biblioteca para construir el enlace completo. La publicación inicial quedó bloqueada al descargar `uv` durante la compilación rápida y produjo 503; se desactivó esa ruta, se republicó como OneDeploy `861c6d13-022a-406d-9b2c-7f368c5be698` y `/healthz`/`/readyz` volvieron a HTTP 200. La suite completa tiene 196 pruebas exitosas. |
+| 2026-08-06 | Se normalizó la codificación de la URL de carpeta. | El enlace `AllItems.aspx` codifica los segmentos de ruta, incluido `Documentos%20compartidos`, para coincidir con la URL nativa de SharePoint. OneDeploy `7a7e809b-317c-4864-bff6-bea92f8c5f9f` terminó correctamente y `/healthz`/`/readyz` devolvieron HTTP 200. |
+| 2026-08-06 | Se incorporaron las columnas descriptivas de SharePoint para scripts. | El sincronizador lee `Detalle`/`Description` y `Dependencia` para archivos `.sql`, `.ps1` y `.bat`, los agrega al contexto y tokens de búsqueda, y Libras los usa para explicar el propósito del script sin mostrar código ejecutable. La suite completa tiene 201 pruebas exitosas. OneDeploy `33e20f68-b119-45f0-a875-9a5f579f3bcd` terminó correctamente; `/healthz` y `/readyz` devolvieron HTTP 200. El script ya existente aún requiere liberar cuota del índice Free y ejecutar una actualización controlada para que esta descripción quede disponible en producción. |
+| 2026-08-06 | Se reconstruyó `libras-docs` para mantener el piloto dentro de la cuota Free. | Se eliminó el índice candidato `libras-docs-v2-candidate` (2,671 fragmentos), se creó un respaldo reducido y se restauraron 1,326 fragmentos de `ReadME Hotfixes`, `SOLUCIONES` y `Scripts de Apoyo`. `Manuales` queda temporalmente fuera del índice por capacidad, pero no se eliminó de SharePoint. `acc.proc_arreglar_vac_negativos.sql` quedó indexado con su descripción de `Detalle`; el índice devuelve 1,326 documentos y `/healthz`/`/readyz` responden HTTP 200. El respaldo original permanece en `output/backup-libras-pre-duplicados-20260806`. |

@@ -14,7 +14,7 @@ El MCP debe ser una interfaz segura y de solo lectura para:
 4. preparar documentos para Azure AI Search o el índice local;
 5. permitir que el bot muestre la fuente original.
 
-Este documento es un anexo del [mapa único del MVP](plan-mvp-presentacion-lunes.md).
+Este documento pertenece a la tercera fase del [roadmap de integraciones posteriores](README.md) y no forma parte del cierre de producción de esta semana.
 
 ## 2. Contexto
 

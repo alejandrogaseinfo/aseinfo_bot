@@ -1,8 +1,10 @@
 import json
 import re
+from urllib.parse import unquote, urlparse
 
 from document_index import has_requested_action_coverage, tokenize
 from models import BotDecision, EvidenceSource
+from query_plan import build_query_plan
 
 
 SYSTEM_PROMPT = """
@@ -33,6 +35,112 @@ Reglas:
 - Si faltan pruebas solidas, marque requiere_escalamiento=true.
 """.strip()
 VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
+SOFTWARE_REQUIREMENTS_PATTERN = re.compile(
+    r"\b(?:pre\s*)?requisitos?\b.{0,48}\b(?:software|instalaci[oó]n)\b|"
+    r"\b(?:software|instalaci[oó]n)\b.{0,48}\b(?:pre\s*)?requisitos?\b",
+    re.IGNORECASE,
+)
+DOCUMENT_VERSION_PROCEDURE_PATTERN = re.compile(
+    r"\b(?:crear|generar|registrar|agregar|subir|nueva)\w*\b.{0,64}"
+    r"\bversi[oó]n\b.{0,64}\bdocument\w*\b|"
+    r"\bdocument\w*\b.{0,64}\b(?:crear|generar|registrar|agregar|subir|nueva)\w*\b"
+    r".{0,64}\bversi[oó]n\b",
+    re.IGNORECASE,
+)
+PARAMETER_LIST_REQUEST_PATTERN = re.compile(
+    r"\bqu[eé]\s+par[aá]metros?\b|\bpar[aá]metros?\s+se\s+pued\w*\b",
+    re.IGNORECASE,
+)
+PARAMETER_EVIDENCE_PATTERN = re.compile(
+    r"\bpar[aá]metr\w*\b.{0,240}"
+    r"\b(?:c[oó]digo|nombre|valor|rango|porcentaje|tipo)\b\s*[:=-]",
+    re.IGNORECASE,
+)
+CALCULATION_REQUEST_PATTERN = re.compile(
+    r"\b(?:calcul\w*|f[oó]rmula|equival\w*|cu[aá]nt[oa]s?)\b.{0,96}\baguinaldo\b|"
+    r"\baguinaldo\b.{0,96}\b(?:calcul\w*|f[oó]rmula|equival\w*|cu[aá]nt[oa]s?)\b",
+    re.IGNORECASE,
+)
+CALCULATION_EVIDENCE_PATTERN = re.compile(
+    r"\baguinaldo\b.{0,160}\b(?:f[oó]rmula|equival\w*|proporcional\w*|"
+    r"salario\s+(?:diario|base)|d[ií]as?\s+(?:de\s+salario|laborad\w*|trabajad\w*)|"
+    r"divid\w*|multiplic\w*|por\s+cada)\b|"
+    r"\b(?:f[oó]rmula|equival\w*|proporcional\w*|salario\s+(?:diario|base)|"
+    r"d[ií]as?\s+(?:de\s+salario|laborad\w*|trabajad\w*)|divid\w*|multiplic\w*|"
+    r"por\s+cada)\b.{0,160}\baguinaldo\b",
+    re.IGNORECASE,
+)
+POST_UPDATE_VALIDATION_REQUEST_PATTERN = re.compile(
+    r"\b(?:despu[eé]s|posterior|luego|una\s+vez)\b.{0,96}\b(?:actualiz\w*|instal\w*)\b"
+    r".{0,96}\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b|"
+    r"\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b.{0,96}"
+    r"\b(?:despu[eé]s|posterior|luego|una\s+vez)\b.{0,96}\b(?:actualiz\w*|instal\w*)\b",
+    re.IGNORECASE,
+)
+POST_UPDATE_VALIDATION_EVIDENCE_PATTERN = re.compile(
+    r"\b(?:despu[eé]s|posterior|luego|una\s+vez)\b.{0,120}\b(?:actualiz\w*|instal\w*)\b"
+    r".{0,160}\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b|"
+    r"\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b.{0,120}"
+    r"\b(?:despu[eé]s|posterior|luego|una\s+vez)\b.{0,120}\b(?:actualiz\w*|instal\w*)\b",
+    re.IGNORECASE,
+)
+POST_REINSTALLATION_VALIDATION_REQUEST_PATTERN = re.compile(
+    r"\b(?:despu[eé]s|luego|tras)\b.{0,96}\breinstal\w*\b.{0,96}"
+    r"\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b|"
+    r"\b(?:valid\w*|verif\w*|confirm\w*|revis\w*)\b.{0,96}"
+    r"\b(?:despu[eé]s|luego|tras)\b.{0,96}\breinstal\w*\b",
+    re.IGNORECASE,
+)
+KEY_VAULT_PATTERN = re.compile(r"\bkey\s+vault\b", re.IGNORECASE)
+DIAGNOSTIC_LIST_REQUEST_PATTERN = re.compile(
+    r"\b(?:servicios?|validaciones?|comprobaciones?)\b.{0,72}"
+    r"\b(?:revis|valid|verif|confirm)\w*\b|"
+    r"\b(?:revis|valid|verif|confirm)\w*\b.{0,72}"
+    r"\b(?:servicios?|validaciones?|comprobaciones?)\b",
+    re.IGNORECASE,
+)
+DIAGNOSTIC_CHECK_PATTERN = re.compile(
+    r"\b(?:revis\w*|valid\w*|verif\w*|confirm\w*|asegur\w*)\b",
+    re.IGNORECASE,
+)
+INCOMPLETE_DIAGNOSTIC_HEADING_PATTERN = re.compile(
+    r"\b(?:estos|los)\s+servicios?\s+est[aá]n\s+(?:corriendo|en\s+ejecuci[oó]n)\.?$",
+    re.IGNORECASE,
+)
+DOWNLOAD_FAILURE_PATTERN = re.compile(
+    r"\b(?:no\s+(?:logra|puede|permite)|falla|error|problema)\b.{0,72}"
+    r"\b(?:descarg\w*|baj\w*)\b|"
+    r"\b(?:descarg\w*|baj\w*)\b.{0,72}"
+    r"\b(?:no\s+(?:logra|puede|permite)|falla|error|problema)\b",
+    re.IGNORECASE,
+)
+DOWNLOAD_DIAGNOSTIC_EVIDENCE_PATTERN = re.compile(
+    r"\b(?:falla|error|problema|revis\w*|verif\w*|valid\w*)\b",
+    re.IGNORECASE,
+)
+PROCEDURE_STEP_MARKER = re.compile(
+    r"\b(?:haga clic|seleccione|selecciona|digite|ingrese|elija|marque|abra|presione|"
+    r"seleccionar|confirme|renombre|renombrar|"
+    r"importe|importar|ejecute)\b",
+    re.IGNORECASE,
+)
+PROCEDURE_NOISE_BOUNDARY = re.compile(
+    r"\b(?:info|warn(?:ing)?|error|exception|stack\s+trace|connection\s+string|"
+    r"cadena\s+de\s+conexi[oó]n|server\s*=|data\s+source\s*=)\b|"
+    r"\b20\d{2}[-/]\d{2}[-/]\d{2}\b",
+    re.IGNORECASE,
+)
+MAX_PROCEDURE_STEPS_IN_RESPONSE = 6
+MIN_SECONDARY_PROCEDURE_STEPS = 2
+UNDERSPECIFIED_QUERY_PATTERNS = (
+    re.compile(r"^(?:que|qué)\s+(?:se\s+)?(?:debe|hay\s+que)\s+(?:revisar|hacer|validar|verificar)\??$", re.IGNORECASE),
+    re.compile(r"^(?:no\s+(?:me\s+)?funciona|no\s+sirve|tengo\s+un\s+problema)\.?$", re.IGNORECASE),
+)
+PROCEDURAL_SCAFFOLD_TOKENS = {
+    "como", "pued", "puede", "pueden", "debe", "deben", "parametro", "modific",
+    "configur", "clasific", "arreglar", "script", "evolution", "revis", "valid",
+    "verific", "confirm", "hacer", "procedimiento",
+}
 
 
 def _combined_evidence_text(evidence: list[EvidenceSource]) -> str:
@@ -40,6 +148,15 @@ def _combined_evidence_text(evidence: list[EvidenceSource]) -> str:
         f"{source.titulo} {source.fragmento} {source.ubicacion}".lower()
         for source in evidence
     )
+
+
+def is_underspecified_query(user_message: str) -> bool:
+    """Identify generic support utterances that need context before search."""
+    normalized = " ".join((user_message or "").casefold().split()).strip()
+    normalized = normalized.strip("¿¡")
+    if not normalized:
+        return True
+    return any(pattern.fullmatch(normalized) for pattern in UNDERSPECIFIED_QUERY_PATTERNS)
 
 
 def is_direct_document_question(user_message: str, evidence: list[EvidenceSource]) -> bool:
@@ -81,6 +198,10 @@ def is_direct_document_question(user_message: str, evidence: list[EvidenceSource
     for source in evidence:
         if source.tipo not in {"sharepoint", "azure_ai_search", "documento", "setup"}:
             continue
+        # La estrategia v2 ya verificó cobertura requisito por requisito con
+        # texto directo. No vuelva a degradarla a una coincidencia de tokens.
+        if source.covered_requirements:
+            return True
         source_tokens = set(tokenize(f"{source.titulo} {source.fragmento}"))
         required_overlap = 2 if len(query_tokens) <= 4 else 3
         if len(query_tokens.intersection(source_tokens)) >= required_overlap:
@@ -88,11 +209,184 @@ def is_direct_document_question(user_message: str, evidence: list[EvidenceSource
     return False
 
 
+def _procedure_steps(text: str) -> list[str]:
+    """Extract ordered imperative steps that are explicitly present in a fragment."""
+    compact = " ".join((text or "").split())
+    if not compact:
+        return []
+    matches = list(PROCEDURE_STEP_MARKER.finditer(compact))
+    steps: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(compact)
+        step = compact[match.start() : end]
+        # Los fragmentos indexados pueden incluir trazas o cadenas de conexión
+        # después del último paso. No son instrucciones y no deben llegar al chat.
+        step = PROCEDURE_NOISE_BOUNDARY.split(step, maxsplit=1)[0].strip(" .;:")
+        if len(step) >= 8 and step not in steps:
+            steps.append(step)
+    return steps
+
+
+def _is_procedural_request(user_message: str) -> bool:
+    normalized = " ".join((user_message or "").casefold().split())
+    return bool(
+        re.search(
+            r"(?:cómo|como)\s+(?:se\s+)?(?:puede|debe|hace|hacer|descarga|accede|ingresa)|"
+            r"(?:qué|que)\s+se\s+debe\s+(?:hacer|revisar)|"
+            r"\bpasos?\b|\bprocedimiento\b",
+            normalized,
+        )
+    )
+
+
+def _normalized_step(step: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", step.casefold()).strip()
+
+
+def _steps_are_equivalent(left: str, right: str) -> bool:
+    """Treat minor wording changes as the same documented procedural step."""
+    left_tokens = set(tokenize(left))
+    right_tokens = set(tokenize(right))
+    if not left_tokens or not right_tokens:
+        return _normalized_step(left) == _normalized_step(right)
+    overlap = len(left_tokens.intersection(right_tokens))
+    union = len(left_tokens.union(right_tokens))
+    return overlap / union >= 0.75
+
+
+def _contains_equivalent_step(step: str, existing: list[str]) -> bool:
+    return any(_steps_are_equivalent(step, candidate) for candidate in existing)
+
+
+def _focused_procedure_evidence(
+    user_message: str, evidence: list[EvidenceSource]
+) -> list[EvidenceSource]:
+    """Keep one primary source and meaningful secondary procedural evidence.
+
+    A secondary fragment from the legacy index has no explicit requirement
+    mapping, so it is treated as duplicate-risk and omitted. The v2 index may
+    contribute a secondary source only when it carries explicit covered
+    requirements and at least two new procedural steps.
+    """
+    if not _is_procedural_request(user_message):
+        return evidence
+
+    # When the index includes a dedicated solution instruction plus an
+    # incidental configuration document, keep the solution artifact as the
+    # procedural source. Diagnostic requests retain their complementary
+    # checks from multiple pages.
+    if not DIAGNOSTIC_LIST_REQUEST_PATTERN.search(user_message or ""):
+        solution_sources = [
+            source for source in evidence if "/soluciones/" in unquote(urlparse(source.ubicacion).path).casefold()
+        ]
+        if solution_sources:
+            return [solution_sources[0]]
+
+    candidates = [
+        (
+            source,
+            _procedure_steps(source.fragmento),
+            index,
+            len(
+                set(tokenize(user_message or ""))
+                & set(tokenize(f"{source.titulo} {source.fragmento}"))
+            ),
+        )
+        for index, source in enumerate(evidence)
+    ]
+    candidates = [candidate for candidate in candidates if candidate[1]]
+    if not candidates or max(len(steps) for _, steps, _, _ in candidates) < 3:
+        return evidence
+
+    best_source, best_steps, _, _ = max(
+        candidates,
+        key=lambda item: (item[3], len(item[1]), -item[2]),
+    )
+    selected = [best_source]
+    covered_steps = list(best_steps)
+    for source, steps, _, _ in candidates:
+        if source is best_source:
+            continue
+        new_steps = [step for step in steps if not _contains_equivalent_step(step, covered_steps)]
+        if (
+            source.covered_requirements
+            and len(new_steps) >= MIN_SECONDARY_PROCEDURE_STEPS
+        ):
+            selected.append(source)
+            covered_steps.extend(new_steps)
+    return selected
+
+
+def _unique_procedure_steps(evidence: list[EvidenceSource]) -> list[str]:
+    steps: list[str] = []
+    for source in evidence:
+        for step in _procedure_steps(source.fragmento):
+            if _contains_equivalent_step(step, steps):
+                continue
+            steps.append(step)
+    return steps
+
+
+def _is_code_evidence(source: EvidenceSource) -> bool:
+    """Identify executable artifacts that should not be pasted as chat prose."""
+    document_type = (source.document_type or "").casefold()
+    title = (source.titulo or "").casefold()
+    return document_type in {"sql", "code", "script"} or ".sql" in title
+
+
+def _diagnostic_checks(evidence: list[EvidenceSource]) -> list[str]:
+    """Extract complete, directly stated validation checks from evidence."""
+    checks: list[str] = []
+    for source in evidence:
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", source.fragmento or ""):
+            compact = " ".join(sentence.split()).strip(" -;,")
+            if (
+                len(compact) < 12
+                or compact.endswith(":")
+                or not DIAGNOSTIC_CHECK_PATTERN.search(compact)
+                or INCOMPLETE_DIAGNOSTIC_HEADING_PATTERN.search(compact)
+            ):
+                continue
+            if not _contains_equivalent_step(compact, checks):
+                checks.append(compact)
+    return checks
+
+
 def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]) -> str:
     """Return a concise answer made only from the most relevant evidence text."""
+    focused_evidence = _focused_procedure_evidence(user_message, evidence)
+    if focused_evidence and all(_is_code_evidence(source) for source in focused_evidence):
+        descriptions = [source.descripcion.strip() for source in focused_evidence if source.descripcion.strip()]
+        if descriptions:
+            source = focused_evidence[0]
+            script_name = source.titulo.split(" — ", 1)[0]
+            description = descriptions[0].rstrip(".")
+            if (source.document_type or "").casefold() == "sql" or script_name.casefold().endswith(".sql"):
+                return f"El script {script_name} es un procedimiento almacenado que {description}."
+            return f"El script {script_name} tiene la siguiente descripción: {description}."
+        return (
+            "La evidencia recuperada es un script técnico relacionado con la consulta. "
+            "No reproduzco código ejecutable completo en el chat; revise el archivo citado "
+            "y ejecútelo únicamente siguiendo el procedimiento de control de cambios aplicable."
+        )
+    diagnostic_checks = _diagnostic_checks(focused_evidence)
+    if diagnostic_checks and DIAGNOSTIC_CHECK_PATTERN.search(user_message or ""):
+        return "Según la documentación, valide lo siguiente:\n" + "\n".join(
+            f"{index}. {check}"
+            for index, check in enumerate(diagnostic_checks[:4], start=1)
+        )
+    procedure_steps = _unique_procedure_steps(focused_evidence)
+    if len(procedure_steps) >= 3:
+        return "Según la documentación, los pasos son:\n" + "\n".join(
+            f"{index}. {step}"
+            for index, step in enumerate(
+                procedure_steps[:MAX_PROCEDURE_STEPS_IN_RESPONSE], start=1
+            )
+        )
+
     query_tokens = set(tokenize(user_message))
     candidates: list[tuple[int, str]] = []
-    for source in evidence:
+    for source in focused_evidence:
         text = " ".join((source.fragmento or "").split())
         text = re.sub(r"^Página\s+\d+\s+", "", text, flags=re.IGNORECASE)
         if not text:
@@ -150,6 +444,129 @@ def _version_answer_is_none(user_message: str, evidence: list[EvidenceSource]) -
     )
 
 
+def _evidence_covers_requested_facet(
+    user_message: str, evidence: list[EvidenceSource]
+) -> bool:
+    """Reject evidence that answers an adjacent question instead of the asked facet.
+
+    Version Readmes often contain both a changelog and installation requirements.
+    Likewise, a document may mention a ``DocumentoGestionado`` type without
+    documenting how to create a new version.  These high-risk forms need a
+    local anchor in the fragment before it can be rendered as an answer.
+    """
+    normalized_question = user_message or ""
+    fragments = "\n".join(source.fragmento or "" for source in evidence)
+    if SOFTWARE_REQUIREMENTS_PATTERN.search(normalized_question):
+        return bool(SOFTWARE_REQUIREMENTS_PATTERN.search(fragments))
+    if DOCUMENT_VERSION_PROCEDURE_PATTERN.search(normalized_question):
+        return bool(DOCUMENT_VERSION_PROCEDURE_PATTERN.search(fragments))
+    if PARAMETER_LIST_REQUEST_PATTERN.search(normalized_question):
+        return bool(PARAMETER_EVIDENCE_PATTERN.search(fragments))
+    if CALCULATION_REQUEST_PATTERN.search(normalized_question):
+        return bool(CALCULATION_EVIDENCE_PATTERN.search(fragments))
+    if POST_UPDATE_VALIDATION_REQUEST_PATTERN.search(normalized_question):
+        return bool(POST_UPDATE_VALIDATION_EVIDENCE_PATTERN.search(fragments))
+    if POST_REINSTALLATION_VALIDATION_REQUEST_PATTERN.search(normalized_question):
+        return bool(_diagnostic_checks(evidence))
+    if KEY_VAULT_PATTERN.search(normalized_question):
+        return bool(KEY_VAULT_PATTERN.search(fragments))
+    if DIAGNOSTIC_LIST_REQUEST_PATTERN.search(normalized_question):
+        return bool(_diagnostic_checks(evidence))
+    if DOWNLOAD_FAILURE_PATTERN.search(normalized_question):
+        # A navigation path for downloading is not an incident diagnostic. It
+        # must explicitly describe a failure check before we advise what to
+        # review when a permitted user cannot download a document.
+        return bool(DOWNLOAD_DIAGNOSTIC_EVIDENCE_PATTERN.search(fragments))
+    return True
+
+
+def requires_explicit_facet_evidence(user_message: str) -> bool:
+    """Identify questions that must not be upgraded from adjacent evidence.
+
+    A model may summarize a broadly related fragment fluently, but these
+    requests require a concrete list, formula, post-change check or named
+    platform component. When rules cannot establish that facet, Libras must
+    abstain instead of letting the model infer it.
+    """
+    question = user_message or ""
+    return bool(
+        PARAMETER_LIST_REQUEST_PATTERN.search(question)
+        or CALCULATION_REQUEST_PATTERN.search(question)
+        or POST_UPDATE_VALIDATION_REQUEST_PATTERN.search(question)
+        or POST_REINSTALLATION_VALIDATION_REQUEST_PATTERN.search(question)
+        or KEY_VAULT_PATTERN.search(question)
+    )
+
+
+def requires_deterministic_grounded_answer(user_message: str) -> bool:
+    """Keep high-risk evidence facets out of a free-form model summary."""
+    return requires_explicit_facet_evidence(user_message)
+
+
+def _v2_evidence_assessment(
+    user_message: str, evidence: list[EvidenceSource]
+) -> tuple[list[EvidenceSource], tuple[str, ...], tuple[str, ...]] | None:
+    """Return v2 direct evidence and coverage, when the retrieval used it.
+
+    The attribute is deliberately the contract between retrieval and response:
+    a source is citable only after direct evidence has covered at least one
+    requirement.  Legacy sources do not carry that attribute and retain their
+    existing behaviour until the strategy flag is enabled.
+    """
+    if not any(source.covered_requirements for source in evidence):
+        return None
+
+    plan = build_query_plan(user_message)
+    covered = {
+        requirement
+        for source in evidence
+        for requirement in source.covered_requirements
+    }
+    direct_sources = [
+        source
+        for source in evidence
+        if source.covered_requirements and source.evidence_kind != "navigation"
+    ]
+    missing = tuple(
+        requirement.identifier
+        for requirement in plan.requirements
+        if requirement.identifier not in covered
+    )
+    return direct_sources, tuple(sorted(covered)), missing
+
+
+def _has_concrete_documentary_evidence(
+    user_message: str, evidence: list[EvidenceSource]
+) -> bool:
+    """Allow grounded answers when action and a substantive topic both match.
+
+    Filename-heavy procedures and manuals often use a different wording from
+    the user's question. Action coverage remains the safety gate; the topic
+    overlap prevents a generic instruction from turning tangential evidence
+    into an answer.
+    """
+    query_topics = set(tokenize(user_message)) - PROCEDURAL_SCAFFOLD_TOKENS
+    if not query_topics:
+        return False
+    return any(
+        has_requested_action_coverage(
+            user_message, f"{source.titulo} {source.fragmento}"
+        )
+        and query_topics.intersection(tokenize(f"{source.titulo} {source.fragmento}"))
+        for source in evidence
+    )
+
+
+def _partial_requirement_text(user_message: str, missing: tuple[str, ...]) -> str:
+    plan = build_query_plan(user_message)
+    missing_texts = [
+        requirement.text
+        for requirement in plan.requirements
+        if requirement.identifier in missing
+    ]
+    return "; ".join(missing_texts)
+
+
 def classify_case_by_rules(
     user_message: str,
     evidence: list[EvidenceSource],
@@ -165,6 +582,63 @@ def classify_case_by_rules(
             fuentes=[],
             siguiente_accion="Escale el caso al equipo de desarrollo para una revision manual.",
             requiere_escalamiento=True,
+        )
+
+    if not _evidence_covers_requested_facet(user_message, evidence):
+        return BotDecision(
+            estado="sin_evidencia",
+            confianza="baja",
+            resumen=(
+                "No se encontro evidencia directa para el detalle solicitado en las "
+                "fuentes documentales consultadas."
+            ),
+            fuentes=[],
+            siguiente_accion=(
+                "Revise si existe un procedimiento o Readme que documente "
+                "explícitamente ese detalle antes de aplicarlo."
+            ),
+            requiere_escalamiento=True,
+        )
+
+    v2_assessment = _v2_evidence_assessment(user_message, evidence)
+    if v2_assessment is not None:
+        direct_sources, _covered, missing = v2_assessment
+        if not direct_sources:
+            return BotDecision(
+                estado="sin_evidencia",
+                confianza="baja",
+                resumen="No se encontro evidencia directa suficiente en las fuentes documentales consultadas.",
+                fuentes=[],
+                siguiente_accion="Escale el caso al equipo de desarrollo para una revision manual.",
+                requiere_escalamiento=True,
+            )
+
+        answer_sources = _focused_procedure_evidence(user_message, direct_sources)
+        summary = _grounded_document_summary(user_message, answer_sources)
+        if missing:
+            return BotDecision(
+                estado="resuelto",
+                confianza="media",
+                resumen=(
+                    f"{summary}\n\n"
+                    "No encontré evidencia directa para esta parte de la consulta: "
+                    f"{_partial_requirement_text(user_message, missing)}."
+                ),
+                fuentes=answer_sources,
+                siguiente_accion=(
+                    "Revise el documento citado para la parte confirmada y escale "
+                    "la parte no documentada para una revision manual."
+                ),
+                requiere_escalamiento=True,
+            )
+
+        return BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen=summary,
+                fuentes=answer_sources,
+            siguiente_accion="Revise el documento citado para validar el detalle aplicable a su caso.",
+            requiere_escalamiento=False,
         )
 
     if not any(
@@ -198,12 +672,15 @@ def classify_case_by_rules(
             requiere_escalamiento=False,
         )
 
-    if is_direct_document_question(user_message, evidence):
+    if is_direct_document_question(user_message, evidence) or _has_concrete_documentary_evidence(
+        user_message, evidence
+    ):
+        answer_sources = _focused_procedure_evidence(user_message, evidence)
         return BotDecision(
             estado="resuelto",
             confianza="alta",
-            resumen=_grounded_document_summary(user_message, evidence),
-            fuentes=evidence,
+            resumen=_grounded_document_summary(user_message, answer_sources),
+            fuentes=answer_sources,
             siguiente_accion="Revise el documento citado para validar el detalle aplicable a su caso.",
             requiere_escalamiento=False,
         )

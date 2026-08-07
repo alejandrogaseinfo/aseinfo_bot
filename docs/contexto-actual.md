@@ -16,6 +16,27 @@ de promocionarlo para usuarios de Aseinfo.
 > es antecedente de un entorno distinto y no define pruebas, evidencia ni
 > comportamiento esperado para Libras.
 
+## Actualización de calidad y paquete — 2026-08-05
+
+- La matriz funcional contra `libras-docs` termina en **12/12 casos**, con
+  recall de evidencia y abstención correcta del 100%.
+- La resolución de parámetros de incapacidades recupera las páginas
+  operativas 34, 36 y 37; las páginas de índice ya no se presentan como
+  evidencia.
+- La suite automatizada queda en **175 pruebas, OK** y el preflight de
+  plataforma pasa completo.
+- Se generó el paquete Teams [`Libras-Teams-pilot-2026-08-05-v0.1.1.zip`](../appPackage/build/Libras-Teams-pilot-2026-08-05-v0.1.1.zip).
+- El preflight de acceso de ingesta permanece pendiente por variables locales
+  de SharePoint/Key Vault. La preparación no modificó el índice; el despliegue
+  del backend se realizó después, sin cambiar documentos ni fuentes.
+- El backend validado fue publicado en `app-libras-prod` mediante OneDeploy el
+  2026-08-05; el despliegue terminó con `complete=true` y sin errores.
+  `/healthz` y `/readyz` del dominio productivo respondieron HTTP 200.
+- La aplicación Libras ya aparece aprobada y disponible en Teams dentro de
+  “Diseñadas para tu organización”. El despliegue del backend no requiere
+  reinstalar el paquete; el ZIP Teams v0.1.1 solo sería necesario si cambia el
+  manifiesto o los IDs de la aplicación.
+
 ## Actualización de estado — 2026-07-31
 
 - La aplicación ya está instalada y responde desde Microsoft Teams. También se
@@ -34,8 +55,24 @@ de promocionarlo para usuarios de Aseinfo.
   los nuevos requisitos de software de `Readme 1.19.1.11` responden
   `Ninguno.` tal como consta en el documento.
 - El backend productivo fue redeplegado y reiniciado después de esta corrección;
-  `/readyz` respondió HTTP 200 y la suite automatizada registra **96 pruebas,
-  OK**.
+  `/readyz` respondió HTTP 200. La suite local de la corrección de calidad
+  registra **134 pruebas, OK** el 2026-08-04, pero esto no sustituye la
+  evaluación contra el índice productivo real.
+
+## Corrección de calidad — 2026-08-03
+
+Las pruebas de uso real identificaron fallos en seguridad, conversación y
+recuperación semántica. El trabajo correctivo está centralizado en
+[plan-correccion-calidad-libras.md](plan-correccion-calidad-libras.md). No se
+orientará el sistema a contestar frases concretas: se corregirán las reglas de
+riesgo, el enrutamiento, el índice, el ranking, la verificación de evidencia y
+la memoria conversacional.
+
+El primer caso confirmado es un falso positivo: una pregunta técnica sobre
+prórroga de contratos se bloquea por una regla que trata cualquier `contrato`
+como confidencial. Antes de reindexar se debe crear un inventario verificable
+del índice activo y una línea base de evaluación con documentos reales de las
+fuentes autorizadas.
 
 ### Decisión temporal de acceso
 
@@ -183,3 +220,28 @@ Leer en este orden:
 
 Antes de cambiar código, comprobar `git status`, no imprimir secretos y
 mantener la recuperación limitada a las bibliotecas activamente autorizadas.
+
+## Piloto técnico acotado (2026-08-05)
+
+El piloto productivo se limitó explícitamente a estas cuatro fuentes:
+
+- `ReadME Hotfixes`;
+- `Documentos/SOLUCIONES`;
+- `Manuales`;
+- `Scripts de Apoyo`.
+
+La restricción se aplica en `app-libras-prod` por la pareja
+`drive_id`/`folder_path`, por lo que los registros de otras bibliotecas no se
+pueden usar para responder, aun si permanecen en el índice histórico. Quedan
+fuera Legislaciones, Traslados OP/DE, Parches Adicionales, Hojas de Servicio,
+Teams Wiki Data y Documentos de Apoyo. Los nueve documentos de Apoyo que antes
+formaban parte de la curación técnica también quedan temporalmente fuera: no
+se autoriza la biblioteca completa mientras no exista una lista blanca por
+documento.
+
+No se reindexó ni se cambió el SKU: `libras-docs` conserva 2,665 fragmentos y
+el respaldo previo está en `output/prod-backup-before-v2-20260805` (hash
+`cdc40f7ed73c86abb568e706dc893f15ee19678a1b93f5485a0d4f16301fa449`). Tras
+aplicar el alcance, `/healthz` y `/readyz` respondieron HTTP 200. La estrategia
+de recuperación de producción continúa en `legacy`; v2 sigue pendiente de una
+promoción separada.

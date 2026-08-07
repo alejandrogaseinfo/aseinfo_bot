@@ -40,6 +40,22 @@ class RuntimeHealthTests(unittest.TestCase):
         self.assertEqual("not_ready", payload["status"])
         self.assertEqual(["model", "azure_ai_search"], payload["missing"])
 
+    def test_payload_exposes_non_sensitive_release_and_retrieval_state(self):
+        payload = readiness_payload(
+            SimpleNamespace(
+                environment="production",
+                runtime_revision="20260806-rag-evidence",
+                retrieval_strategy="v2",
+                openai_api_key="configured",
+                openai_base_url="",
+                azure_search_configured=True,
+                require_azure_search=True,
+            )
+        )
+
+        self.assertEqual("20260806-rag-evidence", payload["runtime_revision"])
+        self.assertEqual("v2", payload["retrieval_strategy"])
+
 
 if __name__ == "__main__":
     unittest.main()

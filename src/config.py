@@ -29,6 +29,12 @@ class Config:
     def __init__(self, env):
         self.port = int(env.get("PORT", 3978))
         self.environment = env.get("LIBRAS_ENV", env.get("TEAMSFX_ENV", "local")).strip().lower()
+        # A deployment-supplied, non-secret identifier. It lets Teams checks
+        # prove which backend revision answered without exposing environment
+        # data or a commit URL.
+        self.runtime_revision = (
+            env.get("LIBRAS_RUNTIME_REVISION", "unversioned").strip() or "unversioned"
+        )
         self.require_azure_search = env.get(
             "REQUIRE_AZURE_SEARCH", "true" if self.environment == "production" else "false"
         ).lower() == "true"
@@ -78,6 +84,31 @@ class Config:
         self.retrieval_timeout_seconds = float(
             env.get("RETRIEVAL_TIMEOUT_SECONDS", "12")
         )
+        # Azure AI Search may finish shortly after the first budget expires
+        # when the index is cold or the request needs several bounded passes.
+        # Keep a small grace window so a late, valid result is not converted
+        # into a false "sin evidencia" response.
+        self.retrieval_grace_seconds = max(
+            0.0, float(env.get("RETRIEVAL_GRACE_SECONDS", "8"))
+        )
+        configured_retrieval_strategy = env.get("RETRIEVAL_STRATEGY", "legacy").strip().lower()
+        self.retrieval_strategy = (
+            configured_retrieval_strategy
+            if configured_retrieval_strategy in {"legacy", "v2"}
+            else "legacy"
+        )
+        # Lets the separate ingestion job enrich reviewed metadata while the
+        # chat still serves the reversible legacy retrieval policy. It is off
+        # by default so ordinary legacy refreshes remain schema-compatible.
+        self.index_quality_metadata_enabled = env.get(
+            "INDEX_QUALITY_METADATA_ENABLED", "false"
+        ).lower() == "true"
+        self.use_llm_evidence_verifier = env.get(
+            "USE_LLM_EVIDENCE_VERIFIER", "false"
+        ).lower() == "true"
+        self.evidence_verifier_model_name = env.get(
+            "EVIDENCE_VERIFIER_MODEL", self.openai_intent_model_name
+        ).strip()
         self.classification_timeout_seconds = float(
             env.get("CLASSIFICATION_TIMEOUT_SECONDS", "12")
         )
@@ -101,6 +132,9 @@ class Config:
             or env.get("SECRET_SHAREPOINT_CLIENT_SECRET", "")
         ).strip()
         self.sharepoint_site_id = env.get("SHAREPOINT_SITE_ID", "").strip()
+        # Optional SharePoint folder content type used to construct the
+        # browser's native AllItems link for related solution files.
+        self.sharepoint_folder_ctid = env.get("SHAREPOINT_FOLDER_CTID", "").strip()
         self.sharepoint_drive_id = env.get("SHAREPOINT_DRIVE_ID", "").strip()
         configured_drives = env.get("SHAREPOINT_DRIVE_IDS", "")
         self.sharepoint_drive_ids = tuple(

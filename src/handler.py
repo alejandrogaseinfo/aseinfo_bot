@@ -8,7 +8,10 @@ from classification import (
     classify_case,
     classify_case_by_rules,
     has_explicit_version_request,
+    is_underspecified_query,
     is_direct_document_question,
+    requires_deterministic_grounded_answer,
+    requires_explicit_facet_evidence,
 )
 from conversation import generate_conversational_response
 from context_guard import evaluate_context_guard
@@ -80,13 +83,17 @@ CAPABILITY_QUESTION_PATTERN = re.compile(
 )
 SENSITIVE_SECRET_PATTERN = re.compile(
     r"\b(?:api[\s_-]*keys?|clave(?:s)?[\s_-]*(?:api|privada)|password|contrasena|"
-    r"tokens?|secret(?:o|os|s)?|credencial(?:es)?|connection[\s_-]*string|"
+    r"tokens?|secret(?:o|os|s)?|credencial(?:es)?|credential(?:s)?|"
+    r"connection[\s_-]*string|"
     r"cadena[\s_-]*de[\s_-]*conexion)\b"
 )
 SECRET_DISCLOSURE_PATTERN = re.compile(
     r"\b(?:dame|darme|muestra(?:me)?|mostrar(?:me)?|ensena(?:me)?|revela(?:me)?|"
-    r"comparte|proporciona|envia|entrega|extrae|lista|imprime|expone|devuelve|"
-    r"cual(?:es)?|que[\s_-]*valor|valor[\s_-]*de)\b"
+    r"pasa(?:me)?|pasar(?:me)?|compart(?:e|ir)(?:me)?|facilita(?:me)?|"
+    r"facilitar(?:me)?|proporciona|proporcionar(?:me)?|envia|enviar(?:me)?|"
+    r"entrega|entregar(?:me)?|extrae|lista|listar|imprime|expone|devuelve|"
+    r"cual(?:es)?|que[\s_-]*valor|valor[\s_-]*de|provide|show|reveal|share|"
+    r"give|list|extract|print|return|value)\b"
 )
 CUSTOMER_CONFIDENTIAL_PATTERN = re.compile(
     # A contract is a valid technical domain concept in Evolution. Treat it
@@ -103,7 +110,8 @@ PERSONAL_CONFIDENTIAL_PATTERN = re.compile(
     r"telefono(?:s)?|correo(?:s)?[\s_-]*personal(?:es)?|dato(?:s)?[\s_-]*personales?)\b"
 )
 SITE_INVENTORY_PATTERN = re.compile(
-    r"\b(?:enumera|lista|muestra|dame|comparte|inventario)\b.{0,80}"
+    r"\b(?:enumera|enumerar|lista|listar|muestra|mostrar|dame|comparte|"
+    r"compartir|inventario)\b.{0,80}"
     r"\b(?:todos?[\s_-]*los?[\s_-]*)?(?:archivo(?:s)?|documento(?:s)?)\b.{0,80}"
     r"\b(?:sitio|sharepoint|soporte[\s_-]*regional)\b"
 )
@@ -119,9 +127,8 @@ RESTRICTED_LIBRARY_PATTERN = re.compile(
 # attempts to discard Libras's own instructions must never be routed as a
 # generic support question while that guard is unavailable or in observation.
 INSTRUCTION_OVERRIDE_PATTERN = re.compile(
-    r"\b(?:ignora|olvida)\s+(?:todas?\s+)?(?:las?\s+)?"
-    r"(?:instrucciones|reglas|politicas|indicaciones)\s+"
-    r"(?:que\s+)?(?:tienes|recibiste|sigues|anteriores|previas)\b"
+    r"\b(?:ignora|olvida|ignore|forget)\s+(?:todas?\s+|all\s+|previous\s+)?"
+    r"(?:las?\s+)?(?:instrucciones|reglas|politicas|indicaciones|instructions|rules)\b"
 )
 GENERIC_ISSUE_TOKENS = {
     "error",
@@ -155,6 +162,16 @@ DOCUMENTARY_TOKENS = {
     "renta",
     "salario",
     "vacacion",
+}
+SPECIFIC_ISSUE_FILLER_TOKENS = {
+    "tengo",
+    "tien",
+    "hay",
+    "present",
+    "aparec",
+    "ocurr",
+    "suced",
+    "sal",
 }
 
 
@@ -350,6 +367,13 @@ def _context_guard_response() -> str:
     )
 
 
+def _underspecified_query_response() -> str:
+    return (
+        "Necesito más contexto para orientar la consulta: indique el producto o módulo, "
+        "la versión, el mensaje o comportamiento observado y qué desea revisar."
+    )
+
+
 def _is_scope_question(user_message: str, query_tokens: set[str]) -> bool:
     """Recognize clear questions about Libras's document scope before the LLM."""
     normalized = _normalized_sensitive_text(user_message)
@@ -374,6 +398,14 @@ def _is_capability_question(user_message: str, query_tokens: set[str]) -> bool:
         )
         and not query_tokens.intersection(DOCUMENTARY_TOKENS)
         and not query_tokens.intersection(GENERIC_ISSUE_TOKENS)
+    )
+
+
+def _is_self_description_question(user_message: str, query_tokens: set[str]) -> bool:
+    """Accept LLM self-description routes only when the bot is the subject."""
+    normalized = _normalized_sensitive_text(user_message)
+    return bool(re.search(r"\b(?:libras|bot|asistente)\b", normalized)) or _is_capability_question(
+        user_message, query_tokens
     )
 
 
@@ -463,15 +495,36 @@ def _scope_response(config=None) -> str:
 
 
 def _looks_like_documentary_question(user_message: str) -> bool:
-    """Keep a concrete document question out of the conversational short-cut."""
+    """Keep a concrete document question out of the conversational short-cut.
+
+    A user normally reports a known support case by its symptom, not by the
+    generic file name stored below that case's SharePoint folder.  Three
+    specific terms beyond the error wording are enough to try documented
+    retrieval; vague reports such as "no funciona" still ask for context.
+    """
     query_tokens = set(tokenize(user_message or ""))
-    return bool(query_tokens.intersection(DOCUMENTARY_TOKENS))
+    if query_tokens.intersection(DOCUMENTARY_TOKENS):
+        return True
+    specific_issue_terms = query_tokens.difference(
+        GENERIC_ISSUE_TOKENS | SPECIFIC_ISSUE_FILLER_TOKENS
+    )
+    return bool(query_tokens.intersection(GENERIC_ISSUE_TOKENS)) and len(
+        specific_issue_terms
+    ) >= 3
 
 
 def _intent_response(intent: IntentResult, config=None, user_message: str = "") -> str | None:
+    query_tokens = set(tokenize(user_message or ""))
     if intent.conversation_purpose == "capacidad":
+        if not _is_self_description_question(user_message, query_tokens):
+            return None
         return _capability_response()
     if intent.conversation_purpose == "alcance":
+        if not (
+            _is_scope_question(user_message, query_tokens)
+            or _is_self_description_question(user_message, query_tokens)
+        ):
+            return None
         return _scope_response(config)
     if intent.name == "saludo":
         return (
@@ -480,11 +533,19 @@ def _intent_response(intent: IntentResult, config=None, user_message: str = "") 
         )
     if intent.name == "ayuda":
         return _help_response()
-    if intent.name in {"reporte_error", "consulta_ambigua"} and intent.requires_context:
+    if intent.name == "consulta_ambigua" and intent.requires_context:
         # The intent model can confuse a factual policy question with an
         # underspecified support case (for example, "planillas en El Salvador").
         # Let retrieval decide whether there is evidence instead of discarding
         # a concrete documentary query before it reaches Azure AI Search.
+        if _looks_like_documentary_question(user_message):
+            return None
+        return (
+            "No tengo evidencia sobre ese tema en la documentación técnica autorizada "
+            "de Libras. Puedo ayudar con consultas sobre productos, módulos, versiones "
+            "o procedimientos documentados."
+        )
+    if intent.name == "reporte_error" and intent.requires_context:
         if _looks_like_documentary_question(user_message):
             return None
         return (
@@ -498,13 +559,46 @@ async def _run_blocking_with_timeout(
     operation: Callable,
     *args,
     timeout_seconds: float,
+    grace_seconds: float = 0,
     **kwargs,
 ):
     """Keep synchronous SDK calls from blocking the Teams event loop."""
-    return await asyncio.wait_for(
-        asyncio.to_thread(operation, *args, **kwargs),
-        timeout=timeout_seconds,
-    )
+    operation_task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(operation_task),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        grace_seconds = max(0.0, float(grace_seconds or 0))
+        if grace_seconds:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(operation_task),
+                    timeout=grace_seconds,
+                )
+            except TimeoutError:
+                operation_task.add_done_callback(_consume_background_task_result)
+                raise
+            logger.info(
+                "La operación terminó dentro de la ventana adicional de %.1f segundos.",
+                grace_seconds,
+            )
+            return result
+        operation_task.add_done_callback(_consume_background_task_result)
+        raise
+
+
+def _consume_background_task_result(task: asyncio.Task) -> None:
+    """Consume a late worker result so it cannot produce an unhandled error."""
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except Exception:
+        # The original request already returned its safe fallback. There is no
+        # useful response path left for a late worker exception.
+        return
 
 
 async def process_user_message(
@@ -549,6 +643,13 @@ async def process_user_message(
     if direct_response:
         logger.info("query_completed duration_ms=0 evidence_count=0 source_types=none decision_state=solicita_contexto escalated=False")
         return direct_response
+
+    if is_underspecified_query(user_message):
+        logger.info(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=solicita_contexto escalated=False"
+        )
+        return _underspecified_query_response()
 
     retrieval_message = _enrich_change_request(
         _resolve_documentary_follow_up(
@@ -665,6 +766,7 @@ async def process_user_message(
             client=client,
             config=config,
             timeout_seconds=config.retrieval_timeout_seconds,
+            grace_seconds=getattr(config, "retrieval_grace_seconds", 0),
         )
     except TimeoutError:
         logger.warning(
@@ -696,7 +798,10 @@ async def process_user_message(
     # from replacing the documented details with a generic incident summary.
     if has_explicit_version_request(retrieval_message):
         decision = fallback_decision
-    elif is_direct_document_question(retrieval_message, evidence):
+    elif (
+        is_direct_document_question(retrieval_message, evidence)
+        or requires_deterministic_grounded_answer(retrieval_message)
+    ):
         # Direct document answers are rendered deterministically from the
         # retrieved fragment. This prevents a generic or invented model
         # summary from replacing evidence the user can verify.
@@ -724,6 +829,10 @@ async def process_user_message(
         decision = fallback_decision
 
     if (
+        fallback_decision.estado == "sin_evidencia"
+        and decision.estado != "sin_evidencia"
+        and requires_explicit_facet_evidence(retrieval_message)
+    ) or (
         decision.estado == "sin_evidencia" and fallback_decision.estado != "sin_evidencia"
     ) or (
         decision.estado == "similar_del_pasado" and fallback_decision.estado == "resuelto"

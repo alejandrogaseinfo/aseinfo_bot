@@ -1,0 +1,93 @@
+[
+  {
+    "id": "PROC-01",
+    "category": "procedural",
+    "message": "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "PROC-02",
+    "category": "procedural",
+    "message": "¿Cómo se pueden administrar documentos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"]
+  },
+  {
+    "id": "PROC-03",
+    "category": "procedural",
+    "message": "¿Cómo puedo arreglar vacaciones negativas con un script?",
+    "expected": "evidence",
+    "expected_title_contains": ["acc.proc_arreglar_vac_negativos"]
+  },
+  {
+    "id": "PROC-04",
+    "category": "procedural",
+    "message": "Después de reinstalar MSDTC en un servidor clonado, ¿qué hay que revisar en ambos servidores para confirmar que la comunicación DTC quedó funcionando correctamente?",
+    "expected": "evidence",
+    "expected_title_contains": ["Manual DTC Verificacion"]
+  },
+  {
+    "id": "DIAG-01",
+    "category": "diagnostic",
+    "message": "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "DIAG-02",
+    "category": "diagnostic",
+    "message": "¿Cómo se clasifican las incapacidades en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "DIAG-03",
+    "category": "diagnostic",
+    "message": "¿Qué parámetros se pueden modificar para incapacidades?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
+  },
+  {
+    "id": "DIAG-04",
+    "category": "diagnostic",
+    "message": "¿Cómo se ofuscan datos sensibles en SQL?",
+    "expected": "evidence",
+    "expected_title_contains": ["Ofuscación de datos"]
+  },
+  {
+    "id": "PROC-05",
+    "category": "procedural",
+    "message": "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Readme 1.19.1.6"]
+  },
+  {
+    "id": "SCOPE-01",
+    "category": "out_of_scope",
+    "message": "¿Qué descuentos legales existen en El Salvador?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "SCOPE-02",
+    "category": "out_of_scope",
+    "message": "¿Cuándo se paga el aguinaldo en El Salvador?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "INSUF-01",
+    "category": "insufficient",
+    "message": "¿Qué se debe revisar?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  },
+  {
+    "id": "INSUF-02",
+    "category": "insufficient",
+    "message": "No funciona.",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
+  }
+]

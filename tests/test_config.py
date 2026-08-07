@@ -28,7 +28,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual("text-embedding-3-small", config.openai_embedding_model)
         self.assertEqual(1536, config.openai_embedding_dimensions)
         self.assertEqual(12, config.retrieval_timeout_seconds)
+        self.assertEqual(8, config.retrieval_grace_seconds)
         self.assertEqual(12, config.classification_timeout_seconds)
+        self.assertEqual("unversioned", config.runtime_revision)
+
+    def test_runtime_revision_uses_a_non_empty_deployment_value(self):
+        config = Config({"LIBRAS_RUNTIME_REVISION": "20260806-rag-evidence"})
+
+        self.assertEqual("20260806-rag-evidence", config.runtime_revision)
+
+    def test_quality_metadata_refresh_is_opt_in_before_v2_promotion(self):
+        self.assertFalse(Config({}).index_quality_metadata_enabled)
+        self.assertTrue(
+            Config({"INDEX_QUALITY_METADATA_ENABLED": "true"}).index_quality_metadata_enabled
+        )
+
+    def test_retrieval_grace_timeout_is_never_negative(self):
+        config = Config({"RETRIEVAL_GRACE_SECONDS": "-2"})
+
+        self.assertEqual(0, config.retrieval_grace_seconds)
 
     def test_context_guard_is_opt_in_and_defaults_to_observe(self):
         config = Config({})

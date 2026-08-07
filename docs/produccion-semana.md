@@ -18,6 +18,23 @@ de SharePoint se cerró el 29 de julio: se inventariaron 250 archivos en
 comprobación del índice confirmó cero registros fuera de esa carpeta. Las cifras
 de **15 PDFs y 158 fragmentos** describen una carga inicial histórica.
 
+### Actualización de cierre funcional — 2026-08-05
+
+La matriz de calidad contra producción termina en **12/12 casos**, con recall
+de evidencia y abstención correcta del 100%. La suite local queda en **175
+pruebas, OK**. El preflight de plataforma pasa completo y se preparó el
+paquete Teams [`Libras-Teams-pilot-2026-08-05-v0.1.1.zip`](../appPackage/build/Libras-Teams-pilot-2026-08-05-v0.1.1.zip).
+
+El preflight de acceso de ingesta aún reporta pendientes en variables de
+SharePoint/Key Vault del entorno local; no se reindexó ni se publicó un cambio
+remoto durante esta preparación.
+
+El backend validado se publicó posteriormente en `app-libras-prod` mediante
+OneDeploy el 2026-08-05. El despliegue terminó correctamente, sin errores, y
+`/healthz`/`/readyz` respondieron HTTP 200. La aplicación Libras ya aparece
+aprobada en Teams dentro de “Diseñadas para tu organización”; solo falta
+revalidar el piloto conversacional con el backend actualizado.
+
 ## Objetivo
 
 Poner `Libras` en producción como aplicación interna de Microsoft Teams para que la audiencia autorizada consulte documentación aprobada de una biblioteca o carpeta de SharePoint/OneDrive.
@@ -202,7 +219,7 @@ Libras está disponible en Teams para la audiencia autorizada, responde con evid
 - [x] Azure Bot `bot-libras-prod` creado en `rg-libras-prod` con `Free` y `id-libras-bot-prod`.
 - [x] Endpoint de mensajería configurado en el Azure Bot y canal Microsoft Teams habilitado.
 - [x] Paquete de Teams generado con `TEAMS_APP_ID` y `BOT_ID` reales.
-- [ ] Aplicación instalada y validada en Teams.
+- [x] Aplicación instalada y aprobada en Teams; queda revalidar el piloto tras el último despliegue.
 
 ## Orden posterior aprobado
 
@@ -217,3 +234,18 @@ Estas fases no deben bloquear el cierre de producción de esta semana.
 ## Material eliminado o no prioritario
 
 No se mantiene un roadmap alternativo de demo, arquitectura híbrida, Blob Storage ni automatización incremental. Si alguno se vuelve necesario, se documentará como una decisión nueva dentro de este mapa.
+
+## Ajuste de alcance del piloto técnico (2026-08-05)
+
+Para mantener el piloto dentro de la capacidad existente, se actualizaron las
+fuentes autorizadas de `app-libras-prod` a `ReadME Hotfixes`,
+`Documentos/SOLUCIONES`, `Manuales` y `Scripts de Apoyo`. El filtro productivo
+verifica conjuntamente biblioteca y carpeta; por ello no recupera contenido de
+las fuentes excluidas aunque permanezca en `libras-docs`.
+
+No se realizó reingesta, reconstrucción de índice ni cambio de SKU. El índice
+conserva 2,665 fragmentos y se conserva el respaldo previo en
+`output/prod-backup-before-v2-20260805`. Los nueve documentos curados de
+`Documentos de Apoyo` quedan fuera temporalmente, ya que permitir la biblioteca
+raíz incorporaría otros documentos no seleccionados. `/healthz` y `/readyz`
+fueron validados con HTTP 200 tras el ajuste.

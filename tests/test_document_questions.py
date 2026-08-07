@@ -18,17 +18,21 @@ from azure_search import (
     _clear_deletion_manifest,
     _deletion_document_ids,
     _document_records,
+    _add_runtime_sharepoint_parent_context,
     _searchable_filename_terms,
     _document_pages,
     _chunks,
     _document_relevance_score,
     _diversify_candidate_records,
     _has_minimum_content_coverage,
+    _is_script_record,
+    _requests_script,
     _filter_records_for_requested_country,
     _focused_keyword_query,
     _question_without_background_action,
     _record_has_authorized_provenance,
     _record_matches_requested_version,
+    _records_supported_by_index,
     _entra_credential,
     _excerpt_around_query,
     _rerank_records,
@@ -36,7 +40,13 @@ from azure_search import (
     index_directory,
 )
 from document_index import has_requested_action_coverage
-from classification import classify_case_by_rules, is_direct_document_question
+from classification import (
+    _focused_procedure_evidence,
+    _grounded_document_summary,
+    classify_case_by_rules,
+    is_direct_document_question,
+    is_underspecified_query,
+)
 from document_index import tokenize
 from formatting import format_user_response
 from models import EvidenceSource
@@ -50,6 +60,133 @@ from sharepoint_sync import (
 
 
 class DocumentQuestionTests(unittest.TestCase):
+    def test_generic_queries_are_marked_for_context_before_retrieval(self):
+        self.assertTrue(is_underspecified_query("¿Qué se debe revisar?"))
+        self.assertTrue(is_underspecified_query("No funciona."))
+        self.assertFalse(
+            is_underspecified_query(
+                "Después de reinstalar MSDTC, ¿qué se debe revisar en ambos servidores?"
+            )
+        )
+
+    def test_filename_procedure_is_answered_when_action_and_topic_are_explicit(self):
+        decision = classify_case_by_rules(
+            "¿Cómo puedo arreglar vacaciones negativas con un script?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="acc.proc_arreglar_vac_negativos.sql — Documento",
+                    ubicacion="https://contoso.example/vacaciones.sql",
+                    fragmento=(
+                        "CREATE PROCEDURE acc.proc_arreglar_vac_negativos. "
+                        "Corrige vacaciones con saldo negativo."
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual("resuelto", decision.estado)
+        self.assertEqual(1, len(decision.fuentes))
+
+    def test_incapacity_manual_is_answered_from_direct_classification_evidence(self):
+        decision = classify_case_by_rules(
+            "¿Cómo se clasifican las incapacidades en Evolution?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Acciones de personal.pdf — Página 38",
+                    ubicacion="https://contoso.example/acciones.pdf",
+                    fragmento=(
+                        "Tipos de incapacidad y clasificaciones establecidas por la "
+                        "compañía. Según su duración, pueden ser permanentes o temporales."
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual("resuelto", decision.estado)
+
+    def test_download_failure_does_not_turn_navigation_steps_into_a_diagnosis(self):
+        evidence = [
+            EvidenceSource(
+                tipo="azure_ai_search",
+                titulo="Gestion de documentos.pdf — Página 12",
+                ubicacion="https://contoso.example/gestion.pdf",
+                fragmento=(
+                    "Capítulo: GESTIÓN DE DOCUMENTOS 11 A Administrar documentos gestionados, "
+                    "5 D Descargue los documentos sobre los que se tiene permisos, 9"
+                ),
+            ),
+            EvidenceSource(
+                tipo="azure_ai_search",
+                titulo="Gestion de documentos.pdf — Página 10",
+                ubicacion="https://contoso.example/gestion.pdf",
+                fragmento=(
+                    "Descargue los documentos sobre los que se tiene permisos. "
+                    "Haga clic en el área Portal. Seleccione el modulo Consultas. "
+                    "Haga clic en la opción Documentos Gestionados. "
+                    "Haga clic en el Titulo del documento que desea descargar. "
+                    "Haga clic en la opción Descargar."
+                ),
+            ),
+            EvidenceSource(
+                tipo="azure_ai_search",
+                titulo="Portal Consultas.pdf — Página 30",
+                ubicacion="https://contoso.example/portal.pdf",
+                fragmento=(
+                    "Documentos Gestionados. Haga clic en el área Portal. "
+                    "Seleccione el Modulo Consultas. Haga clic en la opción "
+                    "Documentos Gestionados. Haga clic en el documento que desea descargar. "
+                    "Haga clic en la opción Descargar. Seleccione la opción "
+                    "Documentos Gestionados."
+                ),
+            ),
+        ]
+
+        decision = classify_case_by_rules(
+            "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",
+            evidence,
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
+    def test_answer_quality_matrix_resolves_procedure_and_diagnostic_but_abstains_unrelated(self):
+        cases = [
+            (
+                "¿Cómo se pueden administrar documentos gestionados?",
+                "Administrar documentos gestionados. Haga clic en Portal. "
+                "Seleccione Consultas. Haga clic en Descargar.",
+                "resuelto",
+            ),
+            (
+                "Un usuario tiene permisos pero no logra bajar documentos, ¿qué se debe revisar?",
+                "Gestión de documentos. Descargue los documentos sobre los que se tiene permisos. "
+                "Si falla, revisar permisos y acceso al módulo.",
+                "resuelto",
+            ),
+            (
+                "¿Cuál es la fecha de vencimiento del certificado SSL?",
+                "Guía de vacaciones y aprobación de solicitudes.",
+                "sin_evidencia",
+            ),
+        ]
+
+        for question, fragment, expected_state in cases:
+            with self.subTest(question=question):
+                decision = classify_case_by_rules(
+                    question,
+                    [
+                        EvidenceSource(
+                            tipo="sharepoint",
+                            titulo="Manual de gestión",
+                            ubicacion="https://contoso.example/manual.pdf",
+                            fragmento=fragment,
+                        )
+                    ],
+                )
+                self.assertEqual(expected_state, decision.estado)
+
     def test_retrieval_uses_fields_supported_by_legacy_search_indexes(self):
         class FakeSearchClient:
             def __init__(self):
@@ -371,10 +508,103 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertTrue(record["content_hash"])
         self.assertTrue(record["indexed_at"])
 
+    def test_parent_folder_is_searchable_when_file_name_is_generic(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            document = source_dir / "Indicaciones.txt"
+            document.write_text("Reemplace la sección indicada.", encoding="utf-8")
+            document.with_suffix(".txt.metadata.json").write_text(
+                json.dumps(
+                    {
+                        "source_system": "sharepoint",
+                        "document_id": "item-indicaciones",
+                        "web_url": (
+                            "https://contoso.sharepoint.com/sites/Soporte/Documentos%20compartidos/"
+                            "SOLUCIONES/EVOLUTION/ERROR%20DE%20FECHAS%20EN%20TIEMPOS%20NO%20TRABAJADOS/"
+                            "Indicaciones.txt"
+                        ),
+                        "folder_path": "SOLUCIONES",
+                        "drive_id": "drive-soluciones",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            records = _document_records(source_dir)
+
+        self.assertEqual(1, len(records))
+        self.assertIn("error", records[0]["content_tokens"])
+        self.assertIn("trabajado", records[0]["content_tokens"])
+        self.assertIn("ERROR DE FECHAS", records[0]["document_context"])
+
+    def test_legacy_record_derives_parent_folder_from_sharepoint_url_at_retrieval(self):
+        record = _add_runtime_sharepoint_parent_context(
+            {
+                "title": "Indicaciones.txt — Documento",
+                "document_context": "Título del archivo: Indicaciones.txt.",
+                "folder_path": "SOLUCIONES",
+                "source_url": (
+                    "https://contoso.sharepoint.com/sites/Soporte/Documentos%20compartidos/"
+                    "SOLUCIONES/EVOLUTION/ERROR%20DE%20FECHAS%20EN%20TIEMPOS%20NO%20TRABAJADOS/"
+                    "Indicaciones.txt"
+                ),
+            }
+        )
+
+        self.assertIn("ERROR DE FECHAS EN TIEMPOS NO TRABAJADOS", record["document_context"])
+
+    def test_legacy_index_update_omits_additive_v2_fields(self):
+        filtered = _records_supported_by_index(
+            [{"id": "fragment-1", "content": "texto", "retrieval_text": "metadato"}],
+            {"id", "content"},
+        )
+
+        self.assertEqual([{"id": "fragment-1", "content": "texto"}], filtered)
+
     def test_filename_conventions_are_exposed_as_searchable_terms(self):
         terms = _searchable_filename_terms("acc.proc_arreglar_vac_negativos.sql")
 
         self.assertEqual("acc proc arreglar vac negativos sql", terms)
+
+    def test_sharepoint_description_is_indexed_and_searchable(self):
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            document = source_dir / "acc.proc_arreglar_vac_negativos.sql"
+            document.write_text("CREATE PROCEDURE acc.proc_arreglar_vac_negativos AS SELECT 1", encoding="utf-8")
+            document.with_suffix(".sql.metadata.json").write_text(
+                json.dumps(
+                    {
+                        "source_system": "sharepoint",
+                        "document_id": "script-vac-negativos",
+                        "name": document.name,
+                        "web_url": "https://contoso.example/Scripts%20de%20Apoyo/acc.proc_arreglar_vac_negativos.sql",
+                        "folder_path": "Scripts de Apoyo",
+                        "description": "Corrige los periodos de vacaciones que tienen saldo negativo y mueve el tiempo a nuevos periodos.",
+                        "dependency": "Base de datos respaldada.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("azure_search._document_pages", return_value=[(0, document.read_text(encoding="utf-8"))]):
+                records = _document_records(source_dir)
+
+        self.assertEqual(1, len(records))
+        self.assertIn("saldo negativo", records[0]["document_context"])
+        self.assertIn("nuevo", records[0]["content_tokens"])
+        self.assertIn("periodo", records[0]["content_tokens"])
+
+    def test_result_fragment_exposes_sharepoint_description(self):
+        from azure_search import _result_fragment
+
+        fragment = _result_fragment(
+            {
+                "document_context": "Descripción de la solución: Corrige vacaciones con saldo negativo.",
+                "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos",
+            },
+            "script para vacaciones negativas",
+        )
+
+        self.assertIn("Descripción de la solución", fragment)
+        self.assertIn("saldo negativo", fragment)
 
     def test_sql_identifiers_keep_concepts_searchable(self):
         tokens = set(tokenize("vac_vacaciones acc.proc_arreglar_vac_negativos.sql"))
@@ -416,6 +646,37 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertGreater(
             _document_relevance_score(named_procedure, question),
             _document_relevance_score(incidental_sql, question),
+        )
+
+    def test_script_intent_prioritizes_executable_artifact_over_readme(self):
+        question = (
+            "¿Hay algún script para corregir los periodos de vacaciones con saldo "
+            "negativo y mover el tiempo a nuevos periodos?"
+        )
+        script = {
+            "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+            "document_context": (
+                "Descripción de la solución: Corrige periodos de vacaciones con "
+                "saldo negativo y mueve el tiempo a nuevos periodos."
+            ),
+            "content_tokens": "acc proc arreglar vacacion negativo mover periodo",
+            "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos",
+            "document_type": "sql",
+        }
+        readme = {
+            "title": "ReadME Hotfixes.pdf — Página 1",
+            "document_context": "Incidencia de vacaciones en una actualización.",
+            "content_tokens": "vacacion actualizacion",
+            "content": "Se corrigió una incidencia de vacaciones.",
+            "document_type": "pdf",
+        }
+
+        self.assertTrue(_requests_script(question))
+        self.assertTrue(_is_script_record(script))
+        self.assertFalse(_is_script_record(readme))
+        self.assertGreater(
+            _document_relevance_score(script, question),
+            _document_relevance_score(readme, question),
         )
 
     def test_content_coverage_accepts_morphology_but_rejects_one_term_country_noise(self):
@@ -463,11 +724,69 @@ class DocumentQuestionTests(unittest.TestCase):
             )
         )
 
+    def test_content_coverage_rejects_accented_navigation_page_for_incapacity_parameters(self):
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Acciones de personal.pdf — Página 103",
+                    "content": (
+                        "Página 103 Acreditación, 67 Administración, 38 "
+                        "Amonestaciones, 75 Ausencias, 68 Cambio de centro, 84 "
+                        "Cambio de jornada, 95 Cambio de planilla, 97"
+                    ),
+                },
+                "¿Qué parámetros se pueden modificar para incapacidades?",
+            )
+        )
+
+    def test_version_change_question_rejects_table_of_contents_as_evidence(self):
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Upgrade 1.24.1.1.pdf — Página 2",
+                    "content_tokens": "evolution 1.24.1.1 cambio parametro aplicacion",
+                    "content": (
+                        "Página 2 Evolution 1.24.1.1 Tabla de contenido "
+                        "Instrucciones de instalación 4, actualización de base 6, "
+                        "cambios en parámetros de infraestructura 8, "
+                        "mejoras de aplicación 10, correcciones 12, anexos 14"
+                    ),
+                    "document_type": "pdf",
+                },
+                "¿Qué cambios incluye Upgrade 1.24.1.1 y qué precauciones debo tomar al aplicarlo?",
+            )
+        )
+
+    def test_content_coverage_does_not_mistake_sql_commas_for_navigation(self):
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+                    "content_tokens": "arreglar vacacion negativo sql",
+                    "content": (
+                        "update sal.dss_descuentos set dss_valor = 0, "
+                        "dss_tipo = 1, dss_estado = 1, dss_aplica = 1, "
+                        "dss_codigo = 1, dss_periodo = 1"
+                    ),
+                    "document_type": "sql",
+                },
+                "¿Cómo puedo arreglar vacaciones negativas con un script?",
+            )
+        )
+
     def test_action_coverage_recognizes_conjugated_action(self):
         self.assertTrue(
             has_requested_action_coverage(
                 "¿Cómo se clasifican las incapacidades?",
                 "Tipos de incapacidad y clasificaciones establecidas por la compañía.",
+            )
+        )
+
+    def test_action_coverage_maps_bajar_to_manual_descargue(self):
+        self.assertTrue(
+            has_requested_action_coverage(
+                "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",
+                "Gestión de documentos. Descargue los documentos sobre los que se tiene permisos.",
             )
         )
 
@@ -484,6 +803,268 @@ class DocumentQuestionTests(unittest.TestCase):
             ),
             "parametro prorroga contrato",
         )
+        self.assertIn(
+            "riesgo",
+            _focused_keyword_query("¿Qué parámetros se pueden modificar para incapacidades?"),
+        )
+        self.assertEqual(
+            "precaucion deben tomar instalar actualizacion evolution preparacion respaldo configuracion",
+            _focused_keyword_query(
+                "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?"
+            ),
+        )
+
+    def test_preinstallation_precautions_retrieve_preparation_evidence(self):
+        class FakeSearchClient:
+            def __init__(self):
+                self.queries = []
+
+            def search(self, **kwargs):
+                query = kwargs.get("search_text") or ""
+                self.queries.append(query)
+                if "preparacion" not in query:
+                    return []
+                return [
+                    {
+                        "id": "upgrade-preparation",
+                        "title": "Upgrade Evolution 1.24.1.1.pdf — Página 3",
+                        "source_url": "https://contoso.example/upgrade.pdf",
+                        "source_system": "sharepoint",
+                        "folder_path": "",
+                        "drive_id": "drive-upgrades",
+                        "content": (
+                            "Preparación. Antes de proceder con la instalación o actualización, "
+                            "realice respaldos completos de archivos de configuración y de la base de datos Evolution."
+                        ),
+                        "content_tokens": "preparacion instalacion actualizacion respaldo configuracion base dato evolution",
+                    }
+                ]
+
+        fake_search = FakeSearchClient()
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            sharepoint_sources=(("", "drive-upgrades"),),
+        )
+
+        with patch("azure_search.SearchClient", return_value=fake_search), patch(
+            "azure_search._embed_texts", return_value=[[0.0, 0.0]]
+        ):
+            sources = retrieve_azure_search_evidence(
+                "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+                config,
+            )
+
+        self.assertEqual(["Upgrade Evolution 1.24.1.1.pdf — Página 3"], [source.titulo for source in sources])
+        self.assertTrue(any("preparacion" in query for query in fake_search.queries))
+
+    def test_preinstallation_ranking_prefers_a_preparation_checklist(self):
+        question = "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?"
+        tangential = {
+            "title": "Readme de vulnerabilidades.pdf — Página 5",
+            "content": "La actualización instala dependencias para mitigar vulnerabilidades.",
+            "content_tokens": "actualizacion instalacion vulnerabilidad",
+            "document_type": "pdf",
+        }
+        checklist = {
+            "title": "Upgrade Evolution.pdf — Página 3",
+            "content": (
+                "Preparación previa: realice un respaldo y revise las recomendaciones "
+                "iniciales antes de instalar la actualización."
+            ),
+            "content_tokens": "preparacion previa respaldo recomendacion inicial instalacion actualizacion",
+            "document_type": "pdf",
+        }
+
+        self.assertGreater(
+            _document_relevance_score(checklist, question),
+            _document_relevance_score(tangential, question),
+        )
+
+    def test_preinstallation_query_expands_update_and_backup_variants(self):
+        query = _focused_keyword_query(
+            "Antes de actualizar Evolution, ¿qué respaldos y precauciones recomienda la guía de instalación?"
+        )
+
+        self.assertIn("preparacion", query)
+        self.assertIn("respaldo", query)
+
+    def test_dtc_validation_query_expands_to_actionable_manual_pages(self):
+        query = _focused_keyword_query(
+            "Después de reinstalar MSDTC, ¿qué debo validar en ambos servidores?"
+        )
+
+        self.assertIn("firewall", query)
+        self.assertIn("component", query)
+        self.assertIn("inboud", query)
+
+    def test_dtc_validation_ranking_prefers_actionable_check_over_heading(self):
+        question = "Después de reinstalar MSDTC, ¿qué debo validar en ambos servidores?"
+        heading = {
+            "title": "Manual DTC Verificacion.pdf — Página 3",
+            "content": "Validación. Validar en ambos servidores que estos servicios están corriendo Base de datos:",
+            "content_tokens": "validacion validar ambos servidor servicio base dato dtc",
+            "document_type": "pdf",
+        }
+        actionable_check = {
+            "title": "Manual DTC Verificacion.pdf — Página 5",
+            "content": (
+                "Validar en Component Services LOCAL DTC en ambos servidores y confirmar "
+                "que la configuración sea igual."
+            ),
+            "content_tokens": "validar component services local dtc ambos servidor configuracion",
+            "document_type": "pdf",
+        }
+
+        self.assertGreater(
+            _document_relevance_score(actionable_check, question),
+            _document_relevance_score(heading, question),
+        )
+
+    def test_parameter_request_rejects_a_related_fragment_without_parameter_fields(self):
+        decision = classify_case_by_rules(
+            "¿Qué parámetros se pueden modificar para riesgos de incapacidad?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Acciones de personal.pdf — Página 34",
+                    ubicacion="https://contoso.example/acciones.pdf",
+                    fragmento="Los días de subsidio dependen del riesgo de incapacidad.",
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
+    def test_calculation_request_rejects_an_include_flag_without_a_formula(self):
+        decision = classify_case_by_rules(
+            "¿Cómo se calcula el aguinaldo según la documentación disponible?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Readme.pdf — Página 40",
+                    ubicacion="https://contoso.example/readme.pdf",
+                    fragmento="GTISRIncluirAguinaldo indica si incluye aguinaldo: Si / No.",
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_calculation_request_rejects_a_parameter_with_aguinaldo_days(self):
+        decision = classify_case_by_rules(
+            "¿Cómo se calcula el aguinaldo en Evolution?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Readme 1.19.1.9.pdf — Página 38",
+                    ubicacion="https://contoso.example/readme.pdf",
+                    fragmento=(
+                        "AguinaldoMesParaCalculo: mes en el que se calcula el aguinaldo. "
+                        "AguinaldoNumeroDias: número de días de aguinaldo a que tiene "
+                        "derecho un empleado."
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_reinstallation_validation_rejects_a_diagnostic_heading_without_checks(self):
+        decision = classify_case_by_rules(
+            "Después de reinstalar MSDTC, ¿qué debo validar en ambos servidores?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Manual DTC Verificacion.pdf — Página 3",
+                    ubicacion="https://contoso.example/dtc.pdf",
+                    fragmento=(
+                        "Validar en ambos servidores que estos servicios están corriendo\n"
+                        "Base de datos:"
+                    ),
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_post_update_validation_rejects_release_note_entries(self):
+        decision = classify_case_by_rules(
+            "Después de aplicar una actualización de Evolution, ¿qué validaciones operativas recomienda la documentación?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Readme.pdf — Página 8",
+                    ubicacion="https://contoso.example/readme.pdf",
+                    fragmento="EVO-4208 Validación para creación de esquema de evaluación.",
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_key_vault_request_rejects_a_generic_rest_api_key_reference(self):
+        decision = classify_case_by_rules(
+            "¿Cómo configuro una API key mediante Key Vault para una integración de Evolution?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Escenario de infraestructura.pdf — Página 14",
+                    ubicacion="https://contoso.example/infrastructure.pdf",
+                    fragmento="Trasladan el ID del sitio y REST API KEY.",
+                )
+            ],
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_procedure_prefers_a_solution_instruction_over_an_incidental_configuration(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Instrucciones.txt — Documento",
+                ubicacion="https://contoso.sharepoint.com/sites/x/Documentos%20compartidos/SOLUCIONES/Evolution/Reiniciar%20AppJob/Instrucciones.txt",
+                fragmento="Importar la tarea desde el Task Scheduler y ejecutar la tarea creada.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Configuración SMTP.docx — Documento",
+                ubicacion="https://contoso.sharepoint.com/sites/x/_layouts/15/Doc.aspx?sourcedoc=abc",
+                fragmento="Paso 4 Reiniciar el servicio AppJob desde Task Scheduler.",
+            ),
+        ]
+
+        selected = _focused_procedure_evidence(
+            "¿Cuál es el procedimiento para reiniciar AppJob desde Task Scheduler?", evidence
+        )
+
+        self.assertEqual(["Instrucciones.txt — Documento"], [source.titulo for source in selected])
+
+    def test_procedure_summary_excludes_internal_log_tail(self):
+        answer = _grounded_document_summary(
+            "¿Cuál es el procedimiento para reiniciar AppJob desde Task Scheduler?",
+            [
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Instrucciones.txt — Documento",
+                    ubicacion="https://contoso.sharepoint.com/sites/x/SOLUCIONES/AppJob/Instrucciones.txt",
+                    fragmento=(
+                        "Renombrar la tarea anterior. Importar la tarea desde Task Scheduler. "
+                        "Seleccionar la tarea creada. Presionar Ejecutar y verificar el resultado. "
+                        "2026-08-06 10:10:00 INFO Error de aplicación; "
+                        "cadena de conexión: Server=internal-db; Database=Evolution."
+                    ),
+                )
+            ],
+        )
+
+        self.assertIn("Presionar Ejecutar", answer)
+        self.assertNotIn("INFO", answer)
+        self.assertNotIn("cadena de conexión", answer.casefold())
 
     def test_content_coverage_accepts_configuration_variant_in_same_fragment(self):
         self.assertTrue(
@@ -501,6 +1082,64 @@ class DocumentQuestionTests(unittest.TestCase):
                     "document_type": "pdf",
                 },
                 "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?",
+            )
+        )
+
+    def test_content_coverage_accepts_common_operator_vocabulary(self):
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Gestion de documentos.pdf — Página 4",
+                    "content_tokens": "gestion documento administrar descargar",
+                    "content": (
+                        "En esta opción permite acceder y descargar los documentos "
+                        "administrados en el módulo Gestión de documentos, a los que se tienen permiso. "
+                        "Si falla, revisar permisos y acceso al módulo."
+                    ),
+                    "document_type": "pdf",
+                },
+                "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",
+            )
+        )
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Ofuscación de datos.sql — Documento",
+                    "content_tokens": "ofuscacion dato sensible sql server",
+                    "content": "Procedimiento SQL Server para ofuscar datos sensibles.",
+                    "document_type": "sql",
+                },
+                "¿Cómo se ofuscan datos sensibles en SQL Server?",
+            )
+        )
+
+    def test_operator_vocabulary_does_not_make_unrelated_evidence_pass(self):
+        self.assertFalse(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Readme licenciamiento.pdf — Página 2",
+                    "content_tokens": "licencia token administrar usuario",
+                    "content": "Administrar tokens de licencia del sistema.",
+                    "document_type": "pdf",
+                },
+                "Un usuario no puede bajar los documentos del módulo de gestión.",
+            )
+        )
+
+    def test_contract_temporal_wording_expands_to_renewal_window(self):
+        self.assertTrue(
+            _has_minimum_content_coverage(
+                {
+                    "title": "Acciones de personal.pdf — Página 18",
+                    "content_tokens": "parametro prorroga contrato empleado rango dia",
+                    "content": (
+                        "Parámetros para prórroga de contratos. Controla el rango de días "
+                        "para mostrar empleados. "
+                        "ProrrogaContratoDiasAtrasInicioRangoFechaFinContrato."
+                    ),
+                    "document_type": "pdf",
+                },
+                "¿Qué parámetro controla el rango de días para mostrar empleados cuya prórroga de contrato está próxima?",
             )
         )
 
@@ -805,6 +1444,58 @@ class DocumentQuestionTests(unittest.TestCase):
             )
             self.assertEqual(set(), _changed_document_ids(source_dir))
 
+    def test_changed_existing_chunk_merges_without_reembedding(self):
+        class FakeSearchClient:
+            def __init__(self):
+                self.merged_records = []
+
+            def search(self, **_kwargs):
+                return [{"id": "existing-chunk"}]
+
+            def merge_documents(self, documents):
+                self.merged_records.extend(documents)
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+            def delete_documents(self, documents):
+                return [
+                    SimpleNamespace(succeeded=True, key=document["id"])
+                    for document in documents
+                ]
+
+        config = SimpleNamespace(
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+        )
+        record = {
+            "id": "existing-chunk",
+            "document_id": "document-1",
+            "title": "Indicaciones.txt — Documento",
+            "content": "Solución actualizada.",
+            "document_context": "Carpetas de origen: SOLUCIONES / EVOLUTION.",
+            "content_tokens": "solucion evolution",
+        }
+        with TemporaryDirectory() as directory:
+            source_dir = Path(directory)
+            (source_dir / CHANGE_MANIFEST_NAME).write_text(
+                '{"changed_document_ids": ["document-1"]}', encoding="utf-8"
+            )
+            fake_search = FakeSearchClient()
+            with (
+                patch("azure_search.SearchClient", return_value=fake_search),
+                patch("azure_search._document_records", return_value=[record]),
+                patch("azure_search._attach_embeddings") as attach_embeddings,
+            ):
+                uploaded = index_directory(source_dir, config)
+
+        self.assertEqual(1, uploaded)
+        self.assertEqual([record], fake_search.merged_records)
+        attach_embeddings.assert_not_called()
+
     def test_excerpt_prefers_matching_sentence_over_chunk_start(self):
         content = (
             "Página 3 Información general de la planilla y parámetros administrativos. "
@@ -908,6 +1599,150 @@ class DocumentQuestionTests(unittest.TestCase):
 
         self.assertEqual("Ninguno.", decision.resumen)
 
+    def test_versioned_software_requirements_rejects_a_changelog_without_requirements(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.11.pdf — Página 1",
+                ubicacion="https://contoso.example/readme-1.19.1.11.pdf",
+                fragmento="Mejoras de la versión: se agregó el detalle de plazas y dependencias.",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "Para la versión 1.19.1.11, ¿se necesita algún requisito nuevo de software?",
+            evidence,
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
+    def test_document_version_procedure_rejects_document_type_as_tangential_evidence(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.13.pdf — Página 7",
+                ubicacion="https://contoso.example/readme-1.19.1.13.pdf",
+                fragmento="Los valores esperados son CrystalReports, WordTemplate y DocumentoGestionado.",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "¿Me puedes explicar de forma breve cómo crear una nueva versión de un documento gestionado?",
+            evidence,
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
+    def test_parameter_list_request_rejects_a_fragment_without_parameter_details(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Acciones de personal.pdf — Página 34",
+                ubicacion="https://contoso.example/acciones-personal.pdf",
+                fragmento=(
+                    "Los días de descuento o subsidio se configuran a partir de los "
+                    "riesgos de incapacidad según el Seguro Social."
+                ),
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "Necesito configurar riesgos de incapacidad. ¿Qué parámetros se pueden modificar?",
+            evidence,
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
+    def test_sql_evidence_is_summarized_without_dumping_executable_code(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ofuscación de datos.sql",
+                ubicacion="https://contoso.example/ofuscacion.sql",
+                fragmento="UPDATE exp_expedientes SET exp_nombre = @rnd;",
+                document_type="sql",
+            )
+        ]
+
+        decision = classify_case_by_rules("¿Cómo se ofuscan datos sensibles en SQL?", evidence)
+
+        self.assertEqual("resuelto", decision.estado)
+        self.assertIn("script técnico", decision.resumen)
+        self.assertNotIn("UPDATE", decision.resumen)
+
+    def test_sql_description_is_used_in_grounded_summary(self):
+        from classification import _grounded_document_summary
+
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="acc.proc_arreglar_vac_negativos.sql — Documento",
+                ubicacion="https://contoso.example/vacaciones.sql",
+                fragmento="Descripción de la solución: Corrige periodos de vacaciones con saldo negativo.",
+                document_type="sql",
+                descripcion="Corrige los periodos de vacaciones que tienen saldo negativo y mueve el tiempo a nuevos periodos",
+            )
+        ]
+
+        summary = _grounded_document_summary(
+            "algún script para corregir vacaciones con saldo negativo", evidence
+        )
+
+        self.assertIn("acc.proc_arreglar_vac_negativos.sql", summary)
+        self.assertIn("saldo negativo", summary)
+        self.assertNotIn("CREATE PROCEDURE", summary)
+
+    def test_diagnostic_request_combines_complete_checks_from_multiple_sources(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual DTC Verificacion.pdf — Página 3",
+                ubicacion="https://contoso.example/dtc.pdf",
+                fragmento=(
+                    "Valide en ambos servidores que el servicio Distributed Transaction "
+                    "Coordinator esté en ejecución."
+                ),
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual DTC Verificacion.pdf — Página 4",
+                ubicacion="https://contoso.example/dtc.pdf",
+                fragmento=(
+                    "Verifique que el firewall permita la comunicación DTC entre ambos servidores."
+                ),
+            ),
+        ]
+
+        decision = classify_case_by_rules(
+            "¿Qué servicios o validaciones debo revisar para que la comunicación DTC quede funcionando?",
+            evidence,
+        )
+
+        self.assertEqual("resuelto", decision.estado)
+        self.assertIn("1. Valide en ambos servidores", decision.resumen)
+        self.assertIn("2. Verifique que el firewall", decision.resumen)
+
+    def test_diagnostic_list_request_rejects_an_incomplete_heading(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual DTC Verificacion.pdf — Página 3",
+                ubicacion="https://contoso.example/dtc.pdf",
+                fragmento="Validar en ambos servidores que estos servicios están corriendo: Base de datos:",
+            )
+        ]
+
+        decision = classify_case_by_rules(
+            "¿Qué servicios o validaciones debo revisar para que la comunicación DTC quede funcionando?",
+            evidence,
+        )
+
+        self.assertEqual("sin_evidencia", decision.estado)
+        self.assertEqual([], decision.fuentes)
+
     def test_important_numeric_terms_are_searchable(self):
         self.assertIn("37", tokenize("Bono Decreto 37-2001"))
 
@@ -984,11 +1819,6 @@ class DocumentQuestionTests(unittest.TestCase):
             "@search.reranker_score": 2.3,
         }
 
-        self.assertFalse(
-            _has_minimum_content_coverage(
-                record, "¿Cómo se pueden administrar documentos en Evolution?"
-            )
-        )
         self.assertTrue(
             _has_minimum_content_coverage(
                 record,
@@ -1193,6 +2023,42 @@ class DocumentQuestionTests(unittest.TestCase):
             )
         )
 
+    def test_legacy_provenance_fails_closed_for_unscoped_sharepoint_urls(self):
+        approved_sources = (("", "drive-readme"), ("SOLUCIONES", "drive-documents"))
+        labels = ("ReadME Hotfixes", "Documentos/SOLUCIONES")
+
+        self.assertTrue(
+            _record_has_authorized_provenance(
+                {
+                    "source_system": "sharepoint",
+                    "source_url": "https://contoso.sharepoint.com/sites/x/ReadME%20Hotfixes/Readme.pdf",
+                },
+                approved_sources,
+                labels,
+            )
+        )
+        self.assertFalse(
+            _record_has_authorized_provenance(
+                {
+                    "source_system": "sharepoint",
+                    "source_url": "https://contoso.sharepoint.com/sites/x/_layouts/15/Doc.aspx?sourcedoc=abc",
+                },
+                approved_sources,
+                labels,
+            )
+        )
+
+    def test_excerpt_prefers_a_numbered_procedure_step_over_prior_configuration(self):
+        excerpt = _excerpt_around_query(
+            "Host: smtp.office365.com Password: secreto de ejemplo Paso 3 Se guarda la información "
+            "del archivo Paso 4 Reiniciar el servicio AppJob desde Task Scheduler.",
+            "El servicio AppJob está detenido, ¿qué indica la guía para reiniciarlo?",
+            limit=500,
+        )
+
+        self.assertIn("Reiniciar el servicio AppJob", excerpt)
+        self.assertNotIn("smtp.office365.com", excerpt)
+
     def test_unmatched_question_remains_without_evidence(self):
         evidence = [
             EvidenceSource(
@@ -1253,6 +2119,39 @@ class DocumentQuestionTests(unittest.TestCase):
         )
 
         self.assertIn("Enlace: https://contoso.example/procedimiento.pdf", response)
+
+    def test_sharepoint_solution_includes_its_related_files_folder_link(self):
+        response = format_user_response(
+            BotDecision(
+                estado="resuelto",
+                confianza="alta",
+                resumen="Renombre el archivo y ejecútelo como PowerShell.",
+                fuentes=[
+                    EvidenceSource(
+                        tipo="sharepoint",
+                        titulo="Instrucciones.txt — Documento",
+                        ubicacion=(
+                            "https://aseinfocorp.sharepoint.com/sites/Soportealcliente/"
+                            "Documentos%20compartidos/SOLUCIONES/EVOLUTION/Reiniciar%20appjob/"
+                            "Instrucciones.txt"
+                        ),
+                        fragmento="Renombrar el archivo a Reiniciar appjob.ps1.",
+                    )
+                ],
+            ),
+            config=SimpleNamespace(
+                sharepoint_folder_ctid="0x0120009FAB9B5A94350F489104FB62DC2E926D"
+            ),
+        )
+
+        self.assertIn("Enlace: https://aseinfocorp.sharepoint.com", response)
+        self.assertIn("Archivos relacionados:", response)
+        self.assertIn(
+            "Forms/AllItems.aspx?FolderCTID=0x0120009FAB9B5A94350F489104FB62DC2E926D"
+            "&id=%2Fsites%2FSoportealcliente%2FDocumentos%20compartidos%2FSOLUCIONES%2F"
+            "EVOLUTION%2FReiniciar%20appjob",
+            response,
+        )
 
     def test_no_evidence_response_does_not_show_tangential_source(self):
         response = format_user_response(

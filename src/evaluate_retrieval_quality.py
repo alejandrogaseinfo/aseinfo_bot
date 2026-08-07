@@ -1,24 +1,29 @@
-"""Evaluate Libras retrieval against a reviewed, versioned quality corpus.
+"""Evaluate Libras retrieval and deterministic answer rules against a corpus.
 
-The evaluator calls retrieval only. It does not call the answer-generation
-model, modify Azure AI Search or print question text, so it can be used to
-compare an index candidate with production without exposing the corpus in logs.
+The evaluator does not call the answer-generation model, modify Azure AI
+Search or print question text, so it can compare production behavior without
+exposing the corpus in logs.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+from time import perf_counter
 import unicodedata
 from pathlib import Path
 from typing import Callable
 
 from config import Config, load_project_environment
+from classification import classify_case_by_rules, is_underspecified_query
+from models import RetrievalTrace
 from retrieval import retrieve_evidence
 
 
 VALID_EXPECTATIONS = {"evidence", "sin_evidencia"}
+VALID_CATEGORIES = {"procedural", "diagnostic", "out_of_scope", "insufficient"}
 
 
 def _normalized(value: str) -> str:
@@ -41,6 +46,7 @@ def load_cases(path: Path) -> list[dict]:
         message = str(raw_case.get("message") or "").strip()
         expected = str(raw_case.get("expected") or "").strip()
         expected_titles = raw_case.get("expected_title_contains", [])
+        category = str(raw_case.get("category") or "uncategorized").strip()
         if not case_id or not message or expected not in VALID_EXPECTATIONS:
             raise ValueError("Cada caso requiere id, message y expected válido.")
         if case_id in seen_ids:
@@ -55,6 +61,8 @@ def load_cases(path: Path) -> list[dict]:
             )
         if expected == "sin_evidencia" and expected_titles:
             raise ValueError(f"El caso {case_id} no debe declarar títulos esperados.")
+        if category != "uncategorized" and category not in VALID_CATEGORIES:
+            raise ValueError(f"category no es válido para {case_id}.")
         seen_ids.add(case_id)
         cases.append(
             {
@@ -62,18 +70,24 @@ def load_cases(path: Path) -> list[dict]:
                 "message": message,
                 "expected": expected,
                 "expected_title_contains": expected_titles,
+                "split": str(raw_case.get("split") or "regression").strip(),
+                "artifact_role": str(raw_case.get("artifact_role") or "").strip(),
+                "category": category,
             }
         )
     return cases
 
 
-def evaluate_cases(
-    cases: list[dict], retriever: Callable[[str], list]
-) -> dict:
-    """Measure evidence presence and expected-document recall for each case."""
+def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | RetrievalTrace]) -> dict:
+    """Measure evidence presence, expected-document recall, and latency."""
     results: list[dict] = []
     for case in cases:
-        evidence = retriever(case["message"])
+        started_at = perf_counter()
+        retrieval = [] if is_underspecified_query(case["message"]) else retriever(case["message"])
+        latency_ms = round((perf_counter() - started_at) * 1000, 2)
+        trace = retrieval if isinstance(retrieval, RetrievalTrace) else None
+        evidence = trace.sources if trace else retrieval
+        decision = classify_case_by_rules(case["message"], evidence)
         titles = list(dict.fromkeys(source.titulo for source in evidence))
         normalized_titles = [_normalized(title) for title in titles]
         expected_titles = [_normalized(title) for title in case["expected_title_contains"]]
@@ -89,14 +103,50 @@ def evaluate_cases(
                 "id": case["id"],
                 "expected": case["expected"],
                 "passed": passed,
+                "latency_ms": latency_ms,
                 "evidence_count": len(evidence),
+                "source_count": len(decision.fuentes),
+                "answer_state": decision.estado,
+                "answer_passed": (
+                    decision.estado == "resuelto"
+                    if case["expected"] == "evidence"
+                    else decision.estado == "sin_evidencia"
+                ),
                 "retrieved_titles": titles,
+                "candidate_count": trace.candidate_count if trace else None,
+                "direct_evidence_count": trace.direct_evidence_count if trace else None,
+                "requirement_count": trace.requirement_count if trace else None,
+                "covered_requirement_count": trace.covered_requirement_count if trace else None,
+                "rejected_reasons": trace.rejected_reasons if trace else {},
+                "split": case.get("split", "regression"),
+                "artifact_role": case.get("artifact_role", ""),
+                "category": case.get("category", "uncategorized"),
             }
         )
 
     passed_count = sum(result["passed"] for result in results)
     expected_evidence = [result for result in results if result["expected"] == "evidence"]
     expected_no_evidence = [result for result in results if result["expected"] == "sin_evidencia"]
+    traced_results = [result for result in results if result["candidate_count"] is not None]
+    traced_evidence = [
+        result for result in traced_results if result["expected"] == "evidence"
+    ]
+    latencies = [result["latency_ms"] for result in results]
+    sorted_latencies = sorted(latencies)
+    p95_index = max(0, math.ceil(len(sorted_latencies) * 0.95) - 1) if sorted_latencies else 0
+    answer_evidence = [result for result in results if result["expected"] == "evidence"]
+    answer_abstentions = [result for result in results if result["expected"] == "sin_evidencia"]
+    category_summary: dict[str, dict] = {}
+    for category in sorted({result["category"] for result in results}):
+        category_results = [result for result in results if result["category"] == category]
+        category_summary[category] = {
+            "case_count": len(category_results),
+            "pass_rate": sum(result["passed"] for result in category_results) / len(category_results),
+            "answer_pass_rate": sum(result["answer_passed"] for result in category_results) / len(category_results),
+            "latency_ms_p95": sorted(result["latency_ms"] for result in category_results)[
+                max(0, math.ceil(len(category_results) * 0.95) - 1)
+            ],
+        }
     return {
         "summary": {
             "case_count": len(results),
@@ -112,6 +162,53 @@ def evaluate_cases(
                 if expected_no_evidence
                 else None
             ),
+            "candidate_document_recall": (
+                sum(result["passed"] for result in traced_evidence) / len(traced_evidence)
+                if traced_evidence
+                else None
+            ),
+            "direct_evidence_rate": (
+                sum(result["direct_evidence_count"] > 0 for result in traced_evidence)
+                / len(traced_evidence)
+                if traced_evidence
+                else None
+            ),
+            "subquestion_coverage_rate": (
+                sum(
+                    result["covered_requirement_count"] / result["requirement_count"]
+                    for result in traced_evidence
+                    if result["requirement_count"]
+                )
+                / sum(1 for result in traced_evidence if result["requirement_count"])
+                if any(result["requirement_count"] for result in traced_evidence)
+                else None
+            ),
+            "retrieval_latency_ms_avg": (
+                sum(latencies) / len(latencies) if latencies else None
+            ),
+            "retrieval_latency_ms_p95": (
+                sorted_latencies[p95_index] if sorted_latencies else None
+            ),
+            "retrieval_latency_ms_max": max(latencies) if latencies else None,
+            "answer_resolution_rate": (
+                sum(result["answer_state"] == "resuelto" for result in answer_evidence)
+                / len(answer_evidence)
+                if answer_evidence
+                else None
+            ),
+            "answer_correct_abstention_rate": (
+                sum(result["answer_state"] == "sin_evidencia" for result in answer_abstentions)
+                / len(answer_abstentions)
+                if answer_abstentions
+                else None
+            ),
+            "single_source_rate": (
+                sum(result["source_count"] == 1 for result in answer_evidence)
+                / len(answer_evidence)
+                if answer_evidence
+                else None
+            ),
+            "by_category": category_summary,
         },
         "results": results,
     }
@@ -143,7 +240,7 @@ def main() -> None:
 
     report = evaluate_cases(
         cases,
-        lambda message: retrieve_evidence(message, config=config),
+        lambda message: retrieve_evidence(message, config=config, return_trace=True),
     )
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

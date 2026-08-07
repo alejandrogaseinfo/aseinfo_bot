@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+from urllib.parse import unquote, urlparse
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -40,7 +41,19 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 from document_index import has_requested_action_coverage, tokenize
-from models import EvidenceSource
+from evidence_verifier import verify_semantic_evidence
+from logging_utils import get_logger
+from models import EvidenceSource, RetrievalTrace
+from query_plan import (
+    QueryPlan,
+    build_query_plan,
+    concept_keys,
+    covered_requirements,
+    requirement_is_covered,
+)
+
+
+logger = get_logger()
 
 
 # Solo se ingieren formatos con texto recuperable. Los binarios de la carpeta
@@ -62,6 +75,8 @@ SUPPORTED_EXTENSIONS = {
 CONTENT_FIELD = "content"
 CONTEXT_FIELD = "document_context"
 CONTENT_VECTOR_FIELD = "content_vector"
+RETRIEVAL_TEXT_FIELD = "retrieval_text"
+RETRIEVAL_CONCEPTS_FIELD = "retrieval_concepts"
 SEARCH_TIMEOUT_SECONDS = 10
 MAX_CANDIDATES = 30
 # The first candidate pool must be wider than the final answer set. Otherwise
@@ -70,6 +85,46 @@ MAX_CANDIDATES = 30
 CANDIDATE_POOL_SIZE = 100
 MAX_CANDIDATES_PER_DOCUMENT = 3
 SEMANTIC_ACTION_MIN_SCORE = 2.0
+_UPPERCASE_ACRONYM = re.compile(r"\b[A-Z][A-Z0-9]{1,7}\b")
+_PREINSTALLATION_OPERATION_CONCEPTS = {"instal", "actualiz"}
+_PREINSTALLATION_CUE_CONCEPTS = {"antes", "precaucion", "previo"}
+_PREINSTALLATION_EVIDENCE_CONCEPTS = {"recomend", "inicial", "respald", "prepar", "previo"}
+_LEGACY_PREINSTALLATION_OPERATION_PREFIXES = ("instal", "actualiz")
+_LEGACY_PREINSTALLATION_CUE_PREFIXES = (
+    "antes",
+    "precaucion",
+    "previa",
+    "previo",
+    "respald",
+    "prepar",
+)
+_LEGACY_PREINSTALLATION_EVIDENCE_TOKENS = {
+    "preparacion",
+    "respaldo",
+    "recomendacion",
+    "inicial",
+    "previa",
+    "previo",
+}
+_DTC_VALIDATION_EVIDENCE_TOKENS = {
+    "firewall",
+    "component",
+    "inboud",
+    "outboud",
+    "regla",
+}
+SCRIPT_REQUEST_PATTERN = re.compile(
+    r"\bscript\w*\b|\bprocedimiento\s+almacenado\b|\barchivo\s+(?:sql|ps1|bat)\b",
+    re.IGNORECASE,
+)
+# Query-side vocabulary bridges for common operator language.  These do not
+# alter indexed content; they let an existing index match the wording users
+# actually type without requiring an immediate reindex.
+QUERY_SYNONYM_GROUPS = (
+    frozenset({"bajar", "bajan", "baje", "descargar", "descarga", "descargue", "descargan"}),
+    frozenset({"gestionar", "gestion", "administrar", "administrado"}),
+    frozenset({"ofuscar", "ofuscacion", "ofuscado", "ofuscan"}),
+)
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"
 CHANGE_MANIFEST_NAME = ".libras-sharepoint-changes.json"
 SYNC_STATE_NAME = ".libras-sharepoint-sync-state.json"
@@ -83,11 +138,56 @@ SEARCH_SELECT_FIELDS = [
     "source_system",
     "folder_path",
     "drive_id",
+    "document_type",
     CONTEXT_FIELD,
     CONTENT_FIELD,
     "content_tokens",
     "chunk_number",
 ]
+V2_SEARCH_SELECT_FIELDS = [
+    *SEARCH_SELECT_FIELDS,
+    "document_id",
+    "document_version",
+    "last_modified",
+    "document_type",
+    RETRIEVAL_TEXT_FIELD,
+    RETRIEVAL_CONCEPTS_FIELD,
+    "product",
+    "module",
+    "operation",
+    "artifact_role",
+    "version",
+    "country",
+    "quality_status",
+    "evidence_kind",
+]
+V2_ONLY_INDEX_FIELDS = {
+    RETRIEVAL_TEXT_FIELD,
+    RETRIEVAL_CONCEPTS_FIELD,
+    "product",
+    "module",
+    "operation",
+    "artifact_role",
+    "version",
+    "country",
+    "quality_status",
+    "evidence_kind",
+}
+EXCLUDED_QUALITY_STATUSES = {"obsoleto", "duplicado", "fuera_de_alcance"}
+ARTIFACT_ROLE_BY_EXTENSION = {
+    ".sql": "script",
+    ".ps1": "script",
+    ".bat": "script",
+    ".pdf": "manual",
+    ".docx": "manual",
+    ".xlsx": "reporte",
+    ".csv": "reporte",
+    ".rdlc": "reporte",
+    ".json": "configuracion",
+    ".xml": "configuracion",
+    ".aspx": "configuracion",
+    ".txt": "procedimiento",
+}
 COUNTRY_TOKENS = {
     "guatemala": {"guatemala", "guatemalteco", "guatemalteca"},
     "el_salvador": {"salvador", "salvadoreno", "salvadoreño", "salvadorena", "salvadoreña"},
@@ -121,6 +221,8 @@ OPERATIONAL_QUERY_TOKENS = {
     "restaurar",
     "actualizar",
 }
+NAVIGATION_QUERY_TOKENS = {"indice", "tabla", "seccion", "contenido", "capitulo"}
+DIAGNOSTIC_ACTION_TOKENS = {"revisar", "validar", "verificar", "confirmar"}
 GENERIC_QUERY_TOKENS = {
     "cambio",
     "como",
@@ -211,7 +313,7 @@ def _attach_embeddings(records: list[dict], config) -> None:
             [
                 "\n".join(
                     str(record.get(field) or "")
-                    for field in ("title", CONTEXT_FIELD, CONTENT_FIELD)
+                    for field in ("title", RETRIEVAL_TEXT_FIELD, CONTEXT_FIELD, CONTENT_FIELD)
                 )
                 for record in batch
             ],
@@ -237,10 +339,34 @@ def _searchable_filename_terms(title: str) -> str:
     return " ".join(separated.split())
 
 
+def _sharepoint_parent_context(source_url: str, folder_path: str = "") -> str:
+    """Return the factual parent-folder trail for retrieval only.
+
+    SharePoint procedures are frequently stored in files named
+    ``Indicaciones.txt`` or ``Script.sql``.  The diagnosis lives in the parent
+    folder name, so preserve that path as searchable metadata without treating
+    it as a procedural instruction or adding it to the answer excerpt.
+    """
+    path = unquote(urlparse(str(source_url or "")).path)
+    segments = [segment.strip() for segment in path.split("/") if segment.strip()]
+    if segments:
+        segments.pop()  # file name
+    normalized_segments = [segment.casefold() for segment in segments]
+    if "documentos compartidos" in normalized_segments:
+        start = normalized_segments.index("documentos compartidos") + 1
+        segments = segments[start:]
+    elif "sites" in normalized_segments:
+        start = normalized_segments.index("sites") + 2  # site collection + site name
+        segments = segments[start:]
+    if not segments and folder_path:
+        segments = [folder_path]
+    return " / ".join(segments)
+
+
 def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
     """Return the most relevant part of a chunk instead of its first characters."""
     compact = " ".join(text.split())
-    if len(compact) <= limit:
+    if len(compact) <= limit and not re.search(r"\bPaso\s+\d+\b", compact):
         return compact
 
     query_tokens = set(tokenize(query))
@@ -249,7 +375,11 @@ def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
 
     sentences = [
         sentence.strip()
-        for sentence in re.split(r"(?<=[.!?])\s+", compact)
+        # Procedural manuals often flatten numbered steps into one long line
+        # when extracted from Word. Treat each "Paso N" as a local evidence
+        # unit so a request such as "reiniciar AppJob" does not expose the
+        # preceding SMTP configuration simply because it shares a chunk.
+        for sentence in re.split(r"(?<=[.!?])\s+|(?=\bPaso\s+\d+\b)", compact)
         if sentence.strip()
     ]
     if not sentences:
@@ -291,13 +421,35 @@ def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
 
 
 def _result_fragment(result: dict, user_message: str) -> str:
+    description = _record_description(result)
     captions = result.get("@search.captions") or []
     if captions:
         caption = captions[0]
         text = caption.get("text") if isinstance(caption, dict) else getattr(caption, "text", "")
         if text:
-            return _excerpt_around_query(str(text), user_message)
-    return _excerpt_around_query(str(result.get(CONTENT_FIELD, "")), user_message)
+            fragment = _excerpt_around_query(str(text), user_message)
+        else:
+            fragment = ""
+    else:
+        fragment = _excerpt_around_query(str(result.get(CONTENT_FIELD, "")), user_message)
+    if description:
+        prefix = f"Descripción de la solución: {description}"
+        return f"{prefix}\n{fragment}" if fragment else prefix
+    return fragment
+
+
+def _record_description(record: dict) -> str:
+    """Read the SharePoint description embedded in legacy document context."""
+    direct = record.get("description") or record.get("detalle") or record.get("descripcion")
+    if direct:
+        return " ".join(str(direct).split())[:900]
+    context = str(record.get(CONTEXT_FIELD) or "")
+    match = re.search(
+        r"Descripción de la solución:\s*(.*?)(?:\.\s*Dependencia:\s*|$)",
+        context,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return " ".join(match.group(1).split())[:900] if match else ""
 
 
 def _requested_file_names(user_message: str) -> tuple[str, ...]:
@@ -334,6 +486,55 @@ def _record_matches_requested_version(record: dict, versions: tuple[str, ...]) -
 
 def _requests_readme(user_message: str) -> bool:
     return bool(re.search(r"\breadme\b", user_message or "", re.IGNORECASE))
+
+
+def _requests_script(user_message: str) -> bool:
+    """Detect when the user is asking for an executable/script artifact."""
+    return bool(SCRIPT_REQUEST_PATTERN.search(user_message or ""))
+
+
+def _is_script_record(record: dict) -> bool:
+    """Identify executable artifacts even when their filename is generic."""
+    document_type = str(record.get("document_type") or "").casefold().lstrip(".")
+    if document_type in {"sql", "ps1", "bat", "cmd", "code", "script"}:
+        return True
+    title = str(record.get("title") or "").casefold()
+    return any(
+        f"{extension} —" in title
+        or title.endswith(extension)
+        for extension in (".sql", ".ps1", ".bat", ".cmd")
+    )
+
+
+def _script_search_query(user_message: str) -> str:
+    """Keep script-intent retrieval focused on the requested operation."""
+    ignored = GENERIC_QUERY_TOKENS | {
+        "script",
+        "scripts",
+        "procedimiento",
+        "almacenado",
+        "archivo",
+        "documentacion",
+        "indica",
+        "indicar",
+        "usa",
+        "usar",
+        "utiliza",
+        "utilizar",
+        "hay",
+        "algun",
+        "alguna",
+        "alguno",
+        "que",
+        "para",
+        "necesito",
+    }
+    terms = [
+        token
+        for token in tokenize(user_message)
+        if len(token) >= 4 and token not in ignored
+    ]
+    return " ".join(dict.fromkeys(terms))
 
 
 def _requested_section_pattern(user_message: str) -> re.Pattern | None:
@@ -378,11 +579,93 @@ def _focused_keyword_query(user_message: str) -> str:
         " ",
         user_message.casefold(),
     )
-    return " ".join(
+    focused_tokens = [
         token
         for token in tokenize(compact_source)
         if token not in GENERIC_QUERY_TOKENS
+    ]
+    # In the HR manual, configurable incapacity parameters are documented
+    # under the operational section ``Riesgos de incapacidad``. Add that
+    # conservative heading bridge only when both concepts are explicit in the
+    # user's question; it must not broaden unrelated incapacity searches.
+    focused_token_set = set(focused_tokens)
+    if {"incapacidad", "parametro"}.issubset(focused_token_set):
+        focused_tokens.extend(token for token in ("riesgo", "incapacidad") if token not in focused_token_set)
+    # Upgrade manuals usually place pre-installation precautions under
+    # ``Preparación`` and ``Respaldo`` rather than under the operator's word
+    # ``precauciones``. Keep this bridge limited to an explicit pre-install
+    # update request so ordinary change-log lookups are not broadened.
+    has_preinstallation_operation = any(
+        token.startswith(("instal", "actualiz")) for token in focused_token_set
     )
+    has_preinstallation_cue = any(
+        token.startswith(("precaucion", "antes", "prev", "respald", "prepar"))
+        for token in focused_token_set
+    )
+    if has_preinstallation_operation and has_preinstallation_cue:
+        focused_tokens.extend(
+            token
+            for token in ("preparacion", "respaldo", "configuracion")
+            if token not in focused_token_set
+        )
+    # The DTC validation manual places the actionable checks on pages after
+    # its generic "Validación" heading. Expand only an explicit DTC/MSDTC
+    # validation request so the focused pass retrieves those existing pages.
+    if _is_dtc_validation_question(user_message):
+        focused_tokens.extend(
+            token
+            for token in ("firewall", "component", "inboud", "outboud", "regla")
+            if token not in focused_token_set
+        )
+    return " ".join(focused_tokens)
+
+
+def _is_dtc_validation_question(user_message: str) -> bool:
+    """Detect explicit DTC/MSDTC validation questions without broadening search."""
+    tokens = set(tokenize(user_message))
+    return bool(
+        tokens.intersection({"dtc", "msdtc"})
+        and any(token.startswith(("valid", "verif", "revis", "confirm")) for token in tokens)
+    )
+
+
+def _query_synonym_tokens(tokens: Iterable[str]) -> set[str]:
+    """Return query terms plus conservative, generic vocabulary bridges."""
+    expanded = set(tokens)
+    for group in QUERY_SYNONYM_GROUPS:
+        if expanded.intersection(group):
+            expanded.update(group)
+    # In this operational vocabulary, "contrato próximo" normally refers to
+    # the prórroga/renewal window documented by the HR module. Keep this bridge
+    # conditional so ``próximo`` remains an ordinary temporal word elsewhere.
+    if "contrato" in expanded and expanded.intersection({"proxima", "proximo", "proxim"}):
+        expanded.update({"prorroga", "prorrog"})
+    return expanded
+
+
+def _token_matches_query_concept(token: str, record_tokens: set[str]) -> bool:
+    """Match a token literally, by morphology, or through a query synonym."""
+    if token in record_tokens:
+        return True
+    for group in QUERY_SYNONYM_GROUPS:
+        if token in group and record_tokens.intersection(group):
+            return True
+    return any(
+        len(token) >= 5
+        and len(candidate) >= 5
+        and (token.startswith(candidate[:5]) or candidate.startswith(token[:5]))
+        for candidate in record_tokens
+    )
+
+
+def _alias_augmented_source_text(source_text: str) -> str:
+    """Make indexed synonym hits visible to the existing action checker."""
+    tokens = set(tokenize(source_text))
+    aliases = set()
+    for group in QUERY_SYNONYM_GROUPS:
+        if tokens.intersection(group):
+            aliases.update(group)
+    return f"{source_text} {' '.join(sorted(aliases))}"
 
 
 def _document_relevance_score(
@@ -392,7 +675,7 @@ def _document_relevance_score(
     phrase_weights: dict[str, float] | None = None,
 ) -> float:
     """Score evidence with generic token coverage, phrase matches and structure."""
-    query_tokens = tokenize(user_message)
+    query_tokens = sorted(_query_synonym_tokens(tokenize(user_message)))
     document_tokens = tokenize(
         f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
         f"{record.get('content_tokens', '')} {record.get(CONTENT_FIELD, '')} "
@@ -404,6 +687,12 @@ def _document_relevance_score(
     document_token_set = set(document_tokens)
     token_overlap = set(query_tokens).intersection(document_token_set)
     coverage_score = sum((token_weights or {}).get(token, 1) for token in token_overlap)
+    synonym_action_score = sum(
+        140
+        for group in QUERY_SYNONYM_GROUPS
+        if set(tokenize(user_message)).intersection(group)
+        and document_token_set.intersection(group)
+    )
     # A concept present in the document title is a stronger document-level
     # signal than the same word buried in an arbitrary page fragment. This is
     # generic metadata weighting: it improves lookup of named procedures,
@@ -411,6 +700,20 @@ def _document_relevance_score(
     title_tokens = set(tokenize(record.get("title", "")))
     title_overlap = set(query_tokens).intersection(title_tokens)
     title_score = len(title_overlap) * 10
+    # Support sites commonly store a solution below a descriptive folder but
+    # give the actual file a generic name (``Indicaciones.txt``, ``Custom``).
+    # Treat a strong parent-folder match as document-level metadata, much like
+    # a descriptive filename. Requiring three concepts prevents a broad folder
+    # such as ``SOLUCIONES`` from outranking direct evidence on its own.
+    parent_context = _sharepoint_parent_context(
+        str(record.get("source_url") or ""), str(record.get("folder_path") or "")
+    )
+    parent_overlap = set(query_tokens).intersection(set(tokenize(parent_context)))
+    parent_context_score = (
+        300 + ((len(parent_overlap) - 3) * 100)
+        if len(parent_overlap) >= 3
+        else 0
+    )
     document_text = " ".join(document_tokens)
     phrase_matches = {
         phrase for phrase in _query_phrases(user_message) if phrase in document_text
@@ -448,12 +751,53 @@ def _document_relevance_score(
 
     semantic_score = float(record.get("@search.reranker_score") or 0)
     azure_score = float(record.get("@search.score") or 0)
+    # When the user explicitly asks for a script, an executable artifact is
+    # the answer-bearing object. README pages may mention the same business
+    # terms, but must not outrank the SQL/PowerShell file whose description
+    # explains what it actually does.
+    script_score = 0
+    if _requests_script(user_message):
+        script_score = 420 if _is_script_record(record) else -260
+    # A pre-installation safety question is not answered by a page that merely
+    # mentions an update or a vulnerability. Prefer a local checklist that
+    # documents preparation, backup or recommendations. This is a generic
+    # evidence shape and does not name a product, version or document.
+    query_token_set = set(tokenize(_question_without_background_action(user_message)))
+    document_token_set = set(document_tokens)
+    is_preinstallation_question = (
+        any(
+            token.startswith(_LEGACY_PREINSTALLATION_OPERATION_PREFIXES)
+            for token in query_token_set
+        )
+        and any(
+            token.startswith(_LEGACY_PREINSTALLATION_CUE_PREFIXES)
+            for token in query_token_set
+        )
+    )
+    preinstallation_score = (
+        len(document_token_set.intersection(_LEGACY_PREINSTALLATION_EVIDENCE_TOKENS)) * 45
+        if is_preinstallation_question
+        else 0
+    )
+    is_dtc_validation_question = _is_dtc_validation_question(user_message)
+    # A section heading may repeat all question terms while containing no
+    # actionable check. Give equal preference to pages with a concrete DTC
+    # validation control, so complementary firewall and Component Services
+    # checks can both survive the final relevance threshold.
+    dtc_validation_score = (
+        250
+        if is_dtc_validation_question
+        and document_token_set.intersection(_DTC_VALIDATION_EVIDENCE_TOKENS)
+        else 0
+    )
     # Coverage across the question's concepts matters more than one isolated
     # exact phrase. This prevents a page that merely lists a decree number
     # from outranking the page that explains its calculation.
     return (
         (coverage_score * 6)
+        + synonym_action_score
         + title_score
+        + parent_context_score
         # A phrase that follows the user's wording is stronger evidence than
         # isolated token overlap. This is especially important for manuals
         # whose section headings describe an operation directly.
@@ -467,12 +811,20 @@ def _document_relevance_score(
         # A compact lexical query favors a section heading made of the user's
         # meaningful concepts over filler words from the natural question.
         + max(0, MAX_CANDIDATES - int(record.get("_focused_keyword_rank", MAX_CANDIDATES))) * 1.5
+        # Prefix lookup is reserved for concrete error reports whose subject
+        # can be embedded in a CamelCase path. Its result is still checked by
+        # normal coverage/provenance rules, but deserves ranking credit once
+        # those checks pass.
+        + max(0, MAX_CANDIDATES - int(record.get("_prefix_rank", MAX_CANDIDATES))) * 2.0
         # Semantic reranking has already compared the full question with the
         # candidate passage. Give it material weight when enabled, rather than
         # letting a one-token lexical advantage suppress a direct paraphrase.
         + (semantic_score * 25)
         + (azure_score / 1_000)
         - (int(record.get("_missing_anchor_count", 0)) * 8)
+        + script_score
+        + preinstallation_score
+        + dtc_validation_score
     )
 
 
@@ -484,14 +836,43 @@ def _requested_country(user_message: str) -> str | None:
     return None
 
 
+_LEGACY_SHAREPOINT_URL_MARKERS = {
+    "readme hotfixes": "/readme hotfixes/",
+    "documentos/soluciones": "/documentos compartidos/soluciones/",
+    "manuales": "/manuales/",
+    "scripts de apoyo": "/scripts de apoyo/",
+}
+
+
+def _legacy_url_has_authorized_source(
+    source_url: str, allowed_source_labels: tuple = ()
+) -> bool:
+    """Fail closed for legacy records that have no library metadata.
+
+    Early production records were indexed before ``drive_id`` and
+    ``folder_path`` were stored.  Their SharePoint URLs still expose a stable
+    library path for the four technical-pilot sources.  URLs such as
+    ``_layouts/15/Doc.aspx`` omit that path and therefore must not be trusted.
+    """
+    normalized_url = unquote(str(source_url or "")).casefold()
+    allowed_markers = {
+        _LEGACY_SHAREPOINT_URL_MARKERS[label.casefold()]
+        for label in allowed_source_labels
+        if label.casefold() in _LEGACY_SHAREPOINT_URL_MARKERS
+    }
+    return any(marker in normalized_url for marker in allowed_markers)
+
+
 def _record_has_authorized_provenance(
-    record: dict, allowed_sources: tuple = ()
+    record: dict, allowed_sources: tuple = (), allowed_source_labels: tuple = ()
 ) -> bool:
     """Accept only HTTPS SharePoint items from configured libraries/folders.
 
     ``allowed_sources`` is normally a tuple of ``(folder_path, drive_id)``
     pairs from ``Config.sharepoint_sources``. A tuple of folder strings is
-    still accepted for compatibility with older callers and tests.
+    still accepted for compatibility with older callers and tests. Legacy
+    records without either metadata field are accepted only when their URL
+    proves they belong to an explicitly labelled pilot library.
     """
     has_sharepoint_provenance = (
         record.get("source_system") == "sharepoint"
@@ -504,6 +885,10 @@ def _record_has_authorized_provenance(
     record_folder_path = str(record.get("folder_path") or "").strip("/")
     record_drive_id = str(record.get("drive_id") or "").strip()
     if all(isinstance(source, (tuple, list)) and len(source) == 2 for source in allowed_sources):
+        if not record_folder_path and not record_drive_id:
+            return _legacy_url_has_authorized_source(
+                record.get("source_url") or "", allowed_source_labels
+            )
         return any(
             record_folder_path == str(folder_path or "").strip("/")
             and record_drive_id == str(drive_id or "").strip()
@@ -555,6 +940,9 @@ def _has_minimum_content_coverage(
     """Reject a tangential hit that shares only one broad term with the query."""
     country_tokens = set().union(*COUNTRY_TOKENS.values())
     coverage_message = _question_without_background_action(user_message)
+    # Synonym expansion is for retrieval and concept matching, not extra
+    # evidence requirements. Requiring every expanded alias would inflate the
+    # coverage threshold and let one broad document pass by accident.
     required_tokens = set(tokenize(coverage_message)).difference(
         GENERIC_QUERY_TOKENS, country_tokens
     )
@@ -564,24 +952,42 @@ def _has_minimum_content_coverage(
     record_tokens = set(
         tokenize(
             f"{record.get('title', '')} {record.get('content_tokens', '')} "
+            f"{record.get(CONTEXT_FIELD, '')} "
             f"{record.get(CONTENT_FIELD, '')} "
             f"{record.get('document_type', '')}"
         )
     )
+    # A cover/table of contents can contain the requested version, subject and
+    # action while only pointing to the actual answer elsewhere in the file.
+    # Keep navigation useful for an explicit request for the index itself, but
+    # never pass it as evidence for a substantive technical question.
+    fragment = str(record.get(CONTENT_FIELD, ""))
+    normalized_fragment = " ".join(fragment.lower().split())
+    page_references = re.findall(r",\s*\d{1,3}(?=\s|$)", normalized_fragment)
+    is_navigation_fragment = (
+        "tabla de contenido" in normalized_fragment
+        or (
+            len(page_references) >= 6
+            and any(
+                marker in normalized_fragment
+                for marker in ("pagina", "página", "indice", "contenido", "seccion", "capitulo")
+            )
+        )
+    )
+    query_navigation = set(tokenize(coverage_message)).intersection(NAVIGATION_QUERY_TOKENS)
+    if is_navigation_fragment and not query_navigation:
+        return False
     # Accept ordinary gender/number variants (``negativa``/``negativo``)
     # without maintaining aliases for individual questions or documents.
     required_matches = {
-        token
-        for token in required_tokens
-        if token in record_tokens
-        or any(
-            len(token) >= 5
-            and len(candidate) >= 5
-            and (token.startswith(candidate[:5]) or candidate.startswith(token[:5]))
-            for candidate in record_tokens
-        )
+        token for token in required_tokens if _token_matches_query_concept(token, record_tokens)
     }
-    subject_tokens = required_tokens.difference(OPERATIONAL_QUERY_TOKENS)
+    operational_tokens = OPERATIONAL_QUERY_TOKENS | {
+        "bajar", "descargar", "descarga", "ofuscar", "ofuscacion", "ofuscan",
+        "gestionar", "administrar", "prorrogar",
+        "controla", "define", "indica", "muestra", "determina",
+    }
+    subject_tokens = required_tokens.difference(operational_tokens)
     subject_matches = subject_tokens.intersection(required_matches)
     if _requested_country(user_message) is not None:
         # A country name can appear in boilerplate. Require two independent
@@ -597,10 +1003,23 @@ def _has_minimum_content_coverage(
         minimum_matches = 3
     else:
         minimum_matches = 2 if len(required_tokens) >= 3 else 1
-    action_is_covered = has_requested_action_coverage(
-        user_message,
-        f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}",
+    action_question = " ".join(
+        token
+        for token in tokenize(coverage_message)
+        if token not in DIAGNOSTIC_ACTION_TOKENS
     )
+    action_is_covered = has_requested_action_coverage(
+        action_question,
+        _alias_augmented_source_text(
+            f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}"
+        ),
+    )
+    # ``qué se debe revisar`` is troubleshooting scaffolding, not a demand
+    # that the cited manual literally contain the verb ``revisar``. Keep the
+    # stronger subject/coverage checks; only relax this generic diagnostic verb.
+    diagnostic_only = set(tokenize(user_message)).intersection(DIAGNOSTIC_ACTION_TOKENS)
+    if diagnostic_only and not action_question:
+        action_is_covered = bool(subject_matches)
     # A semantic reranker can validate ordinary paraphrases such as
     # ``administrar documentos`` and ``gestión de documentos``. It is only an
     # alternative to literal action matching when semantic search is explicitly
@@ -630,14 +1049,9 @@ def _has_minimum_content_coverage(
             f"{record.get(CONTENT_FIELD, '')}"
         )
         window_size = 48
-        operational_matches = required_matches.intersection(OPERATIONAL_QUERY_TOKENS)
+        operational_matches = required_matches.intersection(operational_tokens)
         def window_covers(token: str, window: list[str]) -> bool:
-            return token in window or any(
-                len(token) >= 5
-                and len(candidate) >= 5
-                and (token.startswith(candidate[:5]) or candidate.startswith(token[:5]))
-                for candidate in window
-            )
+            return _token_matches_query_concept(token, set(window))
         compact_match = any(
             any(window_covers(token, direct_tokens[start : start + window_size]) for token in subject_matches)
             and all(
@@ -653,15 +1067,6 @@ def _has_minimum_content_coverage(
         # not present navigation pages as evidence for an operational question.
         # This is deliberately structural (rather than a list of document
         # names), so it applies to new manuals as they are indexed.
-        fragment = str(record.get(CONTENT_FIELD, ""))
-        normalized_fragment = " ".join(fragment.lower().split())
-        page_references = re.findall(r",\s*\d{1,3}(?=\s|$)", normalized_fragment)
-        is_navigation_fragment = (
-            "tabla de contenido" in normalized_fragment
-            or len(page_references) >= 6
-        )
-        if is_navigation_fragment:
-            return False
     return len(required_matches) >= minimum_matches and (
         action_is_covered or semantic_action_is_covered
     )
@@ -672,7 +1077,7 @@ def _diversify_candidate_records(records: list[dict]) -> list[dict]:
     def candidate_rank(record: dict) -> int:
         ranks = [
             int(record[field])
-            for field in ("_vector_rank", "_keyword_rank", "_focused_keyword_rank")
+            for field in ("_vector_rank", "_keyword_rank", "_focused_keyword_rank", "_prefix_rank")
             if record.get(field) is not None
         ]
         return min(ranks) if ranks else CANDIDATE_POOL_SIZE
@@ -741,7 +1146,7 @@ def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float,
     return ranked_records
 
 
-def retrieve_azure_search_evidence(
+def _retrieve_legacy_azure_search_evidence(
     user_message: str, config, client=None, limit: int = 3
 ) -> list[EvidenceSource]:
     """Retrieve vector candidates and normalize them to bot evidence."""
@@ -772,29 +1177,13 @@ def retrieve_azure_search_evidence(
             }
         )
 
-    # The vector query is generic: it compares the meaning of a question with
-    # every indexed chunk. The keyword pass complements it for exact policy
-    # names, acronyms and figures. No document-specific query rewrites exist.
+    # Prefer the bounded lexical passes when they already establish direct
+    # evidence. Embedding generation plus vector search can consume most of
+    # the handler's retrieval budget even for questions whose wording is
+    # represented verbatim (or by the query-side vocabulary aliases) in the
+    # index. Keep vector retrieval as a semantic fallback for paraphrases.
     try:
-        query_embedding = _embed_texts([user_message], config, client=client)[0]
-        vector_query = VectorizedQuery(
-            vector=query_embedding,
-            k_nearest_neighbors=CANDIDATE_POOL_SIZE,
-            fields=CONTENT_VECTOR_FIELD,
-        )
         records_by_id: dict[str, dict] = {}
-        for rank, result in enumerate(
-            search_client.search(
-                search_text=None,
-                vector_queries=[vector_query],
-                **search_args,
-            ),
-            start=1,
-        ):
-            record = dict(result)
-            record["_vector_rank"] = rank
-            records_by_id[str(record.get("id", ""))] = record
-
         for rank, result in enumerate(
             search_client.search(
                 search_text=user_message,
@@ -816,7 +1205,10 @@ def retrieve_azure_search_evidence(
                     existing["_vector_rank"] = vector_rank
             existing["_keyword_rank"] = rank
         focused_query = _focused_keyword_query(user_message)
-        if focused_query and focused_query != " ".join(tokenize(user_message)):
+        focused_query = " ".join(
+            sorted(_query_synonym_tokens(tokenize(focused_query)))
+        )
+        if focused_query:
             for rank, result in enumerate(
                 search_client.search(
                     search_text=focused_query,
@@ -840,7 +1232,143 @@ def retrieve_azure_search_evidence(
                     if keyword_rank is not None:
                         existing["_keyword_rank"] = keyword_rank
                 existing["_focused_keyword_rank"] = rank
-        candidate_records = _diversify_candidate_records(list(records_by_id.values()))
+
+        # Older technical documents often use a CamelCase application path
+        # (for example ``TiempoNoTrabajado``) while operators describe it as
+        # separate words. For a concrete error report, add one bounded prefix
+        # pass over its two trailing subject terms. This is not a broad
+        # fallback: it only runs when the message has enough diagnostic detail
+        # and lets the trusted SharePoint parent-folder context break ties.
+        focused_terms = tokenize(focused_query)
+        if "error" in focused_terms and len(focused_terms) >= 3:
+            subject_terms = [term for term in focused_terms if term != "error"][-2:]
+            if len(subject_terms) == 2 and all(len(term) >= 4 for term in subject_terms):
+                prefix_query = " AND ".join(f"{term}*" for term in subject_terms)
+                try:
+                    for rank, result in enumerate(
+                        search_client.search(
+                            search_text=prefix_query,
+                            search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                            query_type="full",
+                            search_mode="all",
+                            **search_args,
+                        ),
+                        start=1,
+                    ):
+                        record = dict(result)
+                        record_id = str(record.get("id", ""))
+                        existing = records_by_id.get(record_id)
+                        if existing is None:
+                            existing = record
+                            records_by_id[record_id] = existing
+                        else:
+                            keyword_rank = existing.get("_keyword_rank")
+                            focused_keyword_rank = existing.get("_focused_keyword_rank")
+                            existing.update(record)
+                            if keyword_rank is not None:
+                                existing["_keyword_rank"] = keyword_rank
+                            if focused_keyword_rank is not None:
+                                existing["_focused_keyword_rank"] = focused_keyword_rank
+                        existing["_prefix_rank"] = rank
+                except Exception:
+                    # The ordinary lexical pass remains valid when a legacy
+                    # service does not accept full-query prefix syntax.
+                    pass
+
+        # Do not pay for an embedding call when the lexical candidates already
+        # include a chunk that passes the same deterministic evidence gate used
+        # below. This is especially important in Teams, where a 12-second
+        # retrieval timeout otherwise turns an answerable question into a
+        # misleading "sin evidencia" response.
+        keyword_records = list(records_by_id.values())
+        has_lexical_evidence = any(
+            _has_minimum_content_coverage(
+                record,
+                user_message,
+                semantic_enabled=getattr(config, "azure_search_use_semantic", False),
+            )
+            for record in keyword_records
+        )
+        if not has_lexical_evidence:
+            try:
+                query_embedding = _embed_texts([user_message], config, client=client)[0]
+                vector_query = VectorizedQuery(
+                    vector=query_embedding,
+                    k_nearest_neighbors=CANDIDATE_POOL_SIZE,
+                    fields=CONTENT_VECTOR_FIELD,
+                )
+                for rank, result in enumerate(
+                    search_client.search(
+                        search_text=None,
+                        vector_queries=[vector_query],
+                        **search_args,
+                    ),
+                    start=1,
+                ):
+                    record = dict(result)
+                    record_id = str(record.get("id", ""))
+                    existing = records_by_id.get(record_id)
+                    if existing is None:
+                        existing = record
+                        records_by_id[record_id] = existing
+                    else:
+                        keyword_rank = existing.get("_keyword_rank")
+                        focused_keyword_rank = existing.get("_focused_keyword_rank")
+                        existing.update(record)
+                        if keyword_rank is not None:
+                            existing["_keyword_rank"] = keyword_rank
+                        if focused_keyword_rank is not None:
+                            existing["_focused_keyword_rank"] = focused_keyword_rank
+                    existing["_vector_rank"] = rank
+            except Exception:
+                # Lexical retrieval remains a valid, bounded fallback when the
+                # embedding provider or vector field is temporarily slow.
+                pass
+        candidate_records = [
+            _add_runtime_sharepoint_parent_context(record)
+            for record in _diversify_candidate_records(list(records_by_id.values()))
+        ]
+        if _requests_script(user_message):
+            # Search the descriptive metadata explicitly.  A script can have
+            # a generic body or filename, while SharePoint's ``Detalle`` is
+            # the field that names its operational purpose.
+            script_query = _script_search_query(user_message)
+            if script_query:
+                script_search_args = dict(search_args)
+                script_search_args["select"] = [
+                    *SEARCH_SELECT_FIELDS,
+                    "artifact_role",
+                ]
+                try:
+                    for rank, result in enumerate(
+                        search_client.search(
+                            search_text=script_query,
+                            search_fields=["title", CONTEXT_FIELD, "content_tokens"],
+                            **script_search_args,
+                        ),
+                        start=1,
+                    ):
+                        record = dict(result)
+                        if not _is_script_record(record):
+                            continue
+                        record_id = str(record.get("id", ""))
+                        existing = records_by_id.get(record_id)
+                        if existing is None:
+                            existing = record
+                            records_by_id[record_id] = existing
+                        else:
+                            existing.update(record)
+                        existing["_script_rank"] = rank
+                    candidate_records = [
+                        _add_runtime_sharepoint_parent_context(record)
+                        for record in _diversify_candidate_records(
+                            list(records_by_id.values())
+                        )
+                    ]
+                except Exception:
+                    # The ordinary lexical/vector candidates remain a safe
+                    # fallback if an older index rejects the metadata pass.
+                    pass
     except Exception:
         # Embeddings can be unavailable to a read-only diagnostic session.
         # Preserve semantic keyword retrieval in that case; only fall back to
@@ -884,13 +1412,19 @@ def retrieve_azure_search_evidence(
             # fallback when a title-only query is temporarily unavailable.
             pass
 
+    candidate_records = [
+        _add_runtime_sharepoint_parent_context(record) for record in candidate_records
+    ]
     allowed_sources = getattr(config, "sharepoint_sources", None)
     if allowed_sources is None:
         allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
+    allowed_source_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
     authorized_records = [
         record
         for record in candidate_records
-        if _record_has_authorized_provenance(record, allowed_sources)
+        if _record_has_authorized_provenance(
+            record, allowed_sources, allowed_source_labels
+        )
     ]
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
     version_scoped_records = [
@@ -919,6 +1453,25 @@ def retrieve_azure_search_evidence(
         # fallback if the index lacks that heading verbatim.
         if section_records:
             version_scoped_records = section_records
+    if _requests_script(user_message):
+        # Prefer executable artifacts over README incident histories.  Keep a
+        # coverage-checked subset when possible, but retain the script-only
+        # fallback so a short script can still be found through its title or
+        # SharePoint description.
+        script_records = [
+            record for record in version_scoped_records if _is_script_record(record)
+        ]
+        if script_records:
+            direct_script_records = [
+                record
+                for record in script_records
+                if _has_minimum_content_coverage(
+                    record,
+                    user_message,
+                    semantic_enabled=getattr(config, "azure_search_use_semantic", False),
+                )
+            ]
+            version_scoped_records = direct_script_records or script_records
     explicit_file_records = [
         record
         for record in version_scoped_records
@@ -933,15 +1486,24 @@ def retrieve_azure_search_evidence(
             return []
         candidate_records = explicit_file_records
     else:
-        candidate_records = [
-            record
-            for record in version_scoped_records
-            if _has_minimum_content_coverage(
-                record,
-                user_message,
-                semantic_enabled=getattr(config, "azure_search_use_semantic", False),
-            )
-        ]
+        if _requests_script(user_message) and any(
+            _is_script_record(record) for record in version_scoped_records
+        ):
+            # The script-intent pass already restricted the candidate set to
+            # executable artifacts. Do not require the literal word
+            # ``script`` inside the file's business description; operators
+            # normally describe what the script fixes, not its file type.
+            candidate_records = version_scoped_records
+        else:
+            candidate_records = [
+                record
+                for record in version_scoped_records
+                if _has_minimum_content_coverage(
+                    record,
+                    user_message,
+                    semantic_enabled=getattr(config, "azure_search_use_semantic", False),
+                )
+            ]
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
         return []
@@ -952,8 +1514,9 @@ def retrieve_azure_search_evidence(
     best_score = ranked_records[0][0]
     if best_score < 8 and not explicit_file_records:
         return []
+    relevance_floor = 0.70 if _is_dtc_validation_question(user_message) else 0.80
     relevant_records = [
-        item for item in ranked_records if item[0] >= best_score * 0.80
+        item for item in ranked_records if item[0] >= best_score * relevance_floor
     ][:limit]
     sources: list[EvidenceSource] = []
     for _, record in relevant_records:
@@ -973,8 +1536,447 @@ def retrieve_azure_search_evidence(
                 last_modified=str(record.get("last_modified") or ""),
                 document_type=str(record.get("document_type") or ""),
                 folder_path=str(record.get("folder_path") or ""),
+                descripcion=_record_description(record),
             )
         )
+    return sources
+
+
+def _v2_add_results(
+    records_by_id: dict[str, dict], results: Iterable[dict], rank_field: str
+) -> None:
+    for rank, result in enumerate(results, start=1):
+        record = dict(result)
+        record_id = str(record.get("id") or "")
+        if not record_id:
+            continue
+        existing = records_by_id.get(record_id)
+        if existing is None:
+            existing = record
+            records_by_id[record_id] = existing
+        else:
+            existing.update(record)
+        existing[rank_field] = min(int(existing.get(rank_field, rank)), rank)
+
+
+def _v2_search_candidates(
+    plan: QueryPlan, config, client=None
+) -> tuple[list[dict], dict[str, int]]:
+    """Collect vector, semantic and normalized lexical candidates before ranking."""
+    search_client = SearchClient(
+        endpoint=config.azure_search_endpoint,
+        index_name=config.azure_search_index_name,
+        credential=_credential(config),
+    )
+    search_args = {
+        "top": CANDIDATE_POOL_SIZE,
+        "select": V2_SEARCH_SELECT_FIELDS,
+        "connection_timeout": SEARCH_TIMEOUT_SECONDS,
+        "read_timeout": SEARCH_TIMEOUT_SECONDS,
+    }
+    records_by_id: dict[str, dict] = {}
+    rejected: dict[str, int] = {}
+    try:
+        embedding = _embed_texts([plan.raw_message], config, client=client)[0]
+        _v2_add_results(
+            records_by_id,
+            search_client.search(
+                search_text=None,
+                vector_queries=[
+                    VectorizedQuery(
+                        vector=embedding,
+                        k_nearest_neighbors=CANDIDATE_POOL_SIZE,
+                        fields=CONTENT_VECTOR_FIELD,
+                    )
+                ],
+                **search_args,
+            ),
+            "_vector_rank",
+        )
+    except Exception:
+        rejected["vector_unavailable"] = 1
+
+    for query_index, query in enumerate(plan.retrieval_queries):
+        try:
+            if query_index == 0 and getattr(config, "azure_search_use_semantic", False):
+                results = search_client.search(
+                    search_text=query,
+                    search_fields=["title", RETRIEVAL_TEXT_FIELD, CONTENT_FIELD, "content_tokens"],
+                    query_type="semantic",
+                    semantic_configuration_name=config.azure_search_semantic_configuration,
+                    query_caption="extractive",
+                    **search_args,
+                )
+                rank_field = "_semantic_rank"
+            else:
+                results = search_client.search(
+                    search_text=query,
+                    search_fields=["title", RETRIEVAL_TEXT_FIELD, RETRIEVAL_CONCEPTS_FIELD, CONTENT_FIELD, "content_tokens"],
+                    search_mode="any",
+                    **search_args,
+                )
+                rank_field = "_lexical_rank"
+            _v2_add_results(records_by_id, results, rank_field)
+        except Exception:
+            rejected["lexical_query_failed"] = rejected.get("lexical_query_failed", 0) + 1
+    # Keep every unique candidate until evidence validation. Applying the
+    # per-document cap here can discard the one factual page of a manual when
+    # vector similarity has already supplied several other pages from it.
+    return list(records_by_id.values()), rejected
+
+
+def _v2_record_allowed(
+    record: dict, plan: QueryPlan, allowed_sources, allowed_source_labels=()
+) -> tuple[bool, str]:
+    if not _record_has_authorized_provenance(
+        record, allowed_sources, allowed_source_labels
+    ):
+        return False, "provenance"
+    if str(record.get("quality_status") or "pendiente").casefold() in EXCLUDED_QUALITY_STATUSES:
+        return False, "quality_status"
+    if str(record.get("evidence_kind") or "primary").casefold() in {"navigation", "reference"}:
+        return False, "evidence_kind"
+    if plan.version and not _record_matches_requested_version(record, (plan.version,)):
+        return False, "version"
+    if plan.artifact_role and str(record.get("artifact_role") or "").casefold() != plan.artifact_role:
+        return False, "artifact_role"
+    return True, ""
+
+
+def _v2_direct_text(record: dict) -> str:
+    """Use the local fragment plus reviewed, indexed document facts as evidence."""
+    # Keep structural facts and the first local evidence sentence in the same
+    # evidence window. A filename such as ``proc.sql`` is not prose, so
+    # separating it with periods would make a question asking for a *script*
+    # fail even when the SQL body directly covers the requested operation.
+    return " ".join(
+        value
+        for value in (
+            f"El artefacto de tipo {record.get('artifact_role') or 'documento'} "
+            f"titulado {record.get('title') or ''} "
+            f"con operación {record.get('operation') or ''} contiene el fragmento",
+            str(record.get(CONTENT_FIELD) or ""),
+        )
+        if value
+    )
+
+
+def _v2_validated_evidence(record: dict, plan: QueryPlan) -> tuple[str, tuple[str, ...]]:
+    """Return only local fragments that directly cover individual requirements."""
+    quality_status = str(record.get("quality_status") or "").casefold()
+    reviewed_operation = str(record.get("operation") or "") if quality_status == "aprobado" else ""
+    artifact_context = (
+        str(record.get("title") or "")
+        if str(record.get("artifact_role") or "").casefold() == "script"
+        else ""
+    )
+    artifact_role = str(record.get("artifact_role") or "")
+    fragments: list[str] = []
+    covered: list[str] = []
+    for requirement in plan.requirements:
+        fragment = _result_fragment(record, requirement.text)
+        if not fragment:
+            continue
+        supporting_text = " ".join(
+            value
+            for value in (
+                f"El artefacto de tipo {artifact_role or 'documento'} "
+                f"titulado {artifact_context} con operación {reviewed_operation} contiene",
+                fragment,
+            )
+            if value
+        )
+        if not requirement_is_covered(requirement, supporting_text):
+            continue
+        context_lines = []
+        if artifact_context:
+            context_lines.append(f"Artefacto de código: {artifact_context}")
+        if artifact_role:
+            context_lines.append(f"Tipo de artefacto: {artifact_role}")
+        if reviewed_operation:
+            context_lines.append(f"Operación revisada: {reviewed_operation}")
+        if context_lines:
+            context_prefix = "\n".join(context_lines)
+            fragment = f"{context_prefix}\n{fragment}"
+        if fragment not in fragments:
+            fragments.append(fragment)
+        covered.append(requirement.identifier)
+    return "\n\n".join(fragments), tuple(covered)
+
+
+def _v2_semantic_candidate_payload(record: dict, plan: QueryPlan) -> dict:
+    """Keep semantic verification bounded to local, already-retrieved text."""
+    fragments = [
+        {
+            "requirement_id": requirement.identifier,
+            "fragment": _result_fragment(record, requirement.text)[:1_000],
+        }
+        for requirement in plan.requirements
+    ]
+    return {
+        "candidate_id": str(record.get("id") or ""),
+        "title": str(record.get("title") or ""),
+        "artifact_role": str(record.get("artifact_role") or ""),
+        "evidence_kind": str(record.get("evidence_kind") or "primary"),
+        "fragments": fragments,
+    }
+
+
+def _v2_semantic_evidence(
+    record: dict, plan: QueryPlan, coverage: tuple[str, ...]
+) -> tuple[str, tuple[str, ...]]:
+    requirement_by_id = {requirement.identifier: requirement for requirement in plan.requirements}
+    fragments: list[str] = []
+    for requirement_id in coverage:
+        requirement = requirement_by_id.get(requirement_id)
+        if requirement is None:
+            continue
+        fragment = _result_fragment(record, requirement.text)
+        if fragment and fragment not in fragments:
+            fragments.append(fragment)
+    if not fragments:
+        return "", ()
+    if str(record.get("artifact_role") or "").casefold() == "script":
+        fragments.insert(0, f"Artefacto de código: {record.get('title') or ''}")
+    return "\n\n".join(fragments), coverage
+
+
+def _v2_semantic_coverage_is_anchored(
+    record: dict, plan: QueryPlan, coverage: tuple[str, ...]
+) -> bool:
+    """Keep semantic paraphrase from crossing to a different technical subject."""
+    requirement_by_id = {requirement.identifier: requirement for requirement in plan.requirements}
+    is_code = str(record.get("artifact_role") or "").casefold() == "script"
+    for requirement_id in coverage:
+        requirement = requirement_by_id.get(requirement_id)
+        if requirement is None or requirement.text.startswith("el calificador"):
+            return False
+        fragment = _result_fragment(record, requirement.text)
+        if not fragment:
+            return False
+        # Semantic validation can bridge paraphrased actions, but it cannot
+        # use a heading that names the requested topic and a distant sentence
+        # that names a generic parameter as if they described the same fact.
+        # Keep the topical anchors in one local prose window. Code is the
+        # deliberate exception: identifiers, condition and operation normally
+        # occupy separate lines of the same bounded declaration.
+        units = [
+            unit.strip()
+            for unit in re.split(r"(?<=[.!?;])\s+|\n+", fragment)
+            if unit.strip()
+        ]
+        windows = list(units)
+        if is_code:
+            windows.append(
+                " ".join(
+                    (str(record.get("title") or ""), str(record.get("operation") or ""), fragment)
+                )
+            )
+        non_action_anchors = set(requirement.concepts).difference(requirement.actions)
+        if non_action_anchors and not any(
+            non_action_anchors.issubset(set(concept_keys(window))) for window in windows
+        ):
+            return False
+        # The verifier may recognize wording variants, but it must not turn a
+        # passage that merely mentions the subject into an answer for a named
+        # operation such as classifying, configuring or exporting it.
+        if requirement.actions and not any(
+            has_requested_action_coverage(requirement.text, window) for window in windows
+        ):
+            return False
+        # A code artifact may be semantically summarized, but its named
+        # operation must still appear in the title, reviewed operation or code.
+        if is_code and requirement.actions and not set(requirement.actions).intersection(
+            set(concept_keys(" ".join(windows)))
+        ):
+            return False
+    return True
+
+
+def _v2_semantic_verifier_records(records: list[dict], plan: QueryPlan, limit: int = 8) -> list[dict]:
+    """Give the bounded verifier distinct documents, not many chunks of one."""
+    selected: list[dict] = []
+    seen_documents: set[str] = set()
+    for record in sorted(records, key=lambda item: _v2_score(item, (), plan), reverse=True):
+        document_key = str(record.get("document_id") or record.get("id") or "")
+        if document_key in seen_documents:
+            continue
+        seen_documents.add(document_key)
+        selected.append(record)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _v2_score(record: dict, coverage: tuple[str, ...], plan: QueryPlan) -> float:
+    document_concepts = set(
+        concept_keys(
+            " ".join(
+                str(record.get(field) or "")
+                for field in ("title", RETRIEVAL_TEXT_FIELD, RETRIEVAL_CONCEPTS_FIELD, CONTENT_FIELD)
+            )
+        )
+    )
+    plan_concepts = {
+        concept for requirement in plan.requirements for concept in requirement.concepts
+    }
+    title_concepts = set(concept_keys(str(record.get("title") or "")))
+    raw_query_concepts = set(concept_keys(plan.raw_message))
+    is_preinstallation_question = (
+        _PREINSTALLATION_OPERATION_CONCEPTS.issubset(raw_query_concepts)
+        and bool(raw_query_concepts.intersection(_PREINSTALLATION_CUE_CONCEPTS))
+    )
+    preinstallation_evidence_score = (
+        len(document_concepts.intersection(_PREINSTALLATION_EVIDENCE_CONCEPTS)) * 18
+        if is_preinstallation_question
+        else 0
+    )
+    # An all-uppercase identifier such as DTC is an explicit technical anchor,
+    # not a synonym. Prefer a source whose title names that identifier without
+    # mapping it to any particular document or product.
+    title_folded = str(record.get("title") or "").casefold()
+    title_acronym_score = min(
+        70,
+        sum(
+            35
+            for acronym in set(_UPPERCASE_ACRONYM.findall(plan.raw_message))
+            if acronym.casefold() in title_folded
+        ),
+    )
+    semantic_score = float(record.get("@search.reranker_score") or 0)
+    return (
+        len(coverage) * 100
+        + len(plan_concepts.intersection(document_concepts)) * 8
+        + len(plan_concepts.intersection(title_concepts)) * 12
+        + semantic_score * 20
+        + max(0, CANDIDATE_POOL_SIZE - int(record.get("_vector_rank", CANDIDATE_POOL_SIZE))) * 0.5
+        + max(0, CANDIDATE_POOL_SIZE - int(record.get("_semantic_rank", CANDIDATE_POOL_SIZE))) * 0.3
+        + max(0, CANDIDATE_POOL_SIZE - int(record.get("_lexical_rank", CANDIDATE_POOL_SIZE))) * 0.2
+        + preinstallation_evidence_score
+        + title_acronym_score
+    )
+
+
+def _retrieve_v2_azure_search_evidence(
+    user_message: str, config, client=None
+) -> RetrievalTrace:
+    plan = build_query_plan(user_message)
+    candidate_records, rejected = _v2_search_candidates(plan, config, client=client)
+    candidate_records = _filter_records_for_requested_country(candidate_records, user_message)
+    allowed_sources = getattr(config, "sharepoint_sources", None)
+    if allowed_sources is None:
+        allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
+    allowed_source_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
+    direct_records: list[tuple[float, dict, tuple[str, ...], str]] = []
+    semantic_candidates: list[dict] = []
+    for record in candidate_records:
+        allowed, reason = _v2_record_allowed(
+            record, plan, allowed_sources, allowed_source_labels
+        )
+        if not allowed:
+            rejected[reason] = rejected.get(reason, 0) + 1
+            continue
+        coverage = covered_requirements(plan, _v2_direct_text(record))
+        if not coverage:
+            semantic_candidates.append(record)
+            continue
+        direct_records.append((_v2_score(record, coverage, plan), record, coverage, "deterministic"))
+
+    if getattr(config, "use_llm_evidence_verifier", False) and semantic_candidates:
+        verifier_records = _v2_semantic_verifier_records(semantic_candidates, plan)
+        try:
+            payloads = [_v2_semantic_candidate_payload(record, plan) for record in verifier_records]
+            semantic_coverage = verify_semantic_evidence(
+                plan,
+                payloads,
+                client=client,
+                model=getattr(config, "evidence_verifier_model_name", config.openai_intent_model_name),
+            )
+            for record in verifier_records:
+                coverage = semantic_coverage.get(str(record.get("id") or ""), ())
+                if coverage and _v2_semantic_coverage_is_anchored(record, plan, coverage):
+                    direct_records.append((_v2_score(record, coverage, plan), record, coverage, "semantic"))
+        except Exception:
+            logger.warning("Falló el verificador semántico de evidencia; se conservó la decisión determinista.")
+            rejected["semantic_verifier_failed"] = rejected.get("semantic_verifier_failed", 0) + 1
+
+    rejected["insufficient_direct_evidence"] = (
+        rejected.get("insufficient_direct_evidence", 0) + len(semantic_candidates)
+    )
+    direct_records.sort(key=lambda item: item[0], reverse=True)
+    sources: list[EvidenceSource] = []
+    covered: set[str] = set()
+    sources_per_document: dict[str, int] = {}
+    for _, record, coverage, verification_mode in direct_records:
+        document_key = str(record.get("document_id") or record.get("id") or "")
+        if sources_per_document.get(document_key, 0) >= MAX_CANDIDATES_PER_DOCUMENT:
+            rejected["document_diversity"] = rejected.get("document_diversity", 0) + 1
+            continue
+        fragment, validated_coverage = (
+            _v2_semantic_evidence(record, plan, coverage)
+            if verification_mode == "semantic"
+            else _v2_validated_evidence(record, plan)
+        )
+        if not fragment or not validated_coverage:
+            rejected["fragment_without_direct_coverage"] = rejected.get("fragment_without_direct_coverage", 0) + 1
+            continue
+        if set(validated_coverage).issubset(covered):
+            rejected["redundant_direct_evidence"] = rejected.get("redundant_direct_evidence", 0) + 1
+            continue
+        sources.append(
+            EvidenceSource(
+                tipo="sharepoint" if record.get("source_system") == "sharepoint" else "azure_ai_search",
+                titulo=record.get("title") or "Documento sin título",
+                ubicacion=record.get("source_url") or "Azure AI Search",
+                fragmento=fragment,
+                source_system=str(record.get("source_system") or ""),
+                document_id=str(record.get("document_id") or ""),
+                document_version=str(record.get("document_version") or ""),
+                last_modified=str(record.get("last_modified") or ""),
+                document_type=str(record.get("document_type") or ""),
+                folder_path=str(record.get("folder_path") or ""),
+                artifact_role=str(record.get("artifact_role") or ""),
+                quality_status=str(record.get("quality_status") or ""),
+                evidence_kind=str(record.get("evidence_kind") or ""),
+                covered_requirements=validated_coverage,
+                descripcion=_record_description(record),
+            )
+        )
+        covered.update(validated_coverage)
+        sources_per_document[document_key] = sources_per_document.get(document_key, 0) + 1
+        if set(plan.requirement_ids).issubset(covered) or len(sources) >= 3:
+            break
+    trace = RetrievalTrace(
+        sources=sources,
+        query_hash=plan.query_hash,
+        candidate_count=len(candidate_records),
+        direct_evidence_count=len(sources),
+        requirement_count=len(plan.requirements),
+        covered_requirement_count=len(covered),
+        rejected_reasons=rejected,
+    )
+    logger.info(
+        "retrieval_v2 query_hash=%s candidates=%s direct=%s requirements=%s covered=%s rejected=%s",
+        trace.query_hash,
+        trace.candidate_count,
+        trace.direct_evidence_count,
+        trace.requirement_count,
+        trace.covered_requirement_count,
+        ",".join(f"{key}:{value}" for key, value in sorted(trace.rejected_reasons.items())) or "none",
+    )
+    return trace
+
+
+def retrieve_azure_search_evidence(
+    user_message: str, config, client=None, return_trace: bool = False
+) -> list[EvidenceSource] | RetrievalTrace:
+    """Select the reversible retrieval strategy configured for this environment."""
+    if getattr(config, "retrieval_strategy", "legacy") == "v2":
+        trace = _retrieve_v2_azure_search_evidence(user_message, config, client=client)
+        return trace if return_trace else trace.sources
+    sources = _retrieve_legacy_azure_search_evidence(user_message, config, client=client)
+    if return_trace:
+        return RetrievalTrace(sources=sources, direct_evidence_count=len(sources))
     return sources
 
 
@@ -1064,6 +2066,131 @@ def _metadata_for(document_path: Path) -> dict:
         return {}
 
 
+def _review_metadata(metadata: dict) -> dict:
+    """Read optional, reviewed functional metadata without inventing it."""
+    reviewed = metadata.get("libras", {}) if isinstance(metadata, dict) else {}
+    if not isinstance(reviewed, dict):
+        reviewed = {}
+    return {
+        # Functional fields are accepted only from the explicit ``libras``
+        # review block.  Graph/SharePoint technical metadata must never turn
+        # into an unreviewed product, module or operation assertion.
+        field: str(reviewed.get(field) or "").strip()
+        for field in ("product", "module", "operation", "artifact_role", "version", "country", "quality_status")
+    }
+
+
+def _artifact_role(document_path: Path, reviewed: dict) -> str:
+    return str(reviewed.get("artifact_role") or ARTIFACT_ROLE_BY_EXTENSION.get(document_path.suffix.lower(), "otro"))
+
+
+def _sql_routine_identifiers(text: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            match.group(1)
+            for match in re.finditer(
+                r"(?im)^\s*create\s+(?:or\s+alter\s+)?(?:procedure|proc|function|view|trigger)\s+([\[\]a-z0-9_.-]+)",
+                text or "",
+            )
+        )
+    )
+
+
+def _chunks_for_document(document_path: Path, text: str) -> Iterable[str]:
+    """Keep code declarations intact while retaining generic chunking elsewhere."""
+    if document_path.suffix.lower() != ".sql":
+        return _chunks(text)
+    starts = [match.start() for match in re.finditer(
+        r"(?im)^\s*create\s+(?:or\s+alter\s+)?(?:procedure|proc|function|view|trigger)\b",
+        text or "",
+    )]
+    if not starts:
+        return _chunks(text)
+    starts.append(len(text))
+    chunks: list[str] = []
+    if starts[0] > 0 and text[: starts[0]].strip():
+        chunks.extend(_chunks(text[: starts[0]]))
+    for start, end in zip(starts, starts[1:]):
+        declaration = text[start:end].strip()
+        if len(declaration) <= 6_000:
+            chunks.append(declaration)
+        else:
+            chunks.extend(_chunks(declaration))
+    return chunks
+
+
+def _is_navigation_text(text: str) -> bool:
+    normalized = " ".join((text or "").casefold().split())
+    page_references = re.findall(r",\s*\d{1,3}(?=\s|$)", normalized)
+    return "tabla de contenido" in normalized or (
+        len(page_references) >= 6
+        and any(marker in normalized for marker in ("pagina", "página", "indice", "contenido", "seccion", "capitulo"))
+    )
+
+
+def _evidence_kind(title: str, text: str) -> str:
+    """Classify structural non-factual artifacts without inferring domain meaning."""
+    if _is_navigation_text(text):
+        return "navigation"
+    normalized_title = " ".join((title or "").casefold().split())
+    if any(marker in normalized_title for marker in ("links de apoyo", "bibliografía", "bibliografia", "referencias externas")):
+        return "reference"
+    return "primary"
+
+
+def _retrieval_metadata_text(
+    title: str,
+    readable_title: str,
+    parent_context: str,
+    artifact_role: str,
+    reviewed: dict,
+    routine_identifiers: list[str],
+    description: str = "",
+    dependency: str = "",
+) -> tuple[str, str]:
+    """Build retrieval-only text from source facts and reviewed metadata."""
+    source_facts = [
+        f"Archivo {title}",
+        f"Terminos de archivo {readable_title}",
+        f"Tipo de artefacto {artifact_role}",
+    ]
+    if parent_context:
+        source_facts.append(f"Carpetas de origen {parent_context}")
+    if routine_identifiers:
+        source_facts.append(f"Declaraciones de codigo {' '.join(routine_identifiers)}")
+    if description:
+        source_facts.append(f"Descripción de la solución {description[:900]}")
+    if dependency:
+        source_facts.append(f"Dependencia {dependency[:300]}")
+    for field in ("product", "module", "operation", "version", "country"):
+        if reviewed.get(field):
+            source_facts.append(f"{field} revisado {reviewed[field]}")
+    retrieval_text = ". ".join(source_facts) + "."
+    return retrieval_text, " ".join(concept_keys(retrieval_text))
+
+
+def _add_runtime_sharepoint_parent_context(record: dict) -> dict:
+    """Enrich an older indexed record with its folder trail for ranking.
+
+    The legacy production index can be storage-full, so historical records
+    cannot always be rewritten immediately. Their SharePoint URL is already a
+    trusted indexed field, however, and preserves the parent folders. Derive
+    that retrieval context in memory rather than losing a solution stored in a
+    generically named file such as ``Indicaciones.txt``.
+    """
+    parent_context = _sharepoint_parent_context(
+        str(record.get("source_url") or ""),
+        str(record.get("folder_path") or ""),
+    )
+    if not parent_context:
+        return record
+    context = str(record.get(CONTEXT_FIELD) or "")
+    marker = f"Carpetas de origen: {parent_context}."
+    if parent_context.casefold() not in context.casefold():
+        record[CONTEXT_FIELD] = _clean_text(f"{context} {marker}", limit=1_200)
+    return record
+
+
 def _document_records(
     source_dir: Path, document_ids: set[str] | None = None
 ) -> list[dict]:
@@ -1100,10 +2227,6 @@ def _document_records(
             document_path.suffix + ".metadata.json"
         ).exists():
             continue
-        pages = _document_pages(document_path)
-        full_text = "\n".join(text for _, text in pages)
-        if not full_text.strip():
-            continue
         metadata = _metadata_for(document_path)
         source_url = metadata.get("web_url") or str(document_path.resolve())
         title = metadata.get("name") or document_path.stem
@@ -1117,25 +2240,49 @@ def _document_records(
             continue
         if document_ids is not None and document_id not in document_ids:
             continue
+        pages = _document_pages(document_path)
+        full_text = "\n".join(text for _, text in pages)
+        if not full_text.strip():
+            continue
         document_version = str(metadata.get("etag") or metadata.get("document_version") or "")
         last_modified = str(metadata.get("last_modified") or "")
         folder_path = str(metadata.get("folder_path") or "")
         drive_id = str(metadata.get("drive_id") or "")
+        parent_context = _sharepoint_parent_context(source_url, folder_path)
+        reviewed = _review_metadata(metadata)
+        artifact_role = _artifact_role(document_path, reviewed)
+        quality_status = reviewed.get("quality_status") or "pendiente"
         # Later pages frequently omit the country/product named on the cover.
-        # Store a compact document-level context with every chunk so retrieval
-        # can keep that context without merging documents or pages. The
-        # normalized filename is metadata, not an invented answer: it makes
-        # code names such as ``acc.proc_x_y.sql`` searchable as words.
+        # Store compact document-level context with every chunk. The document
+        # body is already in ``content``; duplicating it here wastes scarce
+        # legacy-index storage and makes an incremental metadata correction
+        # larger than the record it replaces.
         readable_title = _searchable_filename_terms(title)
+        routine_identifiers = _sql_routine_identifiers(full_text) if artifact_role == "script" else []
+        description = str(metadata.get("description") or metadata.get("detalle") or "").strip()
+        dependency = str(metadata.get("dependency") or metadata.get("dependencia") or "").strip()
+        retrieval_text, retrieval_concepts = _retrieval_metadata_text(
+            title,
+            readable_title,
+            parent_context,
+            artifact_role,
+            reviewed,
+            routine_identifiers,
+            description,
+            dependency,
+        )
         document_context = _clean_text(
-            f"Título del archivo: {title}. Términos del nombre: {readable_title}. {full_text}",
-            limit=900,
+            f"Título del archivo: {title}. Términos del nombre: {readable_title}. "
+            f"Carpetas de origen: {parent_context}."
+            + (f" Descripción de la solución: {description}." if description else "")
+            + (f" Dependencia: {dependency}." if dependency else ""),
+            limit=1_200,
         )
         content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
         document_key = hashlib.sha256(document_id.encode("utf-8")).hexdigest()
         sequence = 0
         for page_number, page_text in pages:
-            for chunk in _chunks(page_text):
+            for chunk in _chunks_for_document(document_path, page_text):
                 page_label = f"Página {page_number}" if page_number else "Documento"
                 records.append(
                     {
@@ -1152,10 +2299,23 @@ def _document_records(
                         "document_type": document_path.suffix.lower().lstrip("."),
                         "folder_path": folder_path,
                         "drive_id": drive_id,
+                        RETRIEVAL_TEXT_FIELD: retrieval_text,
+                        RETRIEVAL_CONCEPTS_FIELD: retrieval_concepts,
+                        "product": reviewed.get("product", ""),
+                        "module": reviewed.get("module", ""),
+                        "operation": reviewed.get("operation") or " ".join(routine_identifiers),
+                        "artifact_role": artifact_role,
+                        "version": reviewed.get("version", ""),
+                        "country": reviewed.get("country", ""),
+                        "quality_status": quality_status,
+                        "evidence_kind": _evidence_kind(title, chunk),
                         "indexed_at": datetime.now(timezone.utc).isoformat(),
                         "chunk_number": sequence,
-                        "content_tokens": " ".join(
-                            tokenize(f"{title} {readable_title} {chunk}")
+                "content_tokens": " ".join(
+                            tokenize(
+                                f"{title} {readable_title} {parent_context} "
+                                f"{retrieval_text} {description} {dependency} {chunk}"
+                            )
                         ),
                     }
                 )
@@ -1186,10 +2346,21 @@ def ensure_index(config) -> None:
     )
     try:
         index = index_client.get_index(config.azure_search_index_name)
-        if "drive_id" not in {field.name for field in index.fields}:
+        field_names = {field.name for field in index.fields}
+        if "drive_id" not in field_names:
             raise RuntimeError(
                 "El índice existente no contiene drive_id; ejecute la ingesta con --reset-index "
                 "para migrar al alcance multi-biblioteca."
+            )
+        if getattr(config, "retrieval_strategy", "legacy") == "v2" and not {
+            RETRIEVAL_TEXT_FIELD,
+            RETRIEVAL_CONCEPTS_FIELD,
+            "artifact_role",
+            "quality_status",
+            "evidence_kind",
+        }.issubset(field_names):
+            raise RuntimeError(
+                "El índice no contiene los campos de calidad v2; ejecute una reconstrucción controlada."
             )
         return
     except ResourceNotFoundError:
@@ -1200,6 +2371,8 @@ def ensure_index(config) -> None:
         SearchableField(name="title", type=SearchFieldDataType.String, searchable=True),
         SearchableField(name=CONTENT_FIELD, type=SearchFieldDataType.String, searchable=True),
         SearchableField(name=CONTEXT_FIELD, type=SearchFieldDataType.String, searchable=True),
+        SearchableField(name=RETRIEVAL_TEXT_FIELD, type=SearchFieldDataType.String, searchable=True),
+        SearchableField(name=RETRIEVAL_CONCEPTS_FIELD, type=SearchFieldDataType.String, searchable=True),
         SearchField(
             name=CONTENT_VECTOR_FIELD,
             type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
@@ -1219,6 +2392,14 @@ def ensure_index(config) -> None:
         SimpleField(name="indexed_at", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="chunk_number", type=SearchFieldDataType.Int32, filterable=True),
         SearchableField(name="content_tokens", type=SearchFieldDataType.String, searchable=True),
+        SimpleField(name="product", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="module", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="operation", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="artifact_role", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="version", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="country", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="quality_status", type=SearchFieldDataType.String, filterable=True),
+        SimpleField(name="evidence_kind", type=SearchFieldDataType.String, filterable=True),
     ]
     semantic_search = SemanticSearch(
         configurations=[
@@ -1226,7 +2407,10 @@ def ensure_index(config) -> None:
                 name=config.azure_search_semantic_configuration,
                 prioritized_fields=SemanticPrioritizedFields(
                     title_field=SemanticField(field_name="title"),
-                    content_fields=[SemanticField(field_name=CONTENT_FIELD)],
+                    content_fields=[
+                        SemanticField(field_name=RETRIEVAL_TEXT_FIELD),
+                        SemanticField(field_name=CONTENT_FIELD),
+                    ],
                 ),
             )
         ]
@@ -1319,6 +2503,20 @@ def _clear_change_manifest(source_dir: Path) -> None:
         )
 
 
+def _records_supported_by_index(records: list[dict], field_names: set[str]) -> list[dict]:
+    """Drop additive fields when updating a legacy production index.
+
+    The v2 candidate has extra retrieval fields, while the existing Free-tier
+    pilot intentionally remains on its smaller legacy schema.  A focused
+    upsert must update compatible fields instead of requiring a risky index
+    reset just because a new optional field exists locally.
+    """
+    return [
+        {name: value for name, value in record.items() if name in field_names}
+        for record in records
+    ]
+
+
 def index_directory(source_dir: Path, config, create_index: bool = False) -> int:
     """Upload all legacy files or only pending SharePoint changes to Azure AI Search."""
     if not getattr(config, "azure_search_configured", False):
@@ -1338,6 +2536,29 @@ def index_directory(source_dir: Path, config, create_index: bool = False) -> int
     change_manifest_document_ids = _changed_document_ids(source_dir)
     pending_changes = None if create_index else change_manifest_document_ids
     records = _document_records(source_dir, document_ids=pending_changes)
+    quality_metadata_enabled = bool(
+        getattr(config, "index_quality_metadata_enabled", False)
+    )
+    if getattr(config, "retrieval_strategy", "legacy") == "v2" or quality_metadata_enabled:
+        # A reviewed document can gain v2 metadata before the chat switches to
+        # v2. Filter it against the live schema, keeping the update focused and
+        # avoiding a full rebuild just to enrich one approved artifact.
+        index_client = SearchIndexClient(
+            endpoint=config.azure_search_endpoint,
+            credential=_credential(config),
+        )
+        field_names = {
+            field.name
+            for field in index_client.get_index(config.azure_search_index_name).fields
+            if field.name
+        }
+        records = _records_supported_by_index(records, field_names)
+    elif records:
+        # Production keeps the proven legacy schema until v2 promotion is
+        # explicit. Do not send additive quality fields during ordinary
+        # refreshes to an older index that would reject them.
+        legacy_field_names = set(records[0]).difference(V2_ONLY_INDEX_FIELDS)
+        records = _records_supported_by_index(records, legacy_field_names)
     target_document_ids = (
         pending_changes
         if pending_changes is not None
@@ -1346,12 +2567,28 @@ def index_directory(source_dir: Path, config, create_index: bool = False) -> int
     previous_ids = _existing_record_ids(client, target_document_ids)
 
     if records:
-        _attach_embeddings(records, config)
-        for offset in range(0, len(records), 500):
-            results = client.merge_or_upload_documents(documents=records[offset : offset + 500])
+        # A changed SharePoint document normally keeps its stable chunk id.
+        # Update those records with ``merge`` and preserve their stored vector.
+        # This is important for the legacy pilot index: it is at its storage
+        # quota and its historical vectors can have a different configured
+        # dimension than a local ingestion environment. New chunks still get
+        # embeddings and use merge-or-upload as usual.
+        existing_records = [record for record in records if record["id"] in previous_ids]
+        new_records = [record for record in records if record["id"] not in previous_ids]
+
+        for offset in range(0, len(existing_records), 500):
+            results = client.merge_documents(documents=existing_records[offset : offset + 500])
             failures = [result.key for result in results if not result.succeeded]
             if failures:
-                raise RuntimeError(f"Azure AI Search rechazó {len(failures)} fragmentos.")
+                raise RuntimeError(f"Azure AI Search no actualizó {len(failures)} fragmentos.")
+
+        if new_records:
+            _attach_embeddings(new_records, config)
+            for offset in range(0, len(new_records), 500):
+                results = client.merge_or_upload_documents(documents=new_records[offset : offset + 500])
+                failures = [result.key for result in results if not result.succeeded]
+                if failures:
+                    raise RuntimeError(f"Azure AI Search rechazó {len(failures)} fragmentos.")
 
     stale_ids = previous_ids.difference(str(record["id"]) for record in records)
     _delete_record_ids(client, stale_ids)

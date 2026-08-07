@@ -304,6 +304,14 @@ genérico.
 Cuando hay evidencia, Teams recibe el resumen y el título de la fuente. Si la
 fuente tiene una URL HTTP/HTTPS, también se muestra el enlace de SharePoint.
 
+En preguntas procedurales, Libras convierte los marcadores imperativos en una
+lista ordenada y elige una fuente principal según su cobertura de la consulta.
+Una fuente secundaria solo se conserva si aporta al menos dos pasos nuevos;
+en el índice legacy, que no tiene requisitos explícitos, se conserva solo la
+fuente principal. Los fragmentos secundarios del índice v2 deben traer
+requisitos cubiertos; así se descartan navegaciones repetidas o variantes
+aisladas sin perder evidencia complementaria validada.
+
 Cuando no hay evidencia suficiente, se muestra la limitación y no se muestran
 fuentes tangenciales. El fragmento técnico completo y los metadatos internos no
 se exponen en la respuesta normal.
@@ -420,6 +428,7 @@ USE_CONTEXT_GUARD
 CONTEXT_GUARD_MODE
 CONTEXT_GUARD_FAILURE_POLICY
 RETRIEVAL_TIMEOUT_SECONDS
+RETRIEVAL_GRACE_SECONDS
 CLASSIFICATION_TIMEOUT_SECONDS
 INTENT_TIMEOUT_SECONDS
 CONVERSATION_TIMEOUT_SECONDS
@@ -506,7 +515,7 @@ fragmentos.
 
 ## 12. Estado de validación conocido
 
-La suite local actual ejecutada el 3 de agosto de 2026 terminó con **104
+La suite local actual ejecutada el 5 de agosto de 2026 terminó con **168
 pruebas aprobadas**. Cubre sincronización, extracción, metadatos, cambios y
 eliminaciones, recuperación, versiones, nombres de archivo, filtros de
 procedencia, controles de secretos, autorización HTTP, timeouts y rutas de

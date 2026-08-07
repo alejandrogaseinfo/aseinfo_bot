@@ -42,10 +42,32 @@ SUPPORTED_EXTENSIONS = {
     ".xlsx",
     ".xml",
 }
+SCRIPT_EXTENSIONS = {".sql", ".ps1", ".bat"}
 
 
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "documento"
+
+
+def _descriptive_fields(item: dict) -> dict[str, str]:
+    """Extract user-facing SharePoint columns despite internal-name changes."""
+    list_item = item.get("listItem") or {}
+    fields = list_item.get("fields") or item.get("fields") or {}
+    if not isinstance(fields, dict):
+        return {}
+    result: dict[str, str] = {}
+    for raw_name, raw_value in fields.items():
+        if raw_value in (None, "") or str(raw_name).startswith("@odata"):
+            continue
+        name = re.sub(r"[^a-z0-9]", "", str(raw_name).casefold())
+        value = str(raw_value).strip()
+        if not value:
+            continue
+        if name.startswith("detalle") or name in {"description", "descripcion"} or "detail" in name:
+            result.setdefault("description", value)
+        elif name.startswith("dependencia") or name in {"dependency", "dependencia"}:
+            result.setdefault("dependency", value)
+    return result
 
 
 class SharePointGraphClient:
@@ -71,6 +93,27 @@ class SharePointGraphClient:
             return f"{base}/children"
         return f"{base}:/{quote(folder_path)}:/children"
 
+    def _enrich_script_fields(self, item: dict, drive_id: str) -> None:
+        """Read custom list columns only for scripts, keeping sync bounded."""
+        fields = _descriptive_fields(item)
+        if not fields:
+            try:
+                list_item_url = (
+                    f"{GRAPH_ROOT}/drives/{drive_id}/items/{item['id']}/listItem"
+                    "?$expand=fields"
+                )
+                fields = _descriptive_fields({"listItem": self._get(list_item_url)})
+            except Exception as error:
+                # A missing list-column permission must not remove a readable
+                # script from the knowledge base.
+                print(
+                    f"No se pudieron leer columnas descriptivas de {item.get('name', 'script')}: {error}",
+                    flush=True,
+                )
+        if fields:
+            item["_libras_description"] = fields.get("description", "")
+            item["_libras_dependency"] = fields.get("dependency", "")
+
     def list_supported_files(
         self, folder_path: str | None = None, drive_id: str | None = None
     ) -> list[dict]:
@@ -86,7 +129,7 @@ class SharePointGraphClient:
             visited_urls.add(page_url)
             if len(visited_urls) % 50 == 0:
                 print(
-                    f"Carpetas/páginas recorridas: {len(visited_urls)} drive={drive_id[:12]}",
+                    f"Carpetas/páginas recorridas: {len(visited_urls)}",
                     flush=True,
                 )
             page = self._get(page_url)
@@ -96,6 +139,8 @@ class SharePointGraphClient:
                 elif "file" in item:
                     extension = Path(str(item.get("name", ""))).suffix.lower()
                     if extension in SUPPORTED_EXTENSIONS:
+                        if extension in SCRIPT_EXTENSIONS:
+                            self._enrich_script_fields(item, drive_id)
                         item["_libras_folder_path"] = folder_path
                         item["_libras_drive_id"] = drive_id
                         files.append(item)
@@ -228,7 +273,78 @@ def inventory_summary(
     }
 
 
-def sync_pdfs(config: Config, output_dir: Path) -> int:
+def _source_key(folder_path: str, drive_id: str) -> tuple[str, str]:
+    return (str(folder_path or "").strip("/"), str(drive_id or "").strip())
+
+
+def _selected_sources(
+    configured_sources: tuple[tuple[str, str], ...], source_indexes: tuple[int, ...] | None
+) -> tuple[tuple[str, str], ...]:
+    """Return requested one-based source indexes, preserving their priority."""
+    if not source_indexes:
+        return configured_sources
+    selected: list[tuple[str, str]] = []
+    for source_index in source_indexes:
+        if source_index < 1 or source_index > len(configured_sources):
+            raise ValueError(
+                f"--source-index debe estar entre 1 y {len(configured_sources)}."
+            )
+        source = configured_sources[source_index - 1]
+        if source not in selected:
+            selected.append(source)
+    return tuple(selected)
+
+
+def _preserved_unselected_documents(
+    previous_documents: dict[str, dict], selected_sources: tuple[tuple[str, str], ...]
+) -> dict[str, dict]:
+    """Keep omitted sources in state during a partial, priority sync.
+
+    Unknown legacy state is preserved too. This fails closed rather than
+    turning a source intentionally postponed to a later batch into a delete.
+    """
+    selected_keys = {_source_key(folder_path, drive_id) for folder_path, drive_id in selected_sources}
+    preserved: dict[str, dict] = {}
+    for document_id, state in previous_documents.items():
+        if not isinstance(state, dict):
+            preserved[document_id] = state
+            continue
+        drive_id = state.get("drive_id")
+        folder_path = state.get("folder_path")
+        if not drive_id and folder_path is None:
+            preserved[document_id] = state
+            continue
+        if _source_key(folder_path or "", drive_id or "") not in selected_keys:
+            preserved[document_id] = state
+    return preserved
+
+
+def _existing_review_if_current(
+    metadata_path: Path, metadata_signature: dict[str, str]
+) -> dict[str, str]:
+    """Reuse a human review only while the SharePoint version is unchanged."""
+    existing = _load_json(metadata_path)
+    reviewed = existing.get("libras") if isinstance(existing, dict) else None
+    if not isinstance(reviewed, dict):
+        return {}
+    comparable_keys = ("etag", "web_url", "last_modified", "folder_path", "drive_id")
+    if any(
+        str(existing.get(key) or "") != str(metadata_signature.get(key) or "")
+        for key in comparable_keys
+    ):
+        return {}
+    return {
+        str(key): str(value).strip()
+        for key, value in reviewed.items()
+        if str(value).strip()
+    }
+
+
+def sync_pdfs(
+    config: Config,
+    output_dir: Path,
+    source_indexes: tuple[int, ...] | None = None,
+) -> int:
     """Synchronize readable files and emit durable change/deletion manifests.
 
     The durable production identity is pending the administrator requests. This
@@ -242,25 +358,43 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
         if hasattr(client, "list_supported_files")
         else client.list_pdfs
     )
-    sources = getattr(
+    configured_sources = tuple(getattr(
         config,
         "sharepoint_sources",
         ((getattr(config, "sharepoint_folder_path", ""), client.drive_id),),
-    )
+    ))
+    sources = _selected_sources(configured_sources, source_indexes)
     state_path = output_dir / SYNC_STATE_NAME
     previous_state = _load_json(state_path)
     previous_documents = previous_state.get("documents", {})
     if not isinstance(previous_documents, dict):
         previous_documents = {}
-    current_documents: dict[str, dict] = {}
+    current_documents: dict[str, dict] = (
+        _preserved_unselected_documents(previous_documents, sources)
+        if len(sources) < len(configured_sources)
+        else {}
+    )
     pending_changes = _change_ids(output_dir / CHANGE_MANIFEST_NAME)
+    pending_deletions = _deletion_ids(output_dir / DELETION_MANIFEST_NAME)
     changed_document_ids = set(pending_changes)
-    multiple_sources = len(sources) > 1
+    # The durable document key depends on the complete approved scope, not on
+    # how many sources happen to be refreshed in this invocation. Otherwise a
+    # progressive one-source batch would silently switch from ``drive:item``
+    # to ``item`` and create a second identity for the same SharePoint file.
+    multiple_sources = len(configured_sources) > 1
+    source_labels = {
+        _source_key(folder_path, drive_id): label
+        for (folder_path, drive_id), label in zip(
+            configured_sources, getattr(config, "sharepoint_source_labels", ())
+        )
+        if label
+    }
     file_count = 0
 
     for folder_path, drive_id in sources:
+        source_label = source_labels.get(_source_key(folder_path, drive_id), "fuente autorizada")
         print(
-            f"Sincronizando SharePoint: drive={drive_id[:12]} ruta={folder_path or '[raiz]'}",
+            f"Sincronizando SharePoint: fuente={source_label} ruta={folder_path or '[raiz]'}",
             flush=True,
         )
         if hasattr(client, "list_supported_files"):
@@ -291,12 +425,18 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
             etag = item.get("eTag", "")
             prior = previous_documents.get(document_id, {})
             legacy_prior = {}
-            if multiple_sources and source_drive_id == client.drive_id:
+            if multiple_sources:
                 # The previous single-library staging used the raw item ID.
                 # Reuse that file during the one-time migration when its
-                # SharePoint version is unchanged instead of downloading it
-                # again under the new drive-scoped identity.
-                legacy_prior = previous_documents.get(item["id"], {})
+                # SharePoint version and library match. Matching the stored
+                # drive avoids confusing two libraries that happen to use the
+                # same Graph item ID.
+                legacy_candidate = previous_documents.get(item["id"], {})
+                if (
+                    isinstance(legacy_candidate, dict)
+                    and legacy_candidate.get("drive_id") == source_drive_id
+                ):
+                    legacy_prior = legacy_candidate
                 if not prior and legacy_prior:
                     prior = legacy_prior
             prior_filename = prior.get("filename", "")
@@ -312,6 +452,8 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
                 "last_modified": item.get("lastModifiedDateTime", ""),
                 "folder_path": source_folder_path,
                 "drive_id": source_drive_id,
+                "description": item.get("_libras_description", ""),
+                "dependency": item.get("_libras_dependency", ""),
             }
             reused_legacy_file = False
             if prior_filename and prior_filename != filename:
@@ -341,12 +483,26 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
             if reused_legacy_file:
                 comparison_prior["filename"] = filename
                 comparison_prior["drive_id"] = source_drive_id
+            identity_migrated = bool(
+                multiple_sources
+                and legacy_prior
+                and document_id not in previous_documents
+            )
+            # If a prior run already moved state to the drive-scoped key, the
+            # raw legacy key is still pending deletion until Azure Search has
+            # processed it. Keep marking its replacement as an upsert so a
+            # retry can never delete the old chunks without writing the new
+            # identity first.
+            identity_reindex_pending = bool(
+                multiple_sources and item["id"] in pending_deletions
+            )
             has_changed = (
                 not destination.exists()
                 or any(comparison_prior.get(key) != value for key, value in metadata_signature.items())
             )
             if has_changed:
                 client.download(item, destination)
+            metadata_path = destination.with_suffix(destination.suffix + ".metadata.json")
             metadata = {
                 "source_system": "sharepoint",
                 "name": item["name"],
@@ -358,19 +514,23 @@ def sync_pdfs(config: Config, output_dir: Path) -> int:
                 "folder_path": source_folder_path,
                 "etag": etag,
                 "last_modified": item.get("lastModifiedDateTime", ""),
+                "description": item.get("_libras_description", ""),
+                "dependency": item.get("_libras_dependency", ""),
             }
-            destination.with_suffix(destination.suffix + ".metadata.json").write_text(
+            reviewed = _existing_review_if_current(metadata_path, metadata_signature)
+            if reviewed:
+                metadata["libras"] = reviewed
+            metadata_path.write_text(
                 json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             current_documents[document_id] = metadata_signature
-            if has_changed:
+            if has_changed or identity_migrated or identity_reindex_pending:
                 changed_document_ids.add(document_id)
         print(
-            f"Fuente completada: drive={drive_id[:12]} ruta={folder_path or '[raiz]'}",
+            f"Fuente completada: fuente={source_label} ruta={folder_path or '[raiz]'}",
             flush=True,
         )
 
-    pending_deletions = _deletion_ids(output_dir / DELETION_MANIFEST_NAME)
     deleted_document_ids = sorted(
         pending_deletions.union(set(previous_documents).difference(current_documents))
     )
@@ -439,12 +599,31 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", default="data/sharepoint", help="Carpeta local de staging.")
     parser.add_argument(
+        "--source-index",
+        action="append",
+        type=int,
+        dest="source_indexes",
+        help=(
+            "Índice de fuente configurada (base 1). Puede repetirse para una "
+            "sincronización progresiva; las fuentes omitidas no se eliminan."
+        ),
+    )
+    parser.add_argument(
         "--inventory",
         action="store_true",
         help="Enumera recursivamente la carpeta configurada sin descargar ni modificar archivos.",
     )
+    parser.add_argument(
+        "--use-current-environment",
+        action="store_true",
+        help=(
+            "No carga archivos .env del proyecto. Úsalo solo cuando la configuración "
+            "ya fue inyectada por el entorno de ejecución."
+        ),
+    )
     args = parser.parse_args()
-    load_project_environment()
+    if not args.use_current_environment:
+        load_project_environment()
     config = Config(os.environ)
     if args.inventory:
         client = create_sharepoint_client(config)
@@ -453,13 +632,21 @@ def main() -> None:
             "sharepoint_sources",
             ((config.sharepoint_folder_path, client.drive_id),),
         )
-        summaries = [
-            inventory_summary(client, folder_path, drive_id)
-            for folder_path, drive_id in sources
-        ]
+        selected = _selected_sources(tuple(sources), tuple(args.source_indexes or ()))
+        summaries = []
+        for source_index, (folder_path, drive_id) in enumerate(sources, start=1):
+            if (folder_path, drive_id) not in selected:
+                continue
+            summary = inventory_summary(client, folder_path, drive_id)
+            summary["source_index"] = source_index
+            summaries.append(summary)
         print(json.dumps(summaries, ensure_ascii=False))
         return
-    count = sync_pdfs(config, Path(args.output_dir).resolve())
+    count = sync_pdfs(
+        config,
+        Path(args.output_dir).resolve(),
+        tuple(args.source_indexes or ()),
+    )
     print(f"Descargados {count} archivo(s) legible(s) de SharePoint.")
 
 

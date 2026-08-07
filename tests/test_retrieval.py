@@ -8,7 +8,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from models import EvidenceSource
+from models import EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
 
 
@@ -71,6 +71,24 @@ class RetrievalTests(unittest.TestCase):
             retrieve_evidence("¿Qué dice el manual?", config=config)
 
         azure_retrieval.assert_called_once()
+
+    def test_v2_keeps_azure_abstention_instead_of_using_local_documents(self):
+        config = SimpleNamespace(
+            environment="local",
+            azure_search_configured=True,
+            azure_search_enabled=True,
+            azure_search_index_name="libras-docs-v2-candidate",
+            retrieval_strategy="v2",
+            allow_local_document_fallback=True,
+        )
+
+        with patch(
+            "retrieval.retrieve_azure_search_evidence", return_value=RetrievalTrace()
+        ), patch("retrieval.retrieve_document_evidence", return_value=self.local_evidence) as local_retrieval:
+            evidence = retrieve_evidence("¿Qué dice el manual?", config=config, return_trace=True)
+
+        self.assertEqual([], evidence.sources)
+        local_retrieval.assert_not_called()
 
 
 if __name__ == "__main__":

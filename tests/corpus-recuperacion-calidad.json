@@ -44,14 +44,32 @@
   {
     "id": "RAG-06",
     "message": "¿Qué parámetros se pueden modificar para incapacidades?",
-    "expected": "sin_evidencia",
-    "expected_title_contains": []
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"]
   },
   {
     "id": "RAG-07",
     "message": "Después de reinstalar MSDTC en un servidor clonado, ¿qué hay que revisar en ambos servidores para confirmar que la comunicación DTC quedó funcionando correctamente?",
     "expected": "evidence",
     "expected_title_contains": ["Manual DTC Verificacion"]
+  },
+  {
+    "id": "RAG-08",
+    "message": "¿Cómo se ofuscan datos sensibles en SQL?",
+    "expected": "evidence",
+    "expected_title_contains": ["Ofuscación de datos"]
+  },
+  {
+    "id": "RAG-09",
+    "message": "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Readme 1.19.1.6"]
+  },
+  {
+    "id": "RAG-10",
+    "message": "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": []
   },
   {
     "id": "SCOPE-01",

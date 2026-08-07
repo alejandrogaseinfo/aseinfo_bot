@@ -1,0 +1,5 @@
+[config]
+# Keep Azure App Service ZipDeploy deterministic: dependencies are restored by
+# Oryx into the Linux deployment output before Gunicorn starts the bot.
+SCM_DO_BUILD_DURING_DEPLOYMENT = true
+ENABLE_ORYX_BUILD = true

@@ -48,6 +48,18 @@ ACTION_EQUIVALENT_STEMS = {
     "valid": {"revis", "valid", "verif", "confirm"},
     "verif": {"revis", "valid", "verif", "confirm"},
     "confirm": {"revis", "valid", "verif", "confirm"},
+    # Manuals alternate between ``mostrar``/``muestre`` and between a
+    # parameter that ``controla`` a value and one that ``permite`` definirlo.
+    "mostr": {"mostr", "muestr"},
+    "control": {"control", "permit", "determin"},
+    # Operators say "bajar" while the manual commonly uses the imperative
+    # "descargue". Treat both as the same requested document action.
+    "baj": {"baj", "descarg"},
+    "descarg": {"baj", "descarg"},
+    # Configuration manuals use ``configurar`` or ``ajustar`` where users
+    # may ask which parameters can be ``modificar``.
+    "modific": {"modific", "configur", "ajust", "defin", "parametr"},
+    "configur": {"configur", "ajust", "defin", "parametr"},
 }
 
 
@@ -99,6 +111,15 @@ def has_requested_action_coverage(question: str, source_text: str) -> bool:
         question or "",
         flags=re.IGNORECASE,
     )
+    # In an incident question, ``qué se debe revisar`` asks for diagnostic
+    # guidance; it is not a literal requirement that the cited manual contain
+    # the verb ``revisar`` alongside the documented operation.
+    temporal_context = re.sub(
+        r"\b(?:que|qué)\s+se\s+debe\s+revisar\b",
+        " ",
+        temporal_context,
+        flags=re.IGNORECASE,
+    )
     action_stems = {
         token[:-2]
         for token in tokenize(temporal_context)
@@ -112,6 +133,13 @@ def has_requested_action_coverage(question: str, source_text: str) -> bool:
     for verb in re.findall(r"\b(?:como|cómo)\s+se\s+([a-z]+(?:an|en))\b", normalized_question):
         if verb not in auxiliary_verbs and len(verb[:-2]) >= 5:
             action_stems.add(verb[:-2])
+    # Direct parameter questions commonly use the third-person form
+    # ``controla``/``define`` rather than an infinitive. Recognize this small
+    # generic family without treating every noun as an operation.
+    if "parametro" in tokenize(temporal_context):
+        for verb in tokenize(temporal_context):
+            if verb in {"controla", "define", "indica", "muestra", "determina"}:
+                action_stems.add(verb[:-1])
     if not action_stems:
         return True
 
