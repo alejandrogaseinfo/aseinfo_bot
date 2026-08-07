@@ -46,6 +46,7 @@ from classification import (
     classify_case_by_rules,
     is_direct_document_question,
     is_underspecified_query,
+    needs_extension_subject_context,
 )
 from document_index import tokenize
 from formatting import format_user_response
@@ -105,6 +106,66 @@ class DocumentQuestionTests(unittest.TestCase):
         )
 
         self.assertEqual("resuelto", decision.estado)
+
+    def test_ambiguous_extension_requires_subject_context(self):
+        self.assertTrue(needs_extension_subject_context("¿Qué parámetros se pueden configurar para prórroga en Evolution?"))
+        self.assertFalse(needs_extension_subject_context("¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?"))
+
+    def test_parameter_evidence_accepts_documented_extension_and_incapacity_fields(self):
+        extension = [EvidenceSource(
+            tipo="sharepoint", titulo="Acciones de personal.pdf — Página 18",
+            ubicacion="https://contoso.example/acciones.pdf",
+            fragmento="Parámetro: ProrrogaContratoDiasAtrasInicioRangoFechaFinContrato. Define los días antes de la fecha final.",
+        )]
+        incapacity = [EvidenceSource(
+            tipo="sharepoint", titulo="Acciones de personal.pdf — Página 34",
+            ubicacion="https://contoso.example/acciones.pdf",
+            fragmento="El parámetro de aplicación: IncapacidadesValidaTraslapeConAcciones valida traslapes.",
+        )]
+        self.assertEqual("resuelto", classify_case_by_rules("¿Qué parámetros se pueden configurar para prórroga de contratos?", extension).estado)
+        self.assertEqual("resuelto", classify_case_by_rules("¿Qué parámetros se pueden configurar para incapacidades?", incapacity).estado)
+
+    def test_parameter_summary_lists_all_documented_extension_parameters(self):
+        evidence = [EvidenceSource(
+            tipo="sharepoint", titulo="Acciones de personal.pdf — Página 18",
+            ubicacion="https://contoso.example/acciones.pdf",
+            fragmento=(
+                "Parámetro: ProrrogaContratoDiasAtrasInicioRangoFechaFinContrato "
+                "permite especificar días antes de la fecha final. Parámetro: "
+                "ProrrogaContratoDiasDespuesFinalRangoFechaFinContrato permite "
+                "especificar días después de la fecha final."
+            ),
+        )]
+        answer = _grounded_document_summary(
+            "¿Qué parámetros se pueden configurar para prórroga de contratos?", evidence
+        )
+        self.assertIn("ProrrogaContratoDiasAtrasInicioRangoFechaFinContrato", answer)
+        self.assertIn("ProrrogaContratoDiasDespuesFinalRangoFechaFinContrato", answer)
+
+    def test_conceptual_classification_and_examples_do_not_become_navigation_steps(self):
+        classification = [
+            EvidenceSource(
+                tipo="sharepoint", titulo="Acciones de personal.pdf — Página 38",
+                ubicacion="https://contoso.example/acciones.pdf",
+                fragmento="Clasificación de incapacidades. Según su duración se consideran permanentes y temporales. Según su magnitud hay incapacidades parciales y totales. Según su cualidad se separan en físicas y psíquicas.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint", titulo="Manual DB.docx",
+                ubicacion="https://contoso.example/db.docx",
+                fragmento="Haga clic en el módulo de acciones de personal. Seleccione opciones. Haga clic en guardar.",
+            ),
+        ]
+        examples = [EvidenceSource(
+            tipo="sharepoint", titulo="Gestion de documentos.pdf — Página 4",
+            ubicacion="https://contoso.example/documentos.pdf",
+            fragmento="Ejemplo de los tipos de documento que puede administrar: Formularios, Manuales, Procedimientos, Instructivos. Haga clic en el botón Nuevo. Seleccione Guardar.",
+        )]
+        classification_answer = _grounded_document_summary("¿Cómo se clasifican las incapacidades en Evolution?", classification)
+        examples_answer = _grounded_document_summary("Dame ejemplos de tipos de documentos que se pueden administrar en Evolution", examples)
+        self.assertIn("permanentes", classification_answer)
+        self.assertNotIn("Haga clic", classification_answer)
+        self.assertIn("Formularios", examples_answer)
+        self.assertNotIn("Haga clic", examples_answer)
 
     def test_download_failure_does_not_turn_navigation_steps_into_a_diagnosis(self):
         evidence = [
@@ -795,13 +856,21 @@ class DocumentQuestionTests(unittest.TestCase):
             _focused_keyword_query(
                 "¿Qué parámetros se pueden configurar para prórroga de contratos en Evolution?"
             ),
-            "parametro configurar prorroga contrato evolution",
+            (
+                "parametro configurar prorroga contrato evolution "
+                "prorrogacontratodiasatrasiniciorangofechafincontrato "
+                "prorrogacontratodiasdespuesfinalrangofechafincontrato"
+            ),
         )
         self.assertEqual(
             _focused_keyword_query(
                 "Dame los parámetros que se relacionan con la prórroga de contratos"
             ),
-            "parametro prorroga contrato",
+            (
+                "parametro prorroga contrato "
+                "prorrogacontratodiasatrasiniciorangofechafincontrato "
+                "prorrogacontratodiasdespuesfinalrangofechafincontrato"
+            ),
         )
         self.assertIn(
             "riesgo",

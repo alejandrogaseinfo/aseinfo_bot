@@ -9,6 +9,7 @@ from classification import (
     classify_case_by_rules,
     has_explicit_version_request,
     is_underspecified_query,
+    needs_extension_subject_context,
     is_direct_document_question,
     requires_deterministic_grounded_answer,
     requires_explicit_facet_evidence,
@@ -374,6 +375,13 @@ def _underspecified_query_response() -> str:
     )
 
 
+def _ambiguous_extension_response() -> str:
+    return (
+        "¿Te refieres a la prórroga de contratos o a una prórroga de incapacidades? "
+        "Indica cuál de las dos para consultar los parámetros documentados sin asumir el contexto."
+    )
+
+
 def _is_scope_question(user_message: str, query_tokens: set[str]) -> bool:
     """Recognize clear questions about Libras's document scope before the LLM."""
     normalized = _normalized_sensitive_text(user_message)
@@ -650,6 +658,13 @@ async def process_user_message(
             "decision_state=solicita_contexto escalated=False"
         )
         return _underspecified_query_response()
+
+    if needs_extension_subject_context(user_message):
+        logger.info(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=solicita_contexto_prorroga escalated=False"
+        )
+        return _ambiguous_extension_response()
 
     retrieval_message = _enrich_change_request(
         _resolve_documentary_follow_up(

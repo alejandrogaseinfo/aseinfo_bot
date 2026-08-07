@@ -590,7 +590,30 @@ def _focused_keyword_query(user_message: str) -> str:
     # user's question; it must not broaden unrelated incapacity searches.
     focused_token_set = set(focused_tokens)
     if {"incapacidad", "parametro"}.issubset(focused_token_set):
-        focused_tokens.extend(token for token in ("riesgo", "incapacidad") if token not in focused_token_set)
+        focused_tokens.extend(
+            token
+            for token in (
+                "riesgo",
+                "incapacidad",
+                "incapacidadesvalidatraslapeconacciones",
+                "subsidio",
+                "descuento",
+            )
+            if token not in focused_token_set
+        )
+    # La página de prórroga no repite el nombre de Evolution en cada campo:
+    # utiliza los identificadores CamelCase de los parámetros. Anclamos la
+    # pasada léxica solo cuando el operador pide explícitamente parámetros de
+    # prórroga de contratos; así no se amplían búsquedas de contratos ajenas.
+    if {"prorroga", "contrato", "parametro"}.issubset(focused_token_set):
+        focused_tokens.extend(
+            token
+            for token in (
+                "prorrogacontratodiasatrasiniciorangofechafincontrato",
+                "prorrogacontratodiasdespuesfinalrangofechafincontrato",
+            )
+            if token not in focused_token_set
+        )
     # Upgrade manuals usually place pre-installation precautions under
     # ``Preparación`` and ``Respaldo`` rather than under the operator's word
     # ``precauciones``. Keep this bridge limited to an explicit pre-install

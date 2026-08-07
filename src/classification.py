@@ -53,7 +53,24 @@ PARAMETER_LIST_REQUEST_PATTERN = re.compile(
 )
 PARAMETER_EVIDENCE_PATTERN = re.compile(
     r"\bpar[aá]metr\w*\b.{0,240}"
-    r"\b(?:c[oó]digo|nombre|valor|rango|porcentaje|tipo)\b\s*[:=-]",
+    r"\b(?:c[oó]digo|nombre|valor|rango|porcentaje|tipo)\b\s*[:=-]|"
+    # Algunos manuales nombran el parámetro directamente (camel case) o
+    # describen los campos configurables sin una tabla ``nombre: valor``.
+    # Exigimos un identificador o un campo concreto para no aceptar una mera
+    # mención relacionada con incapacidades.
+    r"\b(?:prorroga|incapacidades)[a-z0-9]+\b|"
+    r"\b(?:rango\s+de\s+(?:los\s+)?d[ií]as|%\s*(?:de\s+)?(?:descuento|subsidio)|"
+    r"tipo\s+de\s+(?:ingreso|descuento))\b",
+    re.IGNORECASE,
+)
+AMBIGUOUS_EXTENSION_PATTERN = re.compile(
+    r"\bpr[oó]rroga\b(?!\s+de\s+(?:contratos?|incapacidades?))",
+    re.IGNORECASE,
+)
+EXAMPLE_REQUEST_PATTERN = re.compile(r"\b(?:dame|indica|muestra|lista)\b.{0,48}\bejempl\w*\b|\bejempl\w*\b", re.IGNORECASE)
+INCAPACITY_CLASSIFICATION_PATTERN = re.compile(
+    r"\b(?:c[oó]mo|como)\s+se\s+clasific\w*\b.{0,80}\bincapac\w*\b|"
+    r"\bclasificaci[oó]n\b.{0,80}\bincapac\w*\b",
     re.IGNORECASE,
 )
 CALCULATION_REQUEST_PATTERN = re.compile(
@@ -157,6 +174,11 @@ def is_underspecified_query(user_message: str) -> bool:
     if not normalized:
         return True
     return any(pattern.fullmatch(normalized) for pattern in UNDERSPECIFIED_QUERY_PATTERNS)
+
+
+def needs_extension_subject_context(user_message: str) -> bool:
+    """Ask for the prórroga domain before retrieving an ambiguous question."""
+    return bool(AMBIGUOUS_EXTENSION_PATTERN.search(user_message or ""))
 
 
 def is_direct_document_question(user_message: str, evidence: list[EvidenceSource]) -> bool:
@@ -268,6 +290,20 @@ def _focused_procedure_evidence(
     contribute a secondary source only when it carries explicit covered
     requirements and at least two new procedural steps.
     """
+    if EXAMPLE_REQUEST_PATTERN.search(user_message or ""):
+        examples = [
+            source for source in evidence
+            if re.search(r"\bejempl\w*\b", source.fragmento or "", re.IGNORECASE)
+        ]
+        return examples[:1] or evidence[:1]
+
+    if INCAPACITY_CLASSIFICATION_PATTERN.search(user_message or ""):
+        classifications = [
+            source for source in evidence
+            if re.search(r"\bclasific\w*\b|seg[uú]n\s+su\s+(?:duraci[oó]n|magnitud|cualidad)", source.fragmento or "", re.IGNORECASE)
+        ]
+        return classifications[:1] or evidence[:1]
+
     if not _is_procedural_request(user_message):
         return evidence
 
@@ -375,8 +411,57 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
             f"{index}. {check}"
             for index, check in enumerate(diagnostic_checks[:4], start=1)
         )
+    if INCAPACITY_CLASSIFICATION_PATTERN.search(user_message or ""):
+        classification_text = " ".join(
+            " ".join((source.fragmento or "").split()) for source in focused_evidence
+        )
+        categories = []
+        for label, pattern in (
+            ("duración", r"seg[uú]n\s+su\s+duraci[oó]n.{0,220}?(?:permanentes?\s+y\s+temporales?|temporales?\s+y\s+permanentes?)"),
+            ("magnitud", r"seg[uú]n\s+su\s+magnitud.{0,220}?(?:parciales?\s+y\s+totales?|totales?\s+y\s+parciales?)"),
+            ("cualidad", r"seg[uú]n\s+su\s+cualidad.{0,220}?(?:f[ií]sicas?\s+y\s+ps[ií]quicas?|ps[ií]quicas?\s+y\s+f[ií]sicas?)"),
+        ):
+            match = re.search(pattern, classification_text, re.IGNORECASE)
+            if match:
+                categories.append(match.group(0).rstrip(". "))
+        if categories:
+            return "Según la documentación, las incapacidades se clasifican así: " + "; ".join(categories) + "."
+
+    if EXAMPLE_REQUEST_PATTERN.search(user_message or ""):
+        for source in focused_evidence:
+            text = " ".join((source.fragmento or "").split())
+            match = re.search(r"\bejempl\w*[^:]{0,120}:\s*(.+?)(?=\b(?:del\s+[aá]rea|haga\s+clic|seleccione|digite)\b|$)", text, re.IGNORECASE)
+            if match:
+                examples = match.group(1).strip(" .;:")
+                if examples:
+                    return f"Según la documentación, los ejemplos son: {examples}."
+
+    if PARAMETER_LIST_REQUEST_PATTERN.search(user_message or ""):
+        parameters: list[tuple[str, str]] = []
+        for source in focused_evidence:
+            text = " ".join((source.fragmento or "").split())
+            matches = list(re.finditer(
+                r"\b(?:ProrrogaContrato|Incapacidades)[A-Za-z0-9]+\b", text
+            ))
+            for index, match in enumerate(matches):
+                name = match.group(0)
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+                detail = text[match.end():end]
+                detail = re.sub(r"^(?:\s*[:.-]\s*)", "", detail).strip()
+                detail = re.split(r"\b(?:Ejemplo\d*|Del\s+[aá]rea|Haga\s+clic|Seleccione)\b", detail, maxsplit=1, flags=re.IGNORECASE)[0]
+                detail = detail[:210].rsplit(" ", 1)[0] if len(detail) > 210 else detail
+                pair = (name, detail.rstrip(". "))
+                if pair not in parameters:
+                    parameters.append(pair)
+        if parameters:
+            lines = [
+                f"- {name}" + (f": {detail}." if detail else ".")
+                for name, detail in parameters[:6]
+            ]
+            return "Según la documentación, los parámetros identificados son:\n" + "\n".join(lines)
+
     procedure_steps = _unique_procedure_steps(focused_evidence)
-    if len(procedure_steps) >= 3:
+    if _is_procedural_request(user_message) and len(procedure_steps) >= 3:
         return "Según la documentación, los pasos son:\n" + "\n".join(
             f"{index}. {step}"
             for index, step in enumerate(
