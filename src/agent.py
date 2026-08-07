@@ -18,7 +18,15 @@ from microsoft_agents.hosting.core import (
 from openai import OpenAI
 
 from config import Config
-from handler import process_user_message
+from conversation_state import ConversationStateStore
+from guided_experience import (
+    build_welcome_activity,
+    command_from_text,
+    guided_action_from_activity,
+    guided_prompt,
+    topic_hint,
+)
+from handler import extract_conversation_subject, process_user_message
 
 
 def load_environment() -> None:
@@ -85,7 +93,10 @@ _supports_files_warning = (
     else ""
 )
 _supports_files_warned = False
-_documentary_responses: dict[str, str] = {}
+_thread_state = ConversationStateStore(
+    ttl_seconds=config.thread_context_ttl_seconds,
+    max_conversations=config.thread_context_max_conversations,
+)
 
 
 def _conversation_id(context: TurnContext) -> str:
@@ -99,9 +110,12 @@ def _is_documentary_response(answer: str) -> bool:
 @agent_app.conversation_update("membersAdded")
 async def on_members_added(context: TurnContext, _state: TurnState):
     global _supports_files_warned
-    await context.send_activity(
-        "Hola. Soy Libras, asistente de base de conocimiento y resolucion de errores para soporte tecnico."
-    )
+    if config.use_guided_start:
+        await context.send_activity(build_welcome_activity())
+    else:
+        await context.send_activity(
+            "Hola. Soy Libras, asistente de base de conocimiento y resolucion de errores para soporte tecnico."
+        )
     if _supports_files_warning and not _supports_files_warned:
         _supports_files_warned = True
         await context.send_activity(_supports_files_warning)
@@ -116,16 +130,60 @@ async def on_message(context: TurnContext, _state: TurnState):
 
     user_message = context.activity.text or ""
     conversation_id = _conversation_id(context)
+    guided_action = (
+        guided_action_from_activity(context.activity)
+        if config.use_guided_start
+        else None
+    )
+    if guided_action:
+        if config.use_ephemeral_thread_context:
+            _thread_state.set_topic(conversation_id, topic_hint(guided_action))
+        await context.send_activity(guided_prompt(guided_action))
+        return
+    slash_command = (
+        command_from_text(user_message) if config.use_slash_commands else None
+    )
+    if slash_command:
+        command_action, command_remainder = slash_command
+        if command_action == "new":
+            if config.use_ephemeral_thread_context:
+                _thread_state.clear(conversation_id)
+            if config.use_guided_start:
+                await context.send_activity(build_welcome_activity())
+            else:
+                await context.send_activity(
+                    "Listo. Empezamos un hilo nuevo. Escribe tu pregunta."
+                )
+            return
+        if config.use_ephemeral_thread_context:
+            _thread_state.set_topic(conversation_id, topic_hint(command_action))
+        if not command_remainder:
+            await context.send_activity(guided_prompt(command_action))
+            return
+        user_message = command_remainder
+    previous_documentary_response = None
+    conversation_topic = None
+    previous_subject = None
+    if config.use_ephemeral_thread_context:
+        state = _thread_state.get(conversation_id)
+        previous_documentary_response = state.previous_documentary_response
+        conversation_topic = state.topic
+        previous_subject = state.subject
     answer = await process_user_message(
         user_message,
         client,
         config,
-        previous_documentary_response=_documentary_responses.get(conversation_id),
+        previous_documentary_response=previous_documentary_response,
+        conversation_topic=conversation_topic,
+        previous_subject=previous_subject,
     )
-    if _is_documentary_response(answer):
-        _documentary_responses[conversation_id] = answer
-    elif conversation_id:
-        _documentary_responses.pop(conversation_id, None)
+    if config.use_ephemeral_thread_context:
+        _thread_state.record_response(
+            conversation_id,
+            answer,
+            is_documentary=_is_documentary_response(answer),
+            subject=extract_conversation_subject(user_message),
+        )
     await context.send_activity(answer)
 
 

@@ -2187,7 +2187,12 @@ class DocumentQuestionTests(unittest.TestCase):
             )
         )
 
-        self.assertIn("Enlace: https://contoso.example/procedimiento.pdf", response)
+        self.assertIn(
+            "Enlace: [Ver documento: Procedimiento de actualización]"
+            "(https://contoso.example/procedimiento.pdf)",
+            response,
+        )
+        self.assertNotIn("Enlace: https://contoso.example/procedimiento.pdf", response)
 
     def test_sharepoint_solution_includes_its_related_files_folder_link(self):
         response = format_user_response(
@@ -2213,8 +2218,12 @@ class DocumentQuestionTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("Enlace: https://aseinfocorp.sharepoint.com", response)
-        self.assertIn("Archivos relacionados:", response)
+        self.assertIn(
+            "Enlace: [Ver documento: Instrucciones.txt]"
+            "(https://aseinfocorp.sharepoint.com",
+            response,
+        )
+        self.assertIn("Archivos relacionados: [Abrir carpeta relacionada](https://aseinfocorp.sharepoint.com", response)
         self.assertIn(
             "Forms/AllItems.aspx?FolderCTID=0x0120009FAB9B5A94350F489104FB62DC2E926D"
             "&id=%2Fsites%2FSoportealcliente%2FDocumentos%20compartidos%2FSOLUCIONES%2F"

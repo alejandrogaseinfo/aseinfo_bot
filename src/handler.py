@@ -72,7 +72,10 @@ SCOPE_QUESTION_PATTERN = re.compile(
     r"(?:puedes?|puedo|tienes?)\s+(?:buscar|consultar)|"
     r"\b(?:que\s+)?(?:carpetas?|bibliotecas?|fuentes?)\s+"
     r"(?:puedes?|tienes?)\s+(?:buscar|consultar)|"
-    r"\bdonde\s+(?:puedo|puedes?)\s+(?:buscar|consultar)"
+    r"\bdonde\s+(?:puedo|puedes?)\s+(?:buscar|consultar)|"
+    r"\b(?:que|cuales?)\s+(?:fuentes?|bibliotecas?|carpetas?)\s+"
+    r"(?:estas?|est[aá]s?)\s+(?:usando|consultando)|"
+    r"\bde\s+d[oó]nde\s+(?:obtienes?|sacas?)\s+(?:la\s+)?informaci[oó]n"
 )
 SCOPE_DOCUMENTATION_PATTERN = re.compile(
     r"\bdonde\s+(?:puedo|puedes?)\s+consultar\s+(?:la\s+)?documentacion\b"
@@ -80,7 +83,16 @@ SCOPE_DOCUMENTATION_PATTERN = re.compile(
 CAPABILITY_QUESTION_PATTERN = re.compile(
     r"\b(?:en\s+que|que\s+tipo\s+de)\s+"
     r"(?:tipo(?:s)?\s+de\s+)?(?:informacion|temas?|consultas?|documentos?)\s+"
-    r"(?:puedes?\s+)?(?:ayudar(?:me)?|apoyar(?:me)?|atender|manejar)\b"
+    r"(?:puedes?\s+)?(?:ayudar(?:me)?|apoyar(?:me)?|atender|manejar)\b|"
+    r"\b(?:que|qu[eé])\s+(?:te|me)\s+puedo\s+preguntar\b|"
+    r"\b(?:que|qu[eé])\s+(?:tipo|clase)\s+de\s+(?:informaci[oó]n|temas?)\s+"
+    r"(?:puedes?|sabes?|manejas?)\b"
+)
+IDENTITY_QUESTION_PATTERN = re.compile(
+    r"\b(?:cual|que)\s+es\s+mi\s+nombre\b|"
+    r"\bcomo\s+me\s+llamo\b|"
+    r"\brecuerdas?\s+mi\s+nombre\b|"
+    r"\bdime\s+mi\s+nombre\b"
 )
 SENSITIVE_SECRET_PATTERN = re.compile(
     r"\b(?:api[\s_-]*keys?|clave(?:s)?[\s_-]*(?:api|privada)|password|contrasena|"
@@ -191,16 +203,18 @@ def _summarize_previous_documentary_response(previous_response: str) -> str:
     """Produce a short, deterministic summary without adding new claims."""
     body, separator, source_details = previous_response.partition("\n\nFuente")
     numbered_steps = [
-        step.strip()
-        for step in re.findall(r"(?:^|\s)\d+\.\s*(.*?)(?=\s+\d+\.|$)", body)
-        if step.strip()
+        re.sub(r"^\s*\d+\.\s+", "", line).strip()
+        for line in body.splitlines()
+        if re.match(r"^\s*\d+\.\s+", line)
     ]
     if len(numbered_steps) >= 2:
         bullets = numbered_steps[:4]
     else:
         sentences = [
             sentence.strip(" -")
-            for sentence in re.split(r"(?<=[.!?])\s+", body.strip())
+            for sentence in re.split(
+                r"(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÜ¿¡])", body.strip()
+            )
             if sentence.strip(" -")
         ]
         bullets = sentences[:4] or [body.strip()]
@@ -223,6 +237,10 @@ DOCUMENT_REFERENCE_PATTERN = re.compile(
     r"\b(?:esos|esas|dichos|dichas)\s+"
     r"(?:cambios|mejoras|novedades|detalles|puntos)\b"
 )
+PRONOUN_DOCUMENT_REFERENCE_PATTERN = re.compile(
+    r"\b(?:esos|esas|estos|estas|los\s+anteriores|las\s+anteriores|"
+    r"los\s+mismos|las\s+mismas)\b"
+)
 CHANGE_REQUEST_PATTERN = re.compile(
     r"\b(?:cambios?|modificaciones?|mejoras?|novedades?|correcciones?)\b"
 )
@@ -237,6 +255,7 @@ NON_PRODUCT_WORDS = {"o", "un", "una", "el", "la", "los", "las", "este", "esta"}
 def _resolve_documentary_follow_up(
     user_message: str,
     previous_documentary_response: str | None,
+    previous_subject: str | None = None,
 ) -> str:
     """Resolve a narrow document follow-up without sending full chat history.
 
@@ -247,6 +266,8 @@ def _resolve_documentary_follow_up(
     original wording for the response shown to the user.
     """
     normalized_message = _normalized_sensitive_text(user_message)
+    if previous_subject and PRONOUN_DOCUMENT_REFERENCE_PATTERN.search(normalized_message):
+        return f"{user_message} (referencia contextual: {previous_subject})"
     if not previous_documentary_response or not (
         VERSION_REFERENCE_PATTERN.search(normalized_message)
         or DOCUMENT_REFERENCE_PATTERN.search(normalized_message)
@@ -261,11 +282,36 @@ def _resolve_documentary_follow_up(
     return f"{user_message} (referencia contextual: versión {version})"
 
 
+def extract_conversation_subject(user_message: str) -> str | None:
+    """Extract a small, non-transcript subject for same-chat references."""
+    normalized = _normalized_sensitive_text(user_message)
+    if re.search(r"\b(?:documentos?|tipos?\s+de\s+documentos?)\b", normalized) and re.search(
+        r"\b(?:administr|gestion|maneja|manejan)\w*\b", normalized
+    ):
+        product = "Evolution" if re.search(r"\bevolution\b", normalized) else ""
+        return f"documentos gestionados{f' en {product}' if product else ''}"
+    return None
+
+
 def _enrich_change_request(user_message: str) -> str:
     """Add retrieval-only synonyms for a request about documented changes."""
     if not CHANGE_REQUEST_PATTERN.search(_normalized_sensitive_text(user_message)):
         return user_message
     return f"{user_message} (detalle técnico: mejoras modificaciones correcciones)"
+
+
+def _enrich_classification_request(user_message: str) -> str:
+    """Bias incapacity-classification searches toward the authoritative personnel manual."""
+    normalized = _normalized_sensitive_text(user_message)
+    if not (
+        re.search(r"\bincapacidad(?:es)?\b", normalized)
+        and re.search(r"\bclasific\w*\b", normalized)
+    ):
+        return user_message
+    return (
+        f"{user_message} (clasificación documental: duración permanentes temporales "
+        "cualidad físicas psíquicas Acciones de personal)"
+    )
 
 
 def _evidence_matches_explicit_product(
@@ -289,6 +335,44 @@ def _evidence_matches_explicit_product(
         )
         for source in evidence
     )
+
+
+def _filter_contextual_version_evidence(
+    retrieval_message: str,
+    evidence: list[EvidenceSource],
+) -> list[EvidenceSource]:
+    """Keep a documentary follow-up inside the version carried from the prior turn."""
+    match = re.search(
+        r"referencia contextual:\s+version\s+(\d+(?:\.\d+){2,})",
+        _normalized_sensitive_text(retrieval_message),
+    )
+    if not match:
+        return evidence
+    version = match.group(1)
+    version_pattern = re.compile(rf"(?<!\d){re.escape(version)}(?!\d)")
+    any_version_pattern = re.compile(r"(?<!\d)\d+(?:\.\d+){2,}(?!\d)")
+
+    def belongs_to_contextual_version(source: EvidenceSource) -> bool:
+        identity = " ".join((source.titulo, source.ubicacion))
+        identity_versions = set(any_version_pattern.findall(identity))
+        if identity_versions and version not in identity_versions:
+            return False
+        return version_pattern.search(
+            " ".join(
+                (
+                    source.titulo,
+                    source.ubicacion,
+                    source.fragmento,
+                    source.document_version,
+                )
+            )
+        ) is not None
+
+    return [
+        source
+        for source in evidence
+        if belongs_to_contextual_version(source)
+    ]
 
 
 def _normalize_command(user_message: str) -> str:
@@ -368,10 +452,49 @@ def _context_guard_response() -> str:
     )
 
 
-def _underspecified_query_response() -> str:
+def _identity_response() -> str:
+    return (
+        "No puedo confirmar tu nombre porque Libras no conserva nombres ni el "
+        "historial completo del chat. Si necesitas usarlo en una consulta, "
+        "indícalo nuevamente en ese mensaje."
+    )
+
+
+def _underspecified_query_response(conversation_topic: str | None = None) -> str:
+    topic_prompts = {
+        "consulta de versión": (
+            "Para consultar una versión, indica el producto o módulo, la versión "
+            "y qué deseas revisar."
+        ),
+        "consulta de procedimiento": (
+            "Para consultar un procedimiento, indica el producto o módulo, la versión "
+            "y la tarea o configuración que necesitas revisar."
+        ),
+        "consulta de actualización": (
+            "Para revisar una actualización, indica el producto o módulo, la versión "
+            "y el componente o cambio que deseas consultar."
+        ),
+        "reporte de error técnico": (
+            "Para revisar un error, indica el producto o módulo, la versión, el mensaje "
+            "exacto y los pasos que provocan el problema."
+        ),
+    }
+    if conversation_topic in topic_prompts:
+        return topic_prompts[conversation_topic]
     return (
         "Necesito más contexto para orientar la consulta: indique el producto o módulo, "
         "la versión, el mensaje o comportamiento observado y qué desea revisar."
+    )
+
+
+def _is_generic_topic_question(user_message: str) -> bool:
+    normalized = _normalized_sensitive_text(user_message)
+    return bool(
+        re.search(
+            r"\b(?:como|que)\s+(?:se\s+)?(?:hace|debo\s+hacer|puedo\s+hacer)\b|"
+            r"\bnecesito\s+ayuda\b",
+            normalized,
+        )
     )
 
 
@@ -386,6 +509,8 @@ def _is_scope_question(user_message: str, query_tokens: set[str]) -> bool:
     """Recognize clear questions about Libras's document scope before the LLM."""
     normalized = _normalized_sensitive_text(user_message)
     if SCOPE_DOCUMENTATION_PATTERN.search(normalized):
+        return True
+    if SCOPE_QUESTION_PATTERN.search(normalized):
         return True
     return bool(SCOPE_QUESTION_PATTERN.search(normalized)) and bool(
         query_tokens.intersection(SCOPE_FALLBACK_TOKENS)
@@ -424,6 +549,8 @@ def _direct_response(user_message: str, config=None) -> str | None:
         return _help_response()
 
     query_tokens = set(tokenize(user_message or ""))
+    if IDENTITY_QUESTION_PATTERN.search(_normalized_sensitive_text(user_message)):
+        return _identity_response()
     if query_tokens.intersection(UNAVAILABLE_INTEGRATIONS):
         return (
             "ClickUp todavía no está integrado con Libras. Puedo consultar únicamente "
@@ -480,9 +607,14 @@ def _help_response() -> str:
 
 def _capability_response() -> str:
     return (
-        "Puedo consultar la documentación técnica autorizada de las bibliotecas aprobadas "
-        "del sitio, incluida la carpeta SOLUCIONES y sus subcarpetas. "
-        "Indique el producto o módulo, la versión y su pregunta para buscar evidencia."
+        "Puedo consultar documentación técnica autorizada sobre:\n"
+        "- Versiones, actualizaciones y mejoras de Evolution.\n"
+        "- Procedimientos y configuraciones documentadas.\n"
+        "- Errores, correcciones y validaciones documentadas.\n"
+        "- Manuales técnicos y scripts con descripción documental.\n\n"
+        "La información proviene únicamente de fuentes documentales autorizadas, "
+        "incluida la carpeta SOLUCIONES.\n"
+        "Indique el producto o módulo, la versión y la pregunta específica que desea resolver."
     )
 
 
@@ -614,6 +746,8 @@ async def process_user_message(
     client,
     config,
     previous_documentary_response: str | None = None,
+    conversation_topic: str | None = None,
+    previous_subject: str | None = None,
 ) -> str:
     started_at = perf_counter()
     if _is_sensitive_secret_request(user_message):
@@ -647,17 +781,29 @@ async def process_user_message(
     if previous_documentary_response and _is_summary_follow_up(user_message):
         return _summarize_previous_documentary_response(previous_documentary_response)
 
+    if not previous_documentary_response and _is_summary_follow_up(user_message):
+        logger.info(
+            "query_completed duration_ms=0 evidence_count=0 source_types=none "
+            "decision_state=resumen_sin_contexto escalated=False"
+        )
+        return (
+            "Todavía no hay una respuesta documental en este hilo para resumir. "
+            "Indica primero el producto, la versión y el procedimiento que deseas consultar."
+        )
+
     direct_response = _direct_response(user_message, config)
     if direct_response:
         logger.info("query_completed duration_ms=0 evidence_count=0 source_types=none decision_state=solicita_contexto escalated=False")
         return direct_response
 
-    if is_underspecified_query(user_message):
+    if is_underspecified_query(user_message) or (
+        conversation_topic and _is_generic_topic_question(user_message)
+    ):
         logger.info(
             "query_completed duration_ms=0 evidence_count=0 source_types=none "
             "decision_state=solicita_contexto escalated=False"
         )
-        return _underspecified_query_response()
+        return _underspecified_query_response(conversation_topic)
 
     if needs_extension_subject_context(user_message):
         logger.info(
@@ -667,12 +813,14 @@ async def process_user_message(
         return _ambiguous_extension_response()
 
     retrieval_message = _enrich_change_request(
-        _resolve_documentary_follow_up(
+        _enrich_classification_request(
+            _resolve_documentary_follow_up(
             user_message,
             previous_documentary_response,
+            previous_subject,
+        )
         )
     )
-
     if (
         getattr(config, "use_context_guard", False)
         and getattr(config, "model_endpoint_configured", True)
@@ -805,6 +953,7 @@ async def process_user_message(
         )
         return format_user_response(decision, config=config)
 
+    evidence = _filter_contextual_version_evidence(retrieval_message, evidence)
     logger.info("Consulta recibida. Evidencias recuperadas: %s", len(evidence))
     fallback_decision = classify_case_by_rules(retrieval_message, evidence)
 

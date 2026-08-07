@@ -231,6 +231,15 @@ Una vez cerrado el checklist anterior, el orden de trabajo es:
 
 Estas fases no deben bloquear el cierre de producción de esta semana.
 
+## Evolución de experiencia de chat (planificada)
+
+El seguimiento de mensajes dentro del mismo chat, los enlaces legibles, las
+acciones iniciales y los comandos se organizan en
+[plan-evolucion-conversacional-libras.md](plan-evolucion-conversacional-libras.md).
+No cambian el alcance documental ni bloquean el checklist actual. El contexto
+será efímero por chat de Teams y se perderá al reiniciar el backend o abrir otro
+chat.
+
 ## Material eliminado o no prioritario
 
 No se mantiene un roadmap alternativo de demo, arquitectura híbrida, Blob Storage ni automatización incremental. Si alguno se vuelve necesario, se documentará como una decisión nueva dentro de este mapa.

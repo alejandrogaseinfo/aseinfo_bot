@@ -143,6 +143,14 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("documentación técnica", response)
         retrieval.assert_not_called()
 
+    async def test_identity_question_does_not_retrieve_or_claim_personal_memory(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("¿cuál es mi nombre?", None, self.config)
+
+        self.assertIn("No puedo confirmar tu nombre", response)
+        self.assertIn("no conserva nombres", response)
+        retrieval.assert_not_called()
+
     async def test_capability_question_is_answered_before_llm_classification(self):
         self.config.use_llm_intent_classifier = True
         self.config.model_endpoint_configured = True
@@ -174,6 +182,30 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("SOLUCIONES", response)
             classify.assert_not_called()
             retrieval.assert_not_called()
+
+    async def test_capability_question_lists_supported_topics_without_retrieval(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("¿Qué te puedo preguntar?", None, self.config)
+
+        self.assertIn("Versiones, actualizaciones y mejoras", response)
+        self.assertIn("Procedimientos y configuraciones", response)
+        retrieval.assert_not_called()
+
+    async def test_source_question_lists_configured_scope_without_retrieval(self):
+        self.config.sharepoint_source_labels = (
+            "ReadME Hotfixes",
+            "Documentos/SOLUCIONES",
+            "Manuales",
+        )
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message(
+                "¿Qué fuentes estás usando para contestar?", None, self.config
+            )
+
+        self.assertIn("ReadME Hotfixes", response)
+        self.assertIn("Documentos/SOLUCIONES", response)
+        self.assertIn("Manuales", response)
+        retrieval.assert_not_called()
 
     async def test_reported_scope_question_never_reaches_llm_or_retrieval(self):
         self.config.use_llm_intent_classifier = True
@@ -615,6 +647,20 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("1.19.1.10", response)
             retrieval.assert_not_called()
 
+    async def test_summary_keeps_dotted_version_together(self):
+        previous_response = (
+            "Para Evolution 1.19.1.10, la documentación indica mejoras de seguridad. "
+            "También incluye cambios en Smartlist.\n\n"
+            "Fuente: Actualización 1.19.1.10.pdf — Azure AI Search"
+        )
+
+        response = await process_user_message(
+            "resume lo anterior", None, self.config,
+            previous_documentary_response=previous_response,
+        )
+
+        self.assertIn("Evolution 1.19.1.10", response)
+
     async def test_documentary_follow_up_carries_previous_version_into_retrieval(self):
         previous_response = (
             "Para Evolution 1.19.1.10, la documentación indica cambios del hotfix.\n\n"
@@ -632,6 +678,59 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
 
         retrieval.assert_called_once()
         self.assertIn("1.19.1.10", retrieval.call_args.args[0])
+
+    async def test_contextual_follow_up_discards_neighboring_version_evidence(self):
+        previous_response = (
+            "Para Evolution 1.19.1.10, la documentación indica cambios del hotfix.\n\n"
+            "Fuente: Readme 1.19.1.10.pdf — Página 1 — Azure AI Search"
+        )
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.10.pdf — Página 1",
+                ubicacion="https://contoso.example/readme-1.19.1.10.pdf",
+                fragmento="Evolution 1.19.1.10 incorpora mejoras.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.19.1.11.pdf — Página 4",
+                ubicacion="https://contoso.example/readme-1.19.1.11.pdf",
+                fragmento="Evolution 1.19.1.11 incorpora cambios.",
+            ),
+        ]
+
+        with patch("handler.retrieve_evidence", return_value=evidence):
+            self.config.retrieval_timeout_seconds = 1
+            response = await process_user_message(
+                "¿Qué cambios trae esa versión?",
+                None,
+                self.config,
+                previous_documentary_response=previous_response,
+            )
+
+        self.assertIn("1.19.1.10", response)
+        self.assertNotIn("1.19.1.11", response)
+
+    async def test_summary_does_not_treat_page_numbers_as_numbered_steps(self):
+        previous_response = (
+            "Para Evolution 1.19.1.10, la documentación indica: Página 1 MEJORAS "
+            "de la versión Evolution 1.19.1.10. Página 4 contiene detalles.\n\n"
+            "Fuente: Actualización 1.19.1.10.pdf — Azure AI Search"
+        )
+        response = await process_user_message(
+            "resume lo anterior", None, self.config,
+            previous_documentary_response=previous_response,
+        )
+
+        self.assertIn("Evolution 1.19.1.10", response)
+        self.assertNotIn("Resumen de la respuesta anterior:\n- 19.1.10", response)
+
+    async def test_summary_without_previous_documentary_response_does_not_retrieve(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message("resume lo anterior", None, self.config)
+
+        self.assertIn("no hay una respuesta documental", response)
+        retrieval.assert_not_called()
 
     async def test_documentary_reference_carries_previous_version_into_retrieval(self):
         previous_response = (
@@ -877,6 +976,66 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Necesito más contexto", response)
         self.assertIn("producto o módulo", response)
         retrieval.assert_not_called()
+
+    async def test_guided_topic_does_not_pollute_documentary_retrieval(self):
+        with patch("handler.retrieve_evidence", return_value=[]) as retrieval:
+            await process_user_message(
+                "¿Qué cambios trae la versión 1.19.1.10?",
+                None,
+                self.config,
+                conversation_topic="consulta de actualización",
+            )
+
+        retrieval.assert_called_once()
+        self.assertEqual(
+            "¿Qué cambios trae la versión 1.19.1.10? (detalle técnico: mejoras modificaciones correcciones)",
+            retrieval.call_args.args[0],
+        )
+
+    async def test_guided_topic_only_shapes_prompt_for_incomplete_question(self):
+        with patch("handler.retrieve_evidence") as retrieval:
+            response = await process_user_message(
+                "¿Cómo se hace?",
+                None,
+                self.config,
+                conversation_topic="consulta de procedimiento",
+            )
+
+        self.assertIn("consultar un procedimiento", response)
+        retrieval.assert_not_called()
+
+    async def test_explicit_question_overrides_guided_topic(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Acciones de personal.pdf — Página 38",
+                ubicacion="https://contoso.example/acciones-personal.pdf",
+                fragmento="Las incapacidades se clasifican en permanentes, temporales, físicas y psíquicas.",
+            )
+        ]
+        with patch("handler.retrieve_evidence", return_value=evidence) as retrieval:
+            self.config.retrieval_timeout_seconds = 1
+            response = await process_user_message(
+                "¿Cómo se clasifican las incapacidades en Evolution?",
+                None,
+                self.config,
+                conversation_topic="consulta de procedimiento",
+            )
+
+        self.assertIn("incapacidades", response)
+        self.assertNotIn("orientación inicial", retrieval.call_args.args[0])
+
+    async def test_incapacity_classification_search_is_biased_to_personnel_manual(self):
+        with patch("handler.retrieve_evidence", return_value=[]) as retrieval:
+            await process_user_message(
+                "¿Cómo se clasifican las incapacidades en Evolution?",
+                None,
+                self.config,
+            )
+
+        query = retrieval.call_args.args[0]
+        self.assertIn("Acciones de personal", query)
+        self.assertIn("permanentes temporales", query)
 
 
 if __name__ == "__main__":

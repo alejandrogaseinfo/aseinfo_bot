@@ -1,4 +1,4 @@
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit, urlunsplit
 
 from models import BotDecision
 
@@ -12,15 +12,60 @@ def _source_label(decision: BotDecision) -> str:
     return "Fuentes documentales"
 
 
-def _source_links(decision: BotDecision) -> list[str]:
-    """Return the unique, user-verifiable document URLs from the evidence."""
-    return list(
-        dict.fromkeys(
-            source.ubicacion
-            for source in decision.fuentes
-            if source.ubicacion.startswith(("https://", "http://"))
+def _source_links(decision: BotDecision, config=None) -> list[tuple[str, str]]:
+    """Return unique document links with a short, evidence-derived label."""
+    links: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for source in decision.fuentes:
+        url = _page_aware_url(
+            source.ubicacion,
+            source.titulo,
+            enabled=getattr(config, "use_pdf_page_links", True),
         )
-    )
+        if not url.startswith(("https://", "http://")) or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        links.append((_document_link_label(source.titulo), url))
+    return links
+
+
+def _page_aware_url(url: str, title: str, *, enabled: bool = True) -> str:
+    """Add the standard PDF page fragment when evidence cites a page."""
+    if not enabled or not url.lower().split("?", 1)[0].endswith(".pdf"):
+        return url
+    marker = " — Página "
+    if marker not in (title or ""):
+        return url
+    _base, page_number = title.rsplit(marker, 1)
+    page_number = page_number.strip()
+    if not page_number.isdigit():
+        return url
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, f"page={page_number}"))
+
+
+def _document_link_label(title: str) -> str:
+    """Build a readable link label without exposing internal paths."""
+    title = (title or "documentación").strip()
+    page = ""
+    page_marker = " — Página "
+    if page_marker in title:
+        title, page_number = title.rsplit(page_marker, 1)
+        page = f" (pág. {page_number.strip()})"
+    for suffix in (" — Documento", " - Documento"):
+        if title.endswith(suffix):
+            title = title[: -len(suffix)].rstrip()
+            break
+    title = title or "documentación"
+    if len(title) > 72:
+        title = f"{title[:69].rstrip()}..."
+    return f"Ver documento: {title}{page}"
+
+
+def _markdown_link(label: str, url: str) -> str:
+    """Render a link while preserving the exact evidence URL as its target."""
+    safe_label = (label or "Abrir enlace").replace("[", "(").replace("]", ")")
+    return f"[{safe_label}]({url})"
 
 
 def _sharepoint_folder_link(source_url: str, folder_ctid: str = "") -> str:
@@ -73,14 +118,25 @@ def format_user_response(decision: BotDecision, config=None) -> str:
         f"{decision.resumen}\n\n"
         f"{source_label}: {' | '.join(source_titles)} — {_source_label(decision)}"
     )
-    source_links = _source_links(decision)
+    source_links = _source_links(decision, config)
     if source_links:
         link_label = "Enlace" if len(source_links) == 1 else "Enlaces"
-        response += f"\n{link_label}: {' | '.join(source_links)}"
+        if getattr(config, "use_friendly_links", True):
+            rendered_links = " | ".join(
+                _markdown_link(label, url) for label, url in source_links
+            )
+        else:
+            rendered_links = " | ".join(url for _label, url in source_links)
+        response += f"\n{link_label}: {rendered_links}"
     folder_links = _related_folder_links(decision, config)
     if folder_links:
         folder_label = (
             "Archivos relacionados" if len(folder_links) == 1 else "Carpetas relacionadas"
         )
+        if getattr(config, "use_friendly_links", True):
+            folder_links = [
+                _markdown_link("Abrir carpeta relacionada", url)
+                for url in folder_links
+            ]
         response += f"\n{folder_label}: {' | '.join(folder_links)}"
     return response

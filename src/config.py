@@ -116,6 +116,19 @@ class Config:
         self.conversation_timeout_seconds = float(
             env.get("CONVERSATION_TIMEOUT_SECONDS", "4")
         )
+        self.use_ephemeral_thread_context = env.get(
+            "USE_EPHEMERAL_THREAD_CONTEXT", "true"
+        ).lower() == "true"
+        self.thread_context_ttl_seconds = float(
+            env.get("THREAD_CONTEXT_TTL_SECONDS", "1800")
+        )
+        self.thread_context_max_conversations = int(
+            env.get("THREAD_CONTEXT_MAX_CONVERSATIONS", "1000")
+        )
+        self.use_friendly_links = env.get("USE_FRIENDLY_LINKS", "true").lower() == "true"
+        self.use_pdf_page_links = env.get("USE_PDF_PAGE_LINKS", "true").lower() == "true"
+        self.use_guided_start = env.get("USE_GUIDED_START", "true").lower() == "true"
+        self.use_slash_commands = env.get("USE_SLASH_COMMANDS", "true").lower() == "true"
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
         self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "libras-docs").strip()
         self.azure_search_api_key = env.get("AZURE_SEARCH_API_KEY", "").strip()

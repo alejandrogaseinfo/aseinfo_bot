@@ -100,6 +100,15 @@ de Internet deben indicar que Libras no navega ni consulta datos en tiempo real.
 Después de cerrar estas pruebas y decidir el tratamiento del contenido sensible,
 la siguiente fase será la integración con ClickUp.
 
+### Evolución de experiencia planificada
+
+Sin alterar el objetivo de cierre del piloto ni el orden de integraciones
+posteriores, el seguimiento dentro del mismo chat, enlaces legibles, acciones
+iniciales y comandos se centralizan en
+[plan-evolucion-conversacional-libras.md](plan-evolucion-conversacional-libras.md).
+Esta fase usa exclusivamente estado efímero del chat de Teams: no utiliza
+Conversations API ni memoria persistente.
+
 ## Alcance documental autorizado
 
 La autorización recibida se basa en este enlace de SharePoint:
