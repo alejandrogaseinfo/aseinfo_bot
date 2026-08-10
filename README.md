@@ -1,6 +1,11 @@
 # Libras
 
-Bot interno de Microsoft Teams para consultar documentación aprobada. Recupera evidencia documental, la clasifica y responde únicamente cuando hay respaldo suficiente.
+Bot interno de Microsoft Teams para consultar documentación aprobada. Recupera
+evidencia documental, la clasifica y responde únicamente cuando hay respaldo
+suficiente.
+
+Libras es el nombre actual del proyecto. El repositorio `aseinfo_bot` contiene
+el backend que se ejecuta en Azure App Service y atiende mensajes de Teams.
 
 ## Estado y alcance
 
@@ -22,6 +27,19 @@ El proyecto ya incluye:
 - clasificación estructurada con fallback por reglas;
 
 El trabajo posterior a producción seguirá este orden: primero ClickUp + GitHub, luego Jira como fuente histórica y finalmente un MCP de solo lectura para `downloads.aseinfo.net`. El mapa y el estado de estas fases están en [docs/planes-posteriores](docs/planes-posteriores/README.md).
+
+## Integración ClickUp en revisión
+
+La integración con ClickUp se planifica como una conexión de solo lectura para
+consultar tareas, hotfixes y releases relacionados con una versión de Evolution.
+ClickUp está revisando la solicitud de allowlist para esta URL de redirección de
+staging:
+
+`https://app-libras-staging.azurewebsites.net/auth/clickup/callback`
+
+La integración no se considera activa hasta que ClickUp apruebe la solicitud.
+Mientras tanto, Libras no consulta ClickUp en producción y responde que la
+fuente todavía no está integrada.
 
 ## Inicio rápido
 
@@ -103,6 +121,9 @@ Escucha en `http://127.0.0.1:3978/api/messages`. El inicio desde Teams requiere 
 Los archivos `env/.env.*` pertenecen a Microsoft 365 Agents Toolkit. En cada máquina se generan o recrean para su propia sesión/tenant; sus archivos `.user` contienen secretos. No copies ni subas claves, tokens, PDFs sincronizados, `.env` ni `env/.env.*`.
 
 El bot puede usar un servicio compatible con la API de OpenAI. Por defecto apunta a OpenAI; si configuras `OPENAI_BASE_URL`, puede apuntar a Ollama local sin modificar la lógica del bot.
+
+Consulta [SECURITY.md](SECURITY.md) para reportar vulnerabilidades o revisar
+las reglas de manejo de secretos y datos sensibles.
 
 ## Azure AI Search y SharePoint
 
