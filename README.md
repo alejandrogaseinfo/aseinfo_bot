@@ -9,13 +9,18 @@ el backend que se ejecuta en Azure App Service y atiende mensajes de Teams.
 
 ## Estado y alcance
 
-La prioridad actual es validar Libras en Microsoft 365 Agents Playground antes
-de solicitar autorización para publicar en Teams. La fuente documental
+Libras ya tiene un backend desplegado en Azure App Service y se valida desde
+Microsoft Teams y Microsoft 365 Agents Playground. La fuente documental
 autorizada son las bibliotecas documentales aprobadas del sitio
 `Soportealcliente`; `SOLUCIONES` se consulta como carpeta dentro de
 `Documentos`. `Teams Wiki Data` queda fuera inicialmente. El contexto consolidado está en
 [docs/contexto-actual.md](docs/contexto-actual.md); no ampliar el alcance ni
 crear roadmaps paralelos sin actualizarlo.
+
+Si estás conociendo el código, empieza por la
+[guía para desarrolladores](docs/guia-para-desarrolladores.md). Explica el flujo
+de una consulta productiva, qué módulos intervienen, cómo levantar el proyecto
+localmente y dónde hacer cambios sin romper la política de evidencia.
 
 El proyecto ya incluye:
 
@@ -46,7 +51,7 @@ fuente todavía no está integrada.
 Requisitos: Git, Python 3.11 y acceso a Microsoft 365 Agents Toolkit/Playground para ejecutar el bot en Teams.
 
 ```bash
-git clone <URL_DEL_REPOSITORIO>
+git clone https://github.com/alejandrogaseinfo/aseinfo_bot.git
 cd Aseinfo_bot
 python3.11 -m venv .venv
 ```
@@ -114,6 +119,14 @@ Escucha en `http://127.0.0.1:3978/api/messages`. El inicio desde Teams requiere 
 - [src/config.py](src/config.py): configuración por entorno.
 - [docs/knowledge-base](docs/knowledge-base): documentos locales de prueba o staging.
 
+## Ruta recomendada para entender el proyecto
+
+1. [Guía para desarrolladores](docs/guia-para-desarrolladores.md): recorrido del código y del flujo productivo.
+2. [Contexto actual](docs/contexto-actual.md): alcance, estado y pendientes reales.
+3. [Arquitectura productiva](docs/arquitectura-produccion.md): Azure, Teams, Search, SharePoint y secretos.
+4. [Pruebas del piloto](docs/plan-pruebas-playground.md): casos funcionales y de seguridad.
+5. [Despliegue productivo](docs/despliegue-produccion.md): operación y validación en Azure.
+
 ## Configuración y secretos
 
 `.env.example` enumera las variables para el modelo, Azure AI Search y SharePoint. Cópialo a `.env` y completa solo los servicios que vayas a usar.
@@ -137,6 +150,7 @@ de secretos desde Key Vault.
 
 ## Documentación del proyecto
 
+- [Guía para desarrolladores](docs/guia-para-desarrolladores.md)
 - [Contexto actual y continuidad](docs/contexto-actual.md)
 - [Foco de producción de esta semana](docs/produccion-semana.md)
 - [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)

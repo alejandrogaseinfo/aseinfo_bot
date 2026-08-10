@@ -68,6 +68,21 @@ class IntentTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_classify_intent_accepts_out_of_scope_route(self):
+        result = classify_intent(
+            "¿Cuál es la edad de Messi?",
+            self._client_with_content(
+                '{"intencion":"fuera_alcance",'
+                '"proposito_conversacional":"none",'
+                '"requiere_contexto":false}'
+            ),
+            "test-model",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual("fuera_alcance", result.name)
+        self.assertFalse(result.requires_context)
+
     def test_classify_intent_rejects_inconsistent_documentary_purpose(self):
         result = classify_intent(
             "¿Qué indica el manual?",

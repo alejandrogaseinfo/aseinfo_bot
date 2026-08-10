@@ -5,18 +5,26 @@
 > Estado de ejecución: P0–P4 implementados y validados localmente. Las fases de
 > experiencia se activan con banderas reversibles.
 
+> Nota de vigencia: este documento define la alternativa activa para el piloto:
+> contexto efímero y acotado. Conversations API está diferida; ver
+> [plan-implementacion-conversations-api.md](plan-implementacion-conversations-api.md).
+
 ## Decisión de alcance
 
 Libras debe seguir los mensajes **solo dentro del mismo chat de Teams**. Al abrir otro chat o reiniciar el backend, el contexto se pierde.
 
-Por ello no se usará Conversations API en esta fase. Esa API crea un objeto duradero y sus elementos no tienen el TTL estándar de 30 días de las Responses; es apropiada para hilos que deben sobrevivir sesiones, dispositivos, reinicios o varios servicios. Teams no informa de forma fiable cuándo el usuario cerró un chat para borrar ese objeto. Se usará estado efímero, identificado por `conversation.id` de Teams y guardado únicamente en la memoria del backend.
+El contexto efímero se identifica por `conversation.id` de Teams y se guarda en
+memoria. Para este piloto es la fuente de contexto activa: resuelve el
+seguimiento de la consulta actual sin retener un transcript completo.
 
 ```text
 chat actual de Teams -> memoria temporal del backend -> hilo actual
 chat nuevo o reinicio -> estado vacío
 ```
 
-Si en el futuro se necesita recuperar un hilo tras un reinicio, se deberá aprobar una política de retención y evaluar Conversations API. Referencia: [Estado de conversación de OpenAI](https://developers.openai.com/api/docs/guides/conversation-state).
+La continuidad durable entre sesiones requiere una decisión posterior, política
+de retención y aprobación operativa antes de activar
+`USE_OPENAI_CONVERSATIONS`. Referencia: [Estado de conversación de OpenAI](https://developers.openai.com/api/docs/guides/conversation-state).
 
 ## Priorización
 
@@ -55,8 +63,8 @@ Se recomienda iniciar por **P1**. P2 puede publicarse antes o junto al piloto de
 
 ### Diseño
 
-1. Crear `conversation_state.py` con un `ChatThreadState` por `conversation.id`. No usar almacenamiento persistente ni Conversations API.
-2. Conservar una ventana acotada de datos estructurados, no el transcript completo: tema, producto/versión explícitos, última respuesta documental apta para resumen y datos necesarios para resolver referencias. Definir máximo de turnos, tamaño y expiración por inactividad en memoria.
+1. Mantener `conversation_state.py` con un `ChatThreadState` por `conversation.id` como fuente de contexto del piloto. No almacenar el historial durable ni activar `conversation_mapping_store.py`.
+2. Conservar una ventana acotada de datos estructurados, no el transcript completo: tema, producto/módulo, versión explícita, tipo de consulta, etiqueta de última fuente y última respuesta documental apta para resumen. Definir máximo de turnos, tamaño y expiración por inactividad en memoria.
 3. En `agent.py`, leer ese estado antes de `process_user_message` y actualizarlo solo después de una respuesta válida. Reinicio o expiración implica hilo vacío y el bot continúa normalmente.
 4. En `handler.py`, aplicar primero las barreras actuales; después resolver referencias con ese estado y finalmente llamar a `retrieve_evidence` para obtener evidencia nueva como hoy.
 5. Mantener la ruta determinista actual para “resume lo anterior”. Para “¿qué cambios trae esa versión?”, reutilizar solamente versión o documento citado del turno anterior y volver a buscar evidencia.

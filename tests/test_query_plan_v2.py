@@ -10,6 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from azure_search import (
     _chunks_for_document,
+    _query_synonym_tokens,
     _v2_score,
     _v2_semantic_coverage_is_anchored,
     retrieve_azure_search_evidence,
@@ -26,6 +27,14 @@ class QueryPlanTests(unittest.TestCase):
         self.assertEqual("modific", concept_key("modifique"))
         self.assertEqual("negativ", concept_key("negativa"))
         self.assertEqual("negativ", concept_key("negativos"))
+
+    def test_legacy_synonyms_keep_document_administration_paraphrases_equivalent(self):
+        first_wording = _query_synonym_tokens({"administran", "documentos"})
+        second_wording = _query_synonym_tokens({"administrar", "documentos"})
+
+        self.assertIn("gestion", first_wording)
+        self.assertIn("gestionar", first_wording)
+        self.assertEqual(first_wording, second_wording)
 
     def test_platform_context_does_not_become_a_required_evidence_anchor(self):
         plan = build_query_plan(
@@ -375,6 +384,61 @@ class V2EvidenceTests(unittest.TestCase):
 
         self.assertEqual(["Acciones de personal.pdf — Página 18"], [source.titulo for source in trace.sources])
         self.assertEqual(("r1",), trace.sources[0].covered_requirements)
+
+
+class LegacyParaphraseRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _config():
+        return SimpleNamespace(
+            retrieval_strategy="legacy",
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            azure_search_use_semantic=False,
+            sharepoint_sources=(("", "drive-manuales"),),
+            sharepoint_source_labels=(),
+        )
+
+    def test_legacy_retrieves_the_same_manual_for_both_document_administration_phrasings(self):
+        record = {
+            "id": "gestion-documentos-p6",
+            "document_id": "gestion-documentos",
+            "title": "Gestion de documentos.pdf — Página 6",
+            "source_url": "https://contoso.example/Gestion%20de%20documentos.pdf",
+            "source_system": "sharepoint",
+            "folder_path": "",
+            "drive_id": "drive-manuales",
+            "document_type": "pdf",
+            "content_tokens": "gestion documentos administrar",
+            "content": (
+                "Gestión de documentos. Seleccione el Módulo Gestión de documentos. "
+                "Seleccione la opción Administrar documentos Gestionados."
+            ),
+        }
+
+        class FakeSearchClient:
+            def __init__(self):
+                self.queries = []
+
+            def search(self, **kwargs):
+                query = str(kwargs.get("search_text") or "").casefold()
+                self.queries.append(query)
+                return [record] if "gestion" in query else []
+
+        fake = FakeSearchClient()
+        with patch("azure_search.SearchClient", return_value=fake):
+            first_sources = retrieve_azure_search_evidence(
+                "¿Cómo se administran los documentos en Evolution?", self._config()
+            )
+            second_sources = retrieve_azure_search_evidence(
+                "¿Cómo se pueden administrar los documentos en Evolution?", self._config()
+            )
+
+        self.assertEqual([record["title"]], [source.titulo for source in first_sources])
+        self.assertEqual([record["title"]], [source.titulo for source in second_sources])
+        self.assertGreaterEqual(sum("gestion" in query for query in fake.queries), 2)
 
 
 if __name__ == "__main__":

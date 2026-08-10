@@ -122,7 +122,15 @@ SCRIPT_REQUEST_PATTERN = re.compile(
 # actually type without requiring an immediate reindex.
 QUERY_SYNONYM_GROUPS = (
     frozenset({"bajar", "bajan", "baje", "descargar", "descarga", "descargue", "descargan"}),
-    frozenset({"gestionar", "gestion", "administrar", "administrado"}),
+    # Keep the common conjugations together.  The legacy retrieval path builds
+    # its focused lexical query from the tokens typed by the operator, so
+    # recognising only the infinitive made "cómo se administran documentos"
+    # behave differently from "cómo se pueden administrar documentos".
+    frozenset({
+        "gestionar", "gestion", "gestiona", "gestionan", "gestione", "gestionando",
+        "administrar", "administrado", "administra", "administran", "administre",
+        "administrando",
+    }),
     frozenset({"ofuscar", "ofuscacion", "ofuscado", "ofuscan"}),
 )
 DELETION_MANIFEST_NAME = ".libras-sharepoint-deletions.json"

@@ -1,5 +1,12 @@
 [
   {
+    "id": "PROC-02A",
+    "category": "procedural",
+    "message": "¿Cómo se administran los documentos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"]
+  },
+  {
     "id": "PROC-01",
     "category": "procedural",
     "message": "Un usuario tiene permisos pero no logra bajar los documentos del módulo de gestión, ¿qué se debe revisar?",

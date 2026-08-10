@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import traceback
+import asyncio
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -26,7 +27,14 @@ from guided_experience import (
     guided_prompt,
     topic_hint,
 )
-from handler import extract_conversation_subject, process_user_message
+from handler import (
+    extract_conversation_metadata,
+    extract_conversation_subject,
+    is_persistable_user_message,
+    process_user_message,
+)
+from conversation_mapping_store import build_conversation_mapping_store, mapping_key
+from openai_conversations import OpenAIConversationAdapter
 
 
 def load_environment() -> None:
@@ -97,10 +105,73 @@ _thread_state = ConversationStateStore(
     ttl_seconds=config.thread_context_ttl_seconds,
     max_conversations=config.thread_context_max_conversations,
 )
+_conversation_mapping_store = build_conversation_mapping_store(config)
+_conversation_adapter = (
+    OpenAIConversationAdapter(
+        client, timeout_seconds=config.conversation_mapping_timeout_seconds
+    )
+    if config.use_openai_conversations and config.openai_conversations_supported
+    else None
+)
 
 
 def _conversation_id(context: TurnContext) -> str:
     return str(getattr(getattr(context.activity, "conversation", None), "id", ""))
+
+
+def _tenant_id(context: TurnContext) -> str:
+    channel_data = getattr(context.activity, "channel_data", None)
+    if isinstance(channel_data, dict):
+        tenant = channel_data.get("tenant")
+        if isinstance(tenant, dict):
+            return str(tenant.get("id") or "")
+    tenant = getattr(channel_data, "tenant", None)
+    return str(getattr(tenant, "id", "") or "")
+
+
+async def _ensure_openai_conversation(context: TurnContext) -> tuple[str, str] | None:
+    if not (_conversation_mapping_store and _conversation_adapter):
+        return None
+    teams_id = _conversation_id(context)
+    if not teams_id:
+        return None
+    key = mapping_key(_tenant_id(context), teams_id)
+    existing = await asyncio.to_thread(_conversation_mapping_store.get, key)
+    if existing:
+        await asyncio.to_thread(_conversation_mapping_store.touch, key)
+        return key, existing.openai_conversation_id
+    created_id = await asyncio.to_thread(_conversation_adapter.create)
+    mapping = await asyncio.to_thread(
+        _conversation_mapping_store.create_if_absent, key, created_id
+    )
+    if mapping.openai_conversation_id != created_id:
+        # Another worker won the race. Do not leak the unused OpenAI object.
+        try:
+            await asyncio.to_thread(_conversation_adapter.delete, created_id)
+        except Exception:
+            traceback.print_exc()
+    return key, mapping.openai_conversation_id
+
+
+async def _delete_openai_conversation(context: TurnContext) -> bool:
+    if not (_conversation_mapping_store and _conversation_adapter):
+        return True
+    teams_id = _conversation_id(context)
+    if not teams_id:
+        return True
+    key = mapping_key(_tenant_id(context), teams_id)
+    mapping = await asyncio.to_thread(_conversation_mapping_store.get, key)
+    if not mapping:
+        return True
+    try:
+        await asyncio.to_thread(
+            _conversation_adapter.delete, mapping.openai_conversation_id
+        )
+        await asyncio.to_thread(_conversation_mapping_store.delete, key)
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def _is_documentary_response(answer: str) -> bool:
@@ -146,6 +217,12 @@ async def on_message(context: TurnContext, _state: TurnState):
     if slash_command:
         command_action, command_remainder = slash_command
         if command_action == "new":
+            if not await _delete_openai_conversation(context):
+                await context.send_activity(
+                    "No pude borrar el contexto remoto todavía. "
+                    "Vuelve a intentar /nuevo antes de continuar."
+                )
+                return
             if config.use_ephemeral_thread_context:
                 _thread_state.clear(conversation_id)
             if config.use_guided_start:
@@ -164,11 +241,39 @@ async def on_message(context: TurnContext, _state: TurnState):
     previous_documentary_response = None
     conversation_topic = None
     previous_subject = None
+    previous_version = None
+    previous_source_label = None
+    openai_conversation_id = None
+    conversation_trace = {}
+    if (
+        config.use_openai_conversations
+        and config.openai_conversations_supported
+        and is_persistable_user_message(user_message)
+    ):
+        try:
+            conversation_info = await _ensure_openai_conversation(context)
+            if conversation_info:
+                _conversation_key, openai_conversation_id = conversation_info
+                if not previous_documentary_response:
+                    previous_documentary_response = await asyncio.to_thread(
+                        _conversation_adapter.last_assistant_text,
+                        openai_conversation_id,
+                    )
+        except Exception:
+            traceback.print_exc()
+            await context.send_activity(
+                "No pude preparar el contexto persistente del chat. "
+                "Intenta nuevamente en unos segundos."
+            )
+            return
     if config.use_ephemeral_thread_context:
         state = _thread_state.get(conversation_id)
-        previous_documentary_response = state.previous_documentary_response
+        if state.previous_documentary_response:
+            previous_documentary_response = state.previous_documentary_response
         conversation_topic = state.topic
         previous_subject = state.subject
+        previous_version = state.version
+        previous_source_label = state.source_label
     answer = await process_user_message(
         user_message,
         client,
@@ -176,13 +281,40 @@ async def on_message(context: TurnContext, _state: TurnState):
         previous_documentary_response=previous_documentary_response,
         conversation_topic=conversation_topic,
         previous_subject=previous_subject,
+        previous_version=previous_version,
+        previous_source_label=previous_source_label,
+        conversation_adapter=_conversation_adapter,
+        openai_conversation_id=openai_conversation_id,
+        conversation_trace=conversation_trace,
     )
-    if config.use_ephemeral_thread_context:
+    if (
+        config.use_openai_conversations
+        and openai_conversation_id
+        and not conversation_trace.get("blocked")
+        and not conversation_trace.get("recorded")
+    ):
+        try:
+            await asyncio.to_thread(
+                _conversation_adapter.append_turn,
+                openai_conversation_id,
+                user_message,
+                answer,
+            )
+        except Exception:
+            traceback.print_exc()
+            await context.send_activity(
+                "La respuesta se generó, pero no pude guardar el contexto del chat. "
+                "Intenta nuevamente antes de continuar."
+            )
+            return
+    if config.use_ephemeral_thread_context and is_persistable_user_message(user_message):
+        metadata = extract_conversation_metadata(user_message, answer)
         _thread_state.record_response(
             conversation_id,
             answer,
             is_documentary=_is_documentary_response(answer),
             subject=extract_conversation_subject(user_message),
+            **metadata,
         )
     await context.send_activity(answer)
 

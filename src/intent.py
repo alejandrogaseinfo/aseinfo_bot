@@ -12,6 +12,7 @@ VALID_INTENTS = {
     "consulta_documental",
     "reporte_error",
     "consulta_ambigua",
+    "fuera_alcance",
 }
 VALID_CONVERSATION_PURPOSES = {
     "none",
@@ -24,7 +25,8 @@ VALID_CONVERSATION_PURPOSES = {
 
 INTENT_PROMPT = """
 Clasifique el mensaje de un usuario de Libras en JSON válido.
-Use solo una intención: saludo, ayuda, consulta_documental, reporte_error o consulta_ambigua.
+Use solo una intención: saludo, ayuda, consulta_documental, reporte_error,
+consulta_ambigua o fuera_alcance.
 Además devuelva proposito_conversacional con uno de estos valores: none, saludo,
 ayuda, capacidad, alcance o aclaracion.
 Marque requiere_contexto=true solo para un reporte de error o una consulta
@@ -38,6 +40,11 @@ Reglas:
 - consulta_documental: pregunta concreta sobre procedimiento, manual, hotfix o actualización.
 - reporte_error: describe un error concreto; requiere_contexto depende de sus detalles.
 - consulta_ambigua: no permite identificar qué se debe buscar.
+- fuera_alcance: pregunta factual, recreativa o general que no busca información
+  sobre la documentación técnica autorizada de Libras. Incluye preguntas sobre
+  celebridades, deportes, política general, animales, recetas, noticias,
+  entretenimiento o cualquier tema externo, aunque la pregunta sea clara.
+  No intente responderla ni enviarla a recuperación documental.
 Use capacidad si pregunta qué puede hacer Libras o cómo puede apoyar, incluso
 con expresiones como "¿cómo me puedes apoyar?".
 Use alcance si pregunta en qué bibliotecas, carpetas, fuentes o documentación
@@ -65,6 +72,8 @@ Ejemplos:
 - "Necesito resolver un problema" => intencion=consulta_ambigua,
   proposito_conversacional=aclaracion, requiere_contexto=true.
 - "¿qué indica el Readme 1.19.1.10?" => intencion=consulta_documental,
+  proposito_conversacional=none.
+- "¿cuál es la edad de Messi?" => intencion=fuera_alcance,
   proposito_conversacional=none.
 No responda la pregunta ni invente detalles. Devuelva únicamente JSON.
 """.strip()

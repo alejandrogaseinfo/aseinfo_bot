@@ -250,12 +250,15 @@ EXPLICIT_PRODUCT_PATTERN = re.compile(
     r"([a-z0-9][a-z0-9._-]*)\b"
 )
 NON_PRODUCT_WORDS = {"o", "un", "una", "el", "la", "los", "las", "este", "esta"}
+SOURCE_LABEL_PATTERN = re.compile(r"(?:^|\n)Fuentes?:\s*([^\n]+)", re.IGNORECASE)
 
 
 def _resolve_documentary_follow_up(
     user_message: str,
     previous_documentary_response: str | None,
     previous_subject: str | None = None,
+    previous_version: str | None = None,
+    previous_source_label: str | None = None,
 ) -> str:
     """Resolve a narrow document follow-up without sending full chat history.
 
@@ -266,17 +269,21 @@ def _resolve_documentary_follow_up(
     original wording for the response shown to the user.
     """
     normalized_message = _normalized_sensitive_text(user_message)
-    if previous_subject and PRONOUN_DOCUMENT_REFERENCE_PATTERN.search(normalized_message):
-        return f"{user_message} (referencia contextual: {previous_subject})"
-    if not previous_documentary_response or not (
+    if PRONOUN_DOCUMENT_REFERENCE_PATTERN.search(normalized_message):
+        reference = previous_subject or previous_source_label
+        if reference:
+            return f"{user_message} (referencia contextual: {reference})"
+    if not (
         VERSION_REFERENCE_PATTERN.search(normalized_message)
         or DOCUMENT_REFERENCE_PATTERN.search(normalized_message)
     ):
         return user_message
-    previous_versions = VERSION_PATTERN.findall(previous_documentary_response)
-    if not previous_versions:
+    version = previous_version
+    if not version and previous_documentary_response:
+        previous_versions = VERSION_PATTERN.findall(previous_documentary_response)
+        version = previous_versions[0] if previous_versions else None
+    if not version:
         return user_message
-    version = previous_versions[0]
     if version in user_message:
         return user_message
     return f"{user_message} (referencia contextual: versión {version})"
@@ -291,6 +298,44 @@ def extract_conversation_subject(user_message: str) -> str | None:
         product = "Evolution" if re.search(r"\bevolution\b", normalized) else ""
         return f"documentos gestionados{f' en {product}' if product else ''}"
     return None
+
+
+def extract_conversation_metadata(user_message: str, answer: str = "") -> dict[str, str]:
+    """Extract bounded labels useful for a same-chat follow-up.
+
+    These labels intentionally omit the message transcript, URLs and document
+    fragments. They exist only in process memory and expire with the chat state.
+    """
+    normalized = _normalized_sensitive_text(user_message)
+    product_match = EXPLICIT_PRODUCT_PATTERN.search(normalized)
+    product = None
+    if product_match and product_match.group(1) not in NON_PRODUCT_WORDS:
+        product = product_match.group(1)
+    elif re.search(r"\bevolution\b", normalized):
+        product = "Evolution"
+
+    versions = VERSION_PATTERN.findall(user_message)
+    if not versions and answer:
+        versions = VERSION_PATTERN.findall(answer)
+    metadata: dict[str, str] = {}
+    if product:
+        metadata["product"] = product
+    if versions:
+        metadata["version"] = versions[0]
+    if re.search(r"\b(?:procedimiento|pasos?|configur|instal|como\s+(?:hacer|realizar))\b", normalized):
+        metadata["query_type"] = "procedimiento"
+    elif re.search(r"\b(?:actualizaci[oó]n|hotfix|release|cambios?|novedades?)\b", normalized):
+        metadata["query_type"] = "actualización"
+    elif re.search(r"\b(?:versi[oó]n|versiones)\b", normalized):
+        metadata["query_type"] = "versión"
+    elif re.search(r"\b(?:error|falla|problema)\b", normalized):
+        metadata["query_type"] = "error"
+
+    source_match = SOURCE_LABEL_PATTERN.search(answer)
+    if source_match:
+        # This is the formatted title shown by Libras, not a document URL.
+        metadata["source_label"] = source_match.group(1).strip()[:240]
+    return metadata
 
 
 def _enrich_change_request(user_message: str) -> str:
@@ -441,6 +486,14 @@ def _restricted_library_response() -> str:
         "No puedo consultar esa biblioteca porque está fuera del alcance autorizado "
         "de Libras. Puedo responder únicamente con documentación técnica de las "
         "bibliotecas aprobadas para el piloto."
+    )
+
+
+def _out_of_scope_response() -> str:
+    """Close non-documentary requests before retrieval or answer generation."""
+    return (
+        "No puedo responder esa consulta porque está fuera del alcance de Libras. "
+        "Solo atiendo preguntas técnicas basadas en la documentación autorizada."
     )
 
 
@@ -673,6 +726,8 @@ def _intent_response(intent: IntentResult, config=None, user_message: str = "") 
         )
     if intent.name == "ayuda":
         return _help_response()
+    if intent.name == "fuera_alcance":
+        return _out_of_scope_response()
     if intent.name == "consulta_ambigua" and intent.requires_context:
         # The intent model can confuse a factual policy question with an
         # underspecified support case (for example, "planillas en El Salvador").
@@ -741,6 +796,16 @@ def _consume_background_task_result(task: asyncio.Task) -> None:
         return
 
 
+def is_persistable_user_message(user_message: str) -> bool:
+    """Avoid creating durable state for preflight-rejected input."""
+    return not (
+        _is_sensitive_secret_request(user_message)
+        or _is_confidential_data_request(user_message)
+        or _requests_restricted_library(user_message)
+        or _attempts_instruction_override(user_message)
+    )
+
+
 async def process_user_message(
     user_message: str,
     client,
@@ -748,9 +813,21 @@ async def process_user_message(
     previous_documentary_response: str | None = None,
     conversation_topic: str | None = None,
     previous_subject: str | None = None,
+    previous_version: str | None = None,
+    previous_source_label: str | None = None,
+    conversation_adapter=None,
+    openai_conversation_id: str | None = None,
+    conversation_trace: dict | None = None,
 ) -> str:
     started_at = perf_counter()
+
+    def mark_trace(*, blocked: bool = False, recorded: bool = False) -> None:
+        if conversation_trace is not None:
+            conversation_trace["blocked"] = blocked
+            conversation_trace["recorded"] = recorded
+
     if _is_sensitive_secret_request(user_message):
+        mark_trace(blocked=True)
         logger.warning(
             "query_completed duration_ms=0 evidence_count=0 source_types=none "
             "decision_state=solicitud_sensible_rechazada escalated=True"
@@ -758,6 +835,7 @@ async def process_user_message(
         return _sensitive_secret_response()
 
     if _is_confidential_data_request(user_message):
+        mark_trace(blocked=True)
         logger.warning(
             "query_completed duration_ms=0 evidence_count=0 source_types=none "
             "decision_state=solicitud_confidencial_rechazada escalated=True"
@@ -765,6 +843,7 @@ async def process_user_message(
         return _confidential_data_response()
 
     if _requests_restricted_library(user_message):
+        mark_trace(blocked=True)
         logger.warning(
             "query_completed duration_ms=0 evidence_count=0 source_types=none "
             "decision_state=biblioteca_fuera_de_alcance_rechazada escalated=False"
@@ -772,6 +851,7 @@ async def process_user_message(
         return _restricted_library_response()
 
     if _attempts_instruction_override(user_message):
+        mark_trace(blocked=True)
         logger.warning(
             "query_completed duration_ms=0 evidence_count=0 source_types=none "
             "decision_state=instruction_override_rejected escalated=True"
@@ -818,6 +898,8 @@ async def process_user_message(
             user_message,
             previous_documentary_response,
             previous_subject,
+            previous_version,
+            previous_source_label,
         )
         )
     )
@@ -836,6 +918,8 @@ async def process_user_message(
                 timeout_seconds=getattr(config, "context_guard_timeout_seconds", 2),
             )
             if not guard_decision.allows_request:
+                if guard_mode == "enforce":
+                    mark_trace(blocked=True)
                 logger.warning(
                     "context_guard decision=%s reason_code=%s confidence=%s mode=%s",
                     guard_decision.decision,
@@ -856,10 +940,12 @@ async def process_user_message(
                 getattr(config, "context_guard_timeout_seconds", 2),
             )
             if guard_mode == "enforce" and failure_policy == "block":
+                mark_trace(blocked=True)
                 return _context_guard_response()
         except Exception:
             logger.exception("Falló ContextGuard; se aplicará su política de fallo configurada.")
             if guard_mode == "enforce" and failure_policy == "block":
+                mark_trace(blocked=True)
                 return _context_guard_response()
 
     intent = None
@@ -876,11 +962,11 @@ async def process_user_message(
             )
             intent_response = _intent_response(intent, config, retrieval_message) if intent else None
             if intent_response:
-                if intent.conversation_purpose in {"capacidad", "alcance"}:
+                if intent.conversation_purpose in {"capacidad", "alcance"} or intent.name == "fuera_alcance":
                     logger.info(
                         "query_completed duration_ms=%s evidence_count=0 source_types=none decision_state=intent_%s escalated=False",
                         round((perf_counter() - started_at) * 1000),
-                        intent.conversation_purpose,
+                        intent.name if intent.name == "fuera_alcance" else intent.conversation_purpose,
                     )
                     return intent_response
                 try:
@@ -890,9 +976,12 @@ async def process_user_message(
                         intent,
                         client=client,
                         model=config.openai_intent_model_name,
-                        timeout_seconds=config.conversation_timeout_seconds,
+                        timeout_seconds=getattr(config, "conversation_timeout_seconds", 4),
+                        conversation_adapter=conversation_adapter,
+                        openai_conversation_id=openai_conversation_id,
                     )
                     if conversational_response:
+                        mark_trace(recorded=bool(conversation_adapter and openai_conversation_id))
                         logger.info(
                             "query_completed duration_ms=%s evidence_count=0 source_types=none decision_state=conversation_%s escalated=False",
                             round((perf_counter() - started_at) * 1000),

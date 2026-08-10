@@ -13,15 +13,20 @@ from time import monotonic
 
 
 MAX_TEXT_LENGTH = 12_000
+MAX_METADATA_LENGTH = 240
 
 
 @dataclass
 class ChatThreadState:
-    """Small amount of context needed by the existing follow-up resolver."""
+    """Small structured context for a single active chat, never a transcript."""
 
     previous_documentary_response: str | None = None
     topic: str | None = None
     subject: str | None = None
+    product: str | None = None
+    version: str | None = None
+    query_type: str | None = None
+    source_label: str | None = None
 
 
 class ConversationStateStore:
@@ -65,6 +70,10 @@ class ConversationStateStore:
         *,
         is_documentary: bool,
         subject: str | None = None,
+        product: str | None = None,
+        version: str | None = None,
+        query_type: str | None = None,
+        source_label: str | None = None,
     ) -> None:
         """Record bounded context without clearing it on conversational turns."""
         if not conversation_id:
@@ -74,8 +83,22 @@ class ConversationStateStore:
         state = self._entries.get(conversation_id, (now, ChatThreadState()))[1]
         if is_documentary:
             state.previous_documentary_response = (answer or "")[:MAX_TEXT_LENGTH] or None
+            if source_label:
+                state.source_label = source_label[:MAX_METADATA_LENGTH]
         if subject:
-            state.subject = subject[:240]
+            state.subject = subject[:MAX_METADATA_LENGTH]
+        if product:
+            normalized_product = product[:MAX_METADATA_LENGTH]
+            if state.product and state.product.casefold() != normalized_product.casefold():
+                # A named product starts a separate subject inside the same chat;
+                # do not leak a version or document label from the old product.
+                state.version = None
+                state.source_label = None
+            state.product = normalized_product
+        if version:
+            state.version = version[:MAX_METADATA_LENGTH]
+        if query_type:
+            state.query_type = query_type[:MAX_METADATA_LENGTH]
         self._entries[conversation_id] = (now, state)
         self._entries.move_to_end(conversation_id)
         while len(self._entries) > self.max_conversations:

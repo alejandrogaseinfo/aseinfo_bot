@@ -37,6 +37,39 @@ de promocionarlo para usuarios de Aseinfo.
   reinstalar el paquete; el ZIP Teams v0.1.1 solo sería necesario si cambia el
   manifiesto o los IDs de la aplicación.
 
+## Actualización de producción — 2026-08-09
+
+- Se publicó el backend actualizado en `app-libras-prod` mediante ZipDeploy.
+  Azure reportó `RuntimeSuccessful`, sin instancias fallidas. Identificador:
+  `6e10b0c2-f96c-4019-b574-5c9cec0ded92`.
+- La versión incluye el enrutamiento general `fuera_alcance`, que rechaza
+  consultas externas antes de recuperar documentos o generar respuestas
+  conversacionales, además de las correcciones de recuperación incorporadas
+  en la versión local.
+- La suite automatizada queda en **269 pruebas, OK**.
+- Después del despliegue, `/healthz` y `/readyz` respondieron HTTP 200; el
+  entorno reporta `production`, Azure AI Search configurado y sin dependencias
+  faltantes. No se modificó el manifiesto ni se activó Conversations API.
+- `LIBRAS_RUNTIME_REVISION` quedó configurada como `0.1.3`. El campo de
+  revisión expuesto por el proceso continúa mostrando un valor anterior y
+  requiere una revisión posterior de la configuración de entorno persistente;
+  esto no impidió el arranque ni la validación de readiness.
+
+## Decisión sobre contexto durable — 2026-08-08
+
+- Conversations API queda **diferida** hasta revisión con la jefatura y hasta
+  que el administrador de Azure esté disponible.
+- Para el piloto se mantiene el contexto efímero y acotado del mismo chat de
+  Teams. Conserva únicamente producto/módulo, versión, tipo de consulta,
+  etiqueta de la última fuente y la última respuesta documental apta para
+  resumen; es suficiente para referencias como “esa versión” y “lo anterior”.
+- La aplicación no almacenará el transcript completo ni requerirá Azure Table
+  Storage para esta fase. La bandera `USE_OPENAI_CONVERSATIONS` permanece en
+  `false`.
+- El análisis, las condiciones de retención y los criterios para reabrir la
+  decisión se conservan en
+  [plan-implementacion-conversations-api.md](plan-implementacion-conversations-api.md).
+
 ## Actualización de estado — 2026-07-31
 
 - La aplicación ya está instalada y responde desde Microsoft Teams. También se
@@ -106,8 +139,10 @@ Sin alterar el objetivo de cierre del piloto ni el orden de integraciones
 posteriores, el seguimiento dentro del mismo chat, enlaces legibles, acciones
 iniciales y comandos se centralizan en
 [plan-evolucion-conversacional-libras.md](plan-evolucion-conversacional-libras.md).
-Esta fase usa exclusivamente estado efímero del chat de Teams: no utiliza
-Conversations API ni memoria persistente.
+Se mantiene el estado efímero y acotado del mismo chat. Conversations API se
+reconsiderará únicamente si se aprueba una necesidad concreta de continuidad
+del historial completo entre sesiones o reinicios, conforme a
+[plan-implementacion-conversations-api.md](plan-implementacion-conversations-api.md).
 
 ## Alcance documental autorizado
 

@@ -25,6 +25,7 @@ devTools/*.log
 
 # Local deployment artifacts, logs, and manual test output.
 /tmp/
+/output/
 
 # SharePoint sync cache. It can contain internal documents and is regenerated
 # by the ingestion process; never version local source copies or manifests.

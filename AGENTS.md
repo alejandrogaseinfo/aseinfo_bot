@@ -8,6 +8,21 @@
 Microsoft Teams -> Libras en Azure -> Azure AI Search <- SharePoint / OneDrive
 ```
 
+## Incorporación de un nuevo desarrollador
+
+Para entender el código antes de modificarlo, leer en este orden:
+
+1. `README.md`.
+2. `docs/guia-para-desarrolladores.md`.
+3. `docs/contexto-actual.md`.
+4. `docs/arquitectura-produccion.md`.
+
+El repositorio permite revisar y probar el código sin credenciales. Para
+conectarse a Teams, Azure, SharePoint o al índice productivo se necesitan los
+permisos y archivos de entorno correspondientes; esos valores no forman parte
+del repositorio. No inventar configuraciones productivas ni copiar secretos al
+crear un `.env` local.
+
 El objetivo de producción es que personas autorizadas de la organización puedan consultar, desde Teams, documentación ubicada en una biblioteca o carpeta aprobada de SharePoint/OneDrive.
 
 ## Mapa rector vigente

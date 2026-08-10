@@ -1,5 +1,11 @@
 [
   {
+    "id": "RAG-01A",
+    "message": "¿Cómo se administran los documentos en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"]
+  },
+  {
     "id": "RAG-01",
     "message": "¿Cómo se pueden administrar documentos en Evolution?",
     "expected": "evidence",

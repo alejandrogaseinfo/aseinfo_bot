@@ -679,6 +679,17 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         retrieval.assert_called_once()
         self.assertIn("1.19.1.10", retrieval.call_args.args[0])
 
+    async def test_documentary_follow_up_uses_structured_version_without_answer_text(self):
+        with patch("handler.retrieve_evidence", return_value=[]) as retrieval:
+            await process_user_message(
+                "¿Qué modificaciones trae esa versión?",
+                None,
+                self.config,
+                previous_version="1.19.1.10",
+            )
+
+        self.assertIn("1.19.1.10", retrieval.call_args.args[0])
+
     async def test_contextual_follow_up_discards_neighboring_version_evidence(self):
         previous_response = (
             "Para Evolution 1.19.1.10, la documentación indica cambios del hotfix.\n\n"
@@ -927,6 +938,24 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No tengo evidencia", response)
         self.assertIn("documentación técnica autorizada", response)
         retrieval.assert_not_called()
+
+    async def test_out_of_scope_intent_is_rejected_before_retrieval_or_generation(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        self.config.intent_timeout_seconds = 0.2
+        with patch(
+            "handler.classify_intent",
+            return_value=IntentResult(name="fuera_alcance", requires_context=False),
+        ), patch("handler.retrieve_evidence") as retrieval, patch(
+            "handler.generate_conversational_response"
+        ) as generate:
+            response = await process_user_message(
+                "¿Cuál es la edad de Messi?", None, self.config
+            )
+
+        self.assertIn("fuera del alcance de Libras", response)
+        retrieval.assert_not_called()
+        generate.assert_not_called()
 
     async def test_specific_error_symptom_reaches_retrieval_before_requesting_context(self):
         self.config.use_llm_intent_classifier = True

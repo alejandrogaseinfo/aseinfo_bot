@@ -25,8 +25,21 @@ def generate_conversational_response(
     intent: IntentResult,
     client,
     model: str,
+    conversation_adapter=None,
+    openai_conversation_id: str | None = None,
 ) -> str | None:
     """Generate a safe conversational response without documentary claims."""
+    if conversation_adapter and openai_conversation_id:
+        return conversation_adapter.respond(
+            openai_conversation_id,
+            user_message,
+            instructions=(
+                f"{CONVERSATION_PROMPT}\n\n"
+                f"Intención detectada: {intent.name}. "
+                f"Requiere contexto: {intent.requires_context}."
+            ),
+            model=model,
+        )
     response = client.chat.completions.create(
         model=model,
         temperature=0.3,

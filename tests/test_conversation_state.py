@@ -52,6 +52,37 @@ class ConversationStateTests(unittest.TestCase):
         self.assertEqual("consulta de versión", store.get("chat-1").topic)
         self.assertIsNone(store.get("chat-2").topic)
 
+    def test_keeps_only_structured_context_for_the_active_chat(self):
+        store = ConversationStateStore(ttl_seconds=60, max_conversations=10)
+        store.record_response(
+            "chat-1",
+            "Respuesta documental\n\nFuente: Readme 1.19.1.10.pdf",
+            is_documentary=True,
+            product="Evolution",
+            version="1.19.1.10",
+            query_type="actualización",
+            source_label="Readme 1.19.1.10.pdf — Azure AI Search",
+        )
+
+        state = store.get("chat-1")
+        self.assertEqual("Evolution", state.product)
+        self.assertEqual("1.19.1.10", state.version)
+        self.assertEqual("actualización", state.query_type)
+        self.assertEqual("Readme 1.19.1.10.pdf — Azure AI Search", state.source_label)
+
+    def test_named_new_product_drops_old_version_and_source(self):
+        store = ConversationStateStore(ttl_seconds=60, max_conversations=10)
+        store.record_response(
+            "chat-1", "respuesta", is_documentary=True,
+            product="Evolution", version="1.19.1.10", source_label="Readme anterior",
+        )
+        store.record_response("chat-1", "respuesta", is_documentary=False, product="OtroProducto")
+
+        state = store.get("chat-1")
+        self.assertEqual("OtroProducto", state.product)
+        self.assertIsNone(state.version)
+        self.assertIsNone(state.source_label)
+
 
 if __name__ == "__main__":
     unittest.main()

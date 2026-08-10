@@ -129,6 +129,21 @@ class Config:
         self.use_pdf_page_links = env.get("USE_PDF_PAGE_LINKS", "true").lower() == "true"
         self.use_guided_start = env.get("USE_GUIDED_START", "true").lower() == "true"
         self.use_slash_commands = env.get("USE_SLASH_COMMANDS", "true").lower() == "true"
+        self.use_openai_conversations = env.get(
+            "USE_OPENAI_CONVERSATIONS", "false"
+        ).lower() == "true"
+        self.conversation_mapping_table = env.get(
+            "CONVERSATION_MAPPING_TABLE", "librasconversationmap"
+        ).strip()
+        self.azure_storage_table_url = env.get(
+            "AZURE_STORAGE_TABLE_URL", ""
+        ).strip().rstrip("/")
+        self.azure_storage_connection_string = env.get(
+            "AZURE_STORAGE_CONNECTION_STRING", ""
+        ).strip()
+        self.conversation_mapping_timeout_seconds = float(
+            env.get("CONVERSATION_MAPPING_TIMEOUT_SECONDS", "5")
+        )
         self.azure_search_endpoint = env.get("AZURE_SEARCH_ENDPOINT", "").rstrip("/")
         self.azure_search_index_name = env.get("AZURE_SEARCH_INDEX_NAME", "libras-docs").strip()
         self.azure_search_api_key = env.get("AZURE_SEARCH_API_KEY", "").strip()
@@ -208,6 +223,11 @@ class Config:
     def resolved_openai_base_url(self) -> str:
         """Use the official endpoint when no compatible provider is configured."""
         return self.openai_base_url or OPENAI_OFFICIAL_BASE_URL
+
+    @property
+    def openai_conversations_supported(self) -> bool:
+        """Conversations requires the official OpenAI API endpoint."""
+        return self.resolved_openai_base_url.rstrip("/") == OPENAI_OFFICIAL_BASE_URL
 
     @property
     def sharepoint_configured(self) -> bool:

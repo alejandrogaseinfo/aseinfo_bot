@@ -224,6 +224,8 @@ evidencia.
 
 | Fecha | Cambio o evidencia | Resultado |
 |---|---|---|
+| 2026-08-09 | Se añadió una ruta general `fuera_alcance` al clasificador de intención. | Las preguntas externas a la documentación técnica autorizada se rechazan antes de recuperación y generación; la regresión de "¿cuál es la edad de Messi?" confirma cero llamadas al buscador y al generador. La clasificación conserva las rutas documentales y la suite específica pasa. |
+| 2026-08-09 | Se reprodujo una inconsistencia entre las paráfrasis "cómo se administran los documentos" y "cómo se pueden administrar documentos". | La ruta heredada solo expandía el infinitivo `administrar`, no la conjugación `administran`; se ampliaron las variantes genéricas de administrar/gestionar, se añadieron ambas formulaciones a los corpus de regresión y una prueba de recuperación confirma que las dos recuperan `Gestion de documentos.pdf`. La suite completa quedó en 267 pruebas exitosas. |
 | 2026-08-03 | Se creó este plan y se reprodujo localmente el caso SEC-01. | La consulta técnica sobre contratos activa la regla de confidencialidad; se inicia su corrección con prueba de regresión. |
 | 2026-08-03 | Se corrigió SEC-01 y se añadió el rechazo determinista de SEC-02. | La consulta técnica llega a recuperación; la inyección explícita se rechaza antes del modelo y de Azure AI Search. |
 | 2026-08-03 | Se añadió `src/index_inventory.py`. | Pendiente ejecutar contra el índice productivo con la identidad autorizada; el comando es de solo lectura y no reconstruye ni elimina registros. |
