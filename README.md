@@ -124,8 +124,9 @@ Escucha en `http://127.0.0.1:3978/api/messages`. El inicio desde Teams requiere 
 1. [Guía para desarrolladores](docs/guia-para-desarrolladores.md): recorrido del código y del flujo productivo.
 2. [Contexto actual](docs/contexto-actual.md): alcance, estado y pendientes reales.
 3. [Arquitectura productiva](docs/arquitectura-produccion.md): Azure, Teams, Search, SharePoint y secretos.
-4. [Pruebas del piloto](docs/plan-pruebas-playground.md): casos funcionales y de seguridad.
-5. [Despliegue productivo](docs/despliegue-produccion.md): operación y validación en Azure.
+4. [Guía breve de Azure](docs/guia-azure-para-desarrolladores.md): recursos, identidades y revisión del entorno.
+5. [Pruebas del piloto](docs/plan-pruebas-playground.md): casos funcionales y de seguridad.
+6. [Despliegue productivo](docs/despliegue-produccion.md): operación y validación en Azure.
 
 ## Configuración y secretos
 
@@ -151,6 +152,7 @@ de secretos desde Key Vault.
 ## Documentación del proyecto
 
 - [Guía para desarrolladores](docs/guia-para-desarrolladores.md)
+- [Guía breve de Azure](docs/guia-azure-para-desarrolladores.md)
 - [Contexto actual y continuidad](docs/contexto-actual.md)
 - [Foco de producción de esta semana](docs/produccion-semana.md)
 - [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)
