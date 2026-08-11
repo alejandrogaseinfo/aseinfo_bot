@@ -2271,5 +2271,173 @@ class DocumentQuestionTests(unittest.TestCase):
         self.assertNotIn("Azure AI Search", response)
 
 
+class LegacyDiagnosticRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _config():
+        return SimpleNamespace(
+            retrieval_strategy="legacy",
+            azure_search_configured=True,
+            azure_search_endpoint="https://search.example",
+            azure_search_index_name="libras-docs",
+            azure_search_api_key="not-a-real-key",
+            azure_search_use_entra_id=False,
+            azure_search_use_semantic=False,
+            sharepoint_sources=(("", "drive-manuales"),),
+            sharepoint_source_labels=(),
+        )
+
+    @staticmethod
+    def _records():
+        return [
+            {
+                "id": "readme-12413",
+                "title": "Readme 1.24.1.3.pdf — Página 2",
+                "source_url": "https://contoso.example/readme-12413.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Evolution 1.24.1.3 actualiza la biblioteca jQuery a 3.7.2.",
+                "content_tokens": "evolution 1.24.1.3 actualiza biblioteca jquery",
+            },
+            {
+                "id": "manual-ira",
+                "title": "Manual de Relación DB V1.2.docx — Documento",
+                "source_url": "https://contoso.example/manual-db.docx",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": (
+                    "Flujos. wfl.ira_instancias_rutas_aut almacena la información "
+                    "de los flujos. Campos de relación: ira_codrau, ira_codigo_entidad."
+                ),
+                "content_tokens": "flujos wfl ira instancias rutas aut almacena informacion flujos campos relacion ira codrau ira codigo entidad",
+            },
+        ]
+
+    def test_structural_version_query_keeps_direct_technical_manual_as_unconfirmed(self):
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return self.records
+
+        FakeSearchClient.records = self._records()
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Cuál es la estructura de la tabla IRA en versión 1.24.1.3?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertEqual(["Manual de Relación DB V1.2.docx — Documento"], [source.titulo for source in trace.sources])
+        self.assertFalse(trace.sources[0].version_confirmed)
+        self.assertEqual("version_no_confirmada", trace.sources[0].fallback_reason)
+        self.assertGreaterEqual(trace.candidate_count, 1)
+        self.assertGreaterEqual(trace.rejected_reasons.get("version_fallback", 0), 1)
+
+    def test_release_version_query_remains_strict(self):
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return LegacyDiagnosticRegressionTests._records()
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            sources = retrieve_azure_search_evidence(
+                "¿Qué nuevos requisitos de software necesita Evolution 1.24.1.3?",
+                self._config(),
+            )
+
+        self.assertEqual(["Readme 1.24.1.3.pdf — Página 2"], [source.titulo for source in sources])
+
+    def test_incidental_technical_acronym_does_not_escape_version_filter(self):
+        record = self._records()[0]
+        record["content"] = "Evolution 1.24.1.3 incluye la incidencia IRA en el listado."
+        record["content_tokens"] = "evolution 1.24.1.3 incluye incidencia ira listado"
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return [record]
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Cuál es la estructura de la tabla IRA en versión 1.24.1.3?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertEqual([], trace.sources)
+
+    def test_jquery_excerpt_excludes_unrelated_leading_section(self):
+        excerpt = _excerpt_around_query(
+            "Actualización de Crystal Reports Runtime. "
+            "La mejora 1.24.1.2 actualiza la biblioteca jQuery a la versión 3.7.2, "
+            "reemplazando la versión anterior 1.12.4.",
+            "dime en que version se utilizó el jquery",
+        )
+
+        self.assertIn("jQuery", excerpt)
+        self.assertIn("3.7.2", excerpt)
+        self.assertIn("1.12.4", excerpt)
+        self.assertNotIn("Crystal Reports", excerpt)
+
+    def test_jquery_version_lookup_rejects_incidental_jquery_row(self):
+        records = [
+            {
+                "id": "readme-bad",
+                "title": "Readme 1.24.1.5.pdf — Página 5",
+                "source_url": "https://contoso.example/readme-bad.pdf",
+                "source_system": "sharepoint",
+                "drive_id": "drive-manuales",
+                "content": (
+                    "Nuevos requisitos de software. Actualización de Crystal Reports Runtime. "
+                    "Se actualizó la versión de Crystal Reports. Error de Jquery en encuestas."
+                ),
+                "content_tokens": "nuevos requisitos software actualizacion crystal reports runtime version crystal reports error jquery encuestas",
+            },
+            {
+                "id": "readme-good",
+                "title": "Readme 1.24.1.2.pdf — Página 5",
+                "source_url": "https://contoso.example/readme-good.pdf",
+                "source_system": "sharepoint",
+                "drive_id": "drive-manuales",
+                "content": (
+                    "La mejora actualiza la biblioteca jQuery a la versión 3.7.2, "
+                    "reemplazando la versión anterior 1.12.4."
+                ),
+                "content_tokens": "mejora actualiza biblioteca jquery version 3.7.2 reemplazando version anterior 1.12.4",
+            },
+        ]
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            sources = retrieve_azure_search_evidence(
+                "dime en que version se utilizó el jquery", self._config()
+            )
+
+        self.assertEqual(["Readme 1.24.1.2.pdf — Página 5"], [source.titulo for source in sources])
+        self.assertIn("3.7.2", sources[0].fragmento)
+        self.assertIn("1.12.4", sources[0].fragmento)
+        self.assertNotIn("Crystal Reports", sources[0].fragmento)
+
+    def test_version_warning_is_visible_for_unconfirmed_technical_fallback(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Manual DB — Documento",
+            ubicacion="https://contoso.example/manual.docx",
+            fragmento="La tabla IRA almacena las rutas de autorización.",
+            version_confirmed=False,
+        )
+        response = format_user_response(
+            BotDecision(
+                estado="resuelto",
+                confianza="media",
+                resumen="Según la documentación, la tabla almacena las rutas.",
+                fuentes=[source],
+            )
+        )
+
+        self.assertIn("no confirma explícitamente", response)
+
+
 if __name__ == "__main__":
     unittest.main()

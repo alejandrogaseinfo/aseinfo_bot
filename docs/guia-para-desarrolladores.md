@@ -147,6 +147,24 @@ Para una ejecución local sin Azure AI Search, conserva
 `REQUIRE_AZURE_SEARCH=false` y usa el índice Markdown de respaldo. Esa ruta
 sirve para desarrollar y probar; no representa la configuración productiva.
 
+## Diagnosticar una búsqueda de Azure AI Search
+
+Para ver la evidencia exacta que Libras entregaría al resto del flujo, ejecuta
+localmente la utilidad de solo lectura con una identidad que tenga acceso al
+índice. No es un comando disponible en Teams y no escribe en Azure:
+
+```powershell
+python src/debug_retrieval.py --question "dime en que version se utilizó el jquery"
+```
+
+La salida JSON separa `candidatos_crudos_de_azure` de
+`evidencia_que_recibe_el_bot`. Incluye documento, enlace, fragmento y puntaje
+de los candidatos de Azure, junto con los descartes de Libras. Así se puede
+distinguir entre “Azure devolvió un candidato no pertinente” y “Libras lo
+descartó por versión, procedencia o falta de evidencia directa”.
+Ejecutarlo solo en una consola autorizada: el fragmento documental se imprime
+en pantalla para facilitar la revisión.
+
 ## Cómo leer y modificar el proyecto
 
 Una modificación de comportamiento normalmente sigue este orden:

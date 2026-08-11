@@ -374,10 +374,26 @@ def _sharepoint_parent_context(source_url: str, folder_path: str = "") -> str:
 def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
     """Return the most relevant part of a chunk instead of its first characters."""
     compact = " ".join(text.split())
-    if len(compact) <= limit and not re.search(r"\bPaso\s+\d+\b", compact):
-        return compact
-
     query_tokens = set(tokenize(query))
+    # Short chunks can still contain two unrelated headings. Keep the old
+    # whole-chunk behaviour for ordinary prose, but force sentence selection
+    # when the question has a distinctive technical anchor (jquery, a table or
+    # procedure identifier, etc.).
+    generic_excerpt_tokens = {
+        "version", "actualizacion", "mejora", "documentacion", "estructura",
+        "tabla", "campo", "campos", "columna", "relacion", "informacion",
+        "utiliza", "utilizo", "utilizan", "utilizar",
+    }
+    distinctive_tokens = {
+        token for token in query_tokens
+        if len(token) >= 4 and token not in generic_excerpt_tokens
+    }
+    if (
+        len(compact) <= limit
+        and not re.search(r"\bPaso\s+\d+\b", compact)
+        and not distinctive_tokens
+    ):
+        return compact
     if not query_tokens:
         return _clean_text(compact, limit)
 
@@ -397,14 +413,39 @@ def _excerpt_around_query(text: str, query: str, limit: int = 1_000) -> str:
     calculation_question = bool(query_tokens.intersection(calculation_terms))
     scores = []
     for sentence in sentences:
-        score = len(query_tokens.intersection(tokenize(sentence)))
         sentence_tokens = set(tokenize(sentence))
+        score = len(query_tokens.intersection(sentence_tokens))
+        # Specific technical anchors must outweigh generic words such as
+        # ``version``. This prevents a Crystal Reports heading from winning
+        # over the later sentence that actually mentions jQuery.
+        score += len(distinctive_tokens.intersection(sentence_tokens)) * 6
         if calculation_question and sentence_tokens.intersection({"formula", "ejemplo"}):
             score += 5
         scores.append(score)
     best_index = max(range(len(sentences)), key=scores.__getitem__)
     if scores[best_index] == 0:
         return _clean_text(compact, limit)
+
+    # When a distinctive technical anchor is present, generic-only sentences
+    # (for example a Crystal Reports paragraph matching only ``version``) are
+    # not evidence for the requested topic. Keep the anchor sentence and, at
+    # most, its immediate neighbour when it contributes additional context.
+    anchor_indexes = [
+        index
+        for index, sentence in enumerate(sentences)
+        if any(
+            (
+                _token_matches_query_concept(term, set(tokenize(sentence)))
+                or term.lstrip("j") in set(tokenize(sentence))
+            )
+            for term in distinctive_tokens
+        )
+    ]
+    if distinctive_tokens and anchor_indexes:
+        focused_indexes = set(anchor_indexes)
+        sentences = [sentences[index] for index in sorted(focused_indexes)]
+        scores = [scores[index] for index in sorted(focused_indexes)]
+        best_index = max(range(len(sentences)), key=scores.__getitem__)
 
     # A policy question can require two distant facts on the same page, for
     # example a benefit amount and its tax exemption. Keep the strongest
@@ -490,6 +531,122 @@ def _record_matches_requested_version(record: dict, versions: tuple[str, ...]) -
     ).casefold()
     found_versions = {match.group(1).casefold() for match in _VERSION_PATTERN.finditer(searchable_text)}
     return any(version in found_versions for version in versions)
+
+
+_STRUCTURAL_QUERY_TERMS = {
+    "tabla", "tablas", "estructura", "estructuras", "campo", "campos",
+    "columna", "columnas", "relacion", "relaciones", "script", "procedimiento",
+}
+_STRICT_VERSION_QUERY_TERMS = {
+    "readme", "actualizacion", "actualizaciones", "release", "hotfix", "requisitos",
+}
+
+
+def _is_structural_version_query(user_message: str) -> bool:
+    """Return whether a version is contextual to a technical lookup."""
+    tokens = set(tokenize(user_message))
+    return bool(tokens.intersection(_STRUCTURAL_QUERY_TERMS)) and not bool(
+        tokens.intersection(_STRICT_VERSION_QUERY_TERMS)
+    )
+
+
+def _technical_anchor_tokens(user_message: str) -> set[str]:
+    """Extract non-generic technical anchors used to keep direct evidence."""
+    generic = GENERIC_QUERY_TOKENS | _STRUCTURAL_QUERY_TERMS | {
+        "version", "versions", "evolution", "dime", "cual", "cuales",
+        "utiliza", "utilizo", "usado", "usada", "indica", "necesito",
+    }
+    return {
+        token for token in tokenize(user_message)
+        if len(token) >= 3 and token not in generic and not token.isdigit()
+    }
+
+
+def _record_matches_technical_anchor(record: dict, user_message: str) -> bool:
+    anchors = _technical_anchor_tokens(user_message)
+    if not anchors:
+        return False
+    record_text = (
+        f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
+        f"{record.get(CONTENT_FIELD, '')} {record.get('content_tokens', '')}"
+    )
+    # Compound identifiers are the strongest signal in structural questions.
+    # Do not let a generic Readme page match merely because it contains words
+    # such as "estructura" or "tabla"; the identifier itself must be present.
+    compound_ids = re.findall(r"(?<![\w])([A-Za-z][\w]*(?:_[\w]+)+)(?![\w])", user_message or "")
+    if compound_ids:
+        compact_record = re.sub(r"[^a-z0-9]", "", record_text.casefold())
+        for identifier in compound_ids:
+            compact_identifier = re.sub(r"[^a-z0-9]", "", identifier.casefold())
+            if compact_identifier in compact_record:
+                return True
+        return False
+    record_tokens = tokenize(record_text)
+    technical_context = {
+        "tabla", "tablas", "campo", "campos", "columna", "columnas",
+        "relacion", "relaciones", "estructura", "almacena", "almacenan",
+        "procedimiento", "script", "flujo", "flujos", "ruta", "rutas",
+    }
+    for index, record_token in enumerate(record_tokens):
+        if not any(_token_matches_query_concept(anchor, {record_token}) for anchor in anchors):
+            continue
+        window = set(record_tokens[max(0, index - 24) : index + 25])
+        if window.intersection(technical_context):
+            return True
+    return False
+
+
+def _question_without_versions(user_message: str) -> str:
+    without_version = re.sub(
+        r"\bversi[oó]n\s*(?:\d+(?:\.\d+){2,})?\b", " ", user_message or "", flags=re.IGNORECASE
+    )
+    return _VERSION_PATTERN.sub(" ", without_version)
+
+
+def _technical_anchor_query(user_message: str) -> str:
+    return " ".join(sorted(_technical_anchor_tokens(user_message)))
+
+
+def _is_anchor_version_lookup(user_message: str) -> bool:
+    tokens = set(tokenize(user_message))
+    if not tokens.intersection({"version", "versiones"}):
+        return False
+    return bool(_technical_anchor_tokens(user_message))
+
+
+def _record_answers_anchor_version(record: dict, user_message: str) -> bool:
+    anchors = _technical_anchor_tokens(user_message)
+    if not anchors:
+        return True
+    content = str(record.get(CONTENT_FIELD) or "")
+    units = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ_]+|\d+(?:\.\d+)+|\d+", content)
+    if not units:
+        return False
+    unit_tokens = [set(tokenize(unit)) for unit in units]
+    version_like: set[int] = set()
+    for index, unit in enumerate(units):
+        normalized = unit.casefold()
+        if re.fullmatch(r"\d+(?:\.\d+)+", normalized):
+            version_like.add(index)
+        elif normalized in {"sp", "version", "versiones"} and index + 1 < len(units):
+            if re.fullmatch(r"\d+(?:\.\d+)*", units[index + 1]):
+                version_like.update({index, index + 1})
+    if not version_like:
+        return False
+    for index, tokens in enumerate(unit_tokens):
+        if not any(
+            any(
+                _token_matches_query_concept(anchor, {token})
+                or anchor == re.sub(r"[^a-z0-9]", "", units[index].casefold())
+                or anchor.lstrip("j") == re.sub(r"[^a-z0-9]", "", units[index].casefold()).lstrip("j")
+                for token in tokens
+            )
+            for anchor in anchors
+        ):
+            continue
+        if any(abs(index - version_index) <= 24 for version_index in version_like):
+            return True
+    return False
 
 
 def _requests_readme(user_message: str) -> bool:
@@ -1178,7 +1335,7 @@ def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float,
 
 
 def _retrieve_legacy_azure_search_evidence(
-    user_message: str, config, client=None, limit: int = 3
+    user_message: str, config, client=None, limit: int = 3, diagnostics: dict | None = None
 ) -> list[EvidenceSource]:
     """Retrieve vector candidates and normalize them to bot evidence."""
     if not getattr(config, "azure_search_configured", False):
@@ -1446,6 +1603,8 @@ def _retrieve_legacy_azure_search_evidence(
     candidate_records = [
         _add_runtime_sharepoint_parent_context(record) for record in candidate_records
     ]
+    if diagnostics is not None:
+        diagnostics["candidate_count"] = len(candidate_records)
     allowed_sources = getattr(config, "sharepoint_sources", None)
     if allowed_sources is None:
         allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
@@ -1457,12 +1616,60 @@ def _retrieve_legacy_azure_search_evidence(
             record, allowed_sources, allowed_source_labels
         )
     ]
+    rejected_reasons = diagnostics.setdefault("rejected_reasons", {}) if diagnostics is not None else {}
+    if diagnostics is not None and len(authorized_records) < len(candidate_records):
+        rejected_reasons["provenance"] = len(candidate_records) - len(authorized_records)
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
-    version_scoped_records = [
+    if diagnostics is not None and len(country_scoped_records) < len(authorized_records):
+        rejected_reasons["country"] = len(authorized_records) - len(country_scoped_records)
+    version_fallback_ids: set[str] = set()
+    exact_version_records = [
         record
         for record in country_scoped_records
         if _record_matches_requested_version(record, requested_versions)
     ]
+    if requested_versions and _is_structural_version_query(user_message):
+        exact_technical_records = [
+            record
+            for record in exact_version_records
+            if _record_matches_technical_anchor(record, user_message)
+        ]
+        if exact_technical_records:
+            version_scoped_records = exact_technical_records
+        else:
+            technical_records = [
+                record
+                for record in country_scoped_records
+                if _record_matches_technical_anchor(record, user_message)
+            ]
+            if technical_records:
+                version_scoped_records = technical_records
+                version_fallback_ids = {
+                    str(record.get("id") or "") for record in technical_records
+                }
+            else:
+                version_scoped_records = []
+    else:
+        version_scoped_records = exact_version_records
+    # When the user supplied an exact version, the version guard above is the
+    # authoritative constraint.  The proximity check is only for open-ended
+    # questions such as "qué versión de jQuery", where a page can otherwise
+    # win on the generic word "versión" alone.
+    if _is_anchor_version_lookup(user_message) and not requested_versions:
+        before_anchor_version = len(version_scoped_records)
+        version_scoped_records = [
+            record
+            for record in version_scoped_records
+            if _record_answers_anchor_version(record, user_message)
+        ]
+        if diagnostics is not None and len(version_scoped_records) < before_anchor_version:
+            rejected_reasons["anchor_version_mismatch"] = (
+                before_anchor_version - len(version_scoped_records)
+            )
+    if diagnostics is not None and requested_versions and len(version_scoped_records) < len(country_scoped_records):
+        rejected_reasons["version_strict"] = len(country_scoped_records) - len(version_scoped_records)
+    if diagnostics is not None and version_fallback_ids:
+        rejected_reasons["version_fallback"] = len(version_fallback_ids)
     if requested_versions and _requests_readme(user_message):
         readme_records = [
             record
@@ -1517,6 +1724,11 @@ def _retrieve_legacy_azure_search_evidence(
             return []
         candidate_records = explicit_file_records
     else:
+        coverage_message = (
+            _technical_anchor_query(user_message)
+            if version_fallback_ids
+            else user_message
+        )
         if _requests_script(user_message) and any(
             _is_script_record(record) for record in version_scoped_records
         ):
@@ -1531,12 +1743,18 @@ def _retrieve_legacy_azure_search_evidence(
                 for record in version_scoped_records
                 if _has_minimum_content_coverage(
                     record,
-                    user_message,
+                    coverage_message,
                     semantic_enabled=getattr(config, "azure_search_use_semantic", False),
                 )
             ]
+    if diagnostics is not None and len(candidate_records) < len(version_scoped_records):
+        rejected_reasons["insufficient_direct_coverage"] = (
+            len(version_scoped_records) - len(candidate_records)
+        )
     ranked_records = _rerank_records(candidate_records, user_message)
     if not ranked_records:
+        if diagnostics is not None and candidate_records:
+            rejected_reasons["relevance"] = len(candidate_records)
         return []
 
     # Avoid sending tangential pages to generation when one page has a much
@@ -1549,6 +1767,8 @@ def _retrieve_legacy_azure_search_evidence(
     relevant_records = [
         item for item in ranked_records if item[0] >= best_score * relevance_floor
     ][:limit]
+    if diagnostics is not None and len(relevant_records) < len(ranked_records):
+        rejected_reasons["relevance_floor"] = len(ranked_records) - len(relevant_records)
     sources: list[EvidenceSource] = []
     for _, record in relevant_records:
         fragment = _result_fragment(record, user_message)
@@ -1568,6 +1788,16 @@ def _retrieve_legacy_azure_search_evidence(
                 document_type=str(record.get("document_type") or ""),
                 folder_path=str(record.get("folder_path") or ""),
                 descripcion=_record_description(record),
+                version_confirmed=(
+                    False
+                    if str(record.get("id") or "") in version_fallback_ids
+                    else (True if requested_versions else None)
+                ),
+                fallback_reason=(
+                    "version_no_confirmada"
+                    if str(record.get("id") or "") in version_fallback_ids
+                    else ""
+                ),
             )
         )
     return sources
@@ -2005,9 +2235,20 @@ def retrieve_azure_search_evidence(
     if getattr(config, "retrieval_strategy", "legacy") == "v2":
         trace = _retrieve_v2_azure_search_evidence(user_message, config, client=client)
         return trace if return_trace else trace.sources
-    sources = _retrieve_legacy_azure_search_evidence(user_message, config, client=client)
+    diagnostics: dict = {}
+    sources = _retrieve_legacy_azure_search_evidence(
+        user_message,
+        config,
+        client=client,
+        diagnostics=diagnostics if return_trace else None,
+    )
     if return_trace:
-        return RetrievalTrace(sources=sources, direct_evidence_count=len(sources))
+        return RetrievalTrace(
+            sources=sources,
+            candidate_count=int(diagnostics.get("candidate_count", 0)),
+            direct_evidence_count=len(sources),
+            rejected_reasons=dict(diagnostics.get("rejected_reasons", {})),
+        )
     return sources
 
 

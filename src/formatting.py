@@ -118,6 +118,11 @@ def format_user_response(decision: BotDecision, config=None) -> str:
         f"{decision.resumen}\n\n"
         f"{source_label}: {' | '.join(source_titles)} — {_source_label(decision)}"
     )
+    if any(source.version_confirmed is False for source in decision.fuentes):
+        response += (
+            "\nNota: La fuente encontrada documenta la estructura técnica, "
+            "pero no confirma explícitamente su correspondencia con la versión solicitada."
+        )
     source_links = _source_links(decision, config)
     if source_links:
         link_label = "Enlace" if len(source_links) == 1 else "Enlaces"

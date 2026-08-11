@@ -20,6 +20,11 @@ class EvidenceSource:
     evidence_kind: str = ""
     covered_requirements: tuple[str, ...] = ()
     descripcion: str = ""
+    # ``None`` means that the question did not request a version. ``False``
+    # is reserved for a technical fallback whose exact version could not be
+    # confirmed in the cited document.
+    version_confirmed: bool | None = None
+    fallback_reason: str = ""
 
 
 @dataclass
