@@ -253,7 +253,7 @@ def _is_procedural_request(user_message: str) -> bool:
     normalized = " ".join((user_message or "").casefold().split())
     return bool(
         re.search(
-            r"(?:cómo|como)\s+(?:se\s+)?(?:puede|debe|hace|hacer|descarga|accede|ingresa)|"
+            r"(?:cómo|como)\s+(?:se\s+)?[a-záéíóúñ]+|"
             r"(?:qué|que)\s+se\s+debe\s+(?:hacer|revisar)|"
             r"\bpasos?\b|\bprocedimiento\b",
             normalized,
@@ -460,6 +460,18 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
             ]
             return "Según la documentación, los parámetros identificados son:\n" + "\n".join(lines)
 
+    # A page heading such as ``Proceso para ... 1`` is a retrieval hit, not a
+    # usable procedure. Do not turn a title or table-of-contents fragment into
+    # an operational instruction; the caller will classify it as insufficient.
+    if _is_procedural_request(user_message):
+        combined = " ".join(" ".join((source.fragmento or "").split()) for source in focused_evidence)
+        if not _procedure_steps(combined) and re.fullmatch(
+            r"(?:p[aá]gina\s+\d+\s+)?(?:proceso|procedimiento)\s+.+?\s+\d+\.?",
+            combined.strip(),
+            re.IGNORECASE,
+        ):
+            return "Se recuperó documentación relacionada, pero no contiene pasos suficientes para responder con seguridad."
+
     procedure_steps = _unique_procedure_steps(focused_evidence)
     if _is_procedural_request(user_message) and len(procedure_steps) >= 3:
         return "Según la documentación, los pasos son:\n" + "\n".join(
@@ -489,6 +501,20 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
     _, excerpt = max(candidates, key=lambda item: item[0])
     if len(excerpt) > 520:
         excerpt = f"{excerpt[:520].rsplit(' ', 1)[0]}..."
+    # When a release note is the direct source, retain its explicit product
+    # version in the answer even if the excerpt starts at the change sentence.
+    # This is derived from indexed title/content metadata, never inferred from
+    # the requested wording.
+    release_versions = []
+    for source in focused_evidence:
+        identity = f"{source.titulo} {source.document_version}"
+        if "readme" not in identity.casefold():
+            continue
+        for match in VERSION_PATTERN.findall(identity):
+            if match not in release_versions:
+                release_versions.append(match)
+    if release_versions and not any(version in excerpt for version in release_versions):
+        excerpt = f"Evolution {release_versions[0]}: {excerpt}"
     return f"Según la documentación: {excerpt}"
 
 
@@ -505,10 +531,22 @@ def _version_document_summary(version: str, evidence: list[EvidenceSource]) -> s
     """Answer a version lookup from its cited text without inventing changes."""
     details = " ".join(source.fragmento.strip() for source in evidence[:2] if source.fragmento.strip())
     details = " ".join(details.split())
+    unconfirmed = any(source.version_confirmed is False for source in evidence)
     if not details:
+        if unconfirmed:
+            return (
+                "La documentación recuperada está relacionada con la consulta, "
+                "pero no confirma explícitamente su correspondencia con la versión "
+                f"solicitada ({version}) y el fragmento no contiene detalles suficientes."
+            )
         return f"Se encontró documentación para Evolution {version}, pero el fragmento recuperado no contiene detalles suficientes."
     if len(details) > 900:
         details = f"{details[:900].rsplit(' ', 1)[0]}..."
+    if unconfirmed:
+        return (
+            "La documentación recuperada indica lo siguiente, pero no confirma "
+            f"explícitamente que corresponda a Evolution {version}: {details}"
+        )
     return f"Para Evolution {version}, la documentación indica: {details}"
 
 
@@ -541,6 +579,14 @@ def _evidence_covers_requested_facet(
     """
     normalized_question = user_message or ""
     fragments = "\n".join(source.fragmento or "" for source in evidence)
+    if _is_procedural_request(normalized_question):
+        compact_fragments = " ".join(fragments.split())
+        if not _procedure_steps(compact_fragments) and re.fullmatch(
+            r"(?:p[aá]gina\s+\d+\s+)?(?:proceso|procedimiento)\s+.+?\s+\d+\.?",
+            compact_fragments,
+            re.IGNORECASE,
+        ):
+            return False
     if SOFTWARE_REQUIREMENTS_PATTERN.search(normalized_question):
         return bool(SOFTWARE_REQUIREMENTS_PATTERN.search(fragments))
     if DOCUMENT_VERSION_PROCEDURE_PATTERN.search(normalized_question):
@@ -726,12 +772,17 @@ def classify_case_by_rules(
             requiere_escalamiento=False,
         )
 
-    if not any(
+    action_covered = any(
         has_requested_action_coverage(
             user_message, f"{source.titulo} {source.fragmento}"
         )
         for source in evidence
-    ):
+    )
+    parameter_facet_covered = bool(
+        PARAMETER_LIST_REQUEST_PATTERN.search(user_message or "")
+        and PARAMETER_EVIDENCE_PATTERN.search(evidence_text)
+    )
+    if not action_covered and not parameter_facet_covered:
         return BotDecision(
             estado="sin_evidencia",
             confianza="baja",

@@ -310,11 +310,11 @@ def _entra_credential():
 
 
 def _credential(config):
-    """Prefer a key for the MVP; allow Entra RBAC where it is available."""
-    if config.azure_search_api_key:
-        return AzureKeyCredential(config.azure_search_api_key)
-    if config.azure_search_use_entra_id:
+    """Use the explicitly selected identity mode, avoiding stale keys."""
+    if getattr(config, "azure_search_use_entra_id", False):
         return _entra_credential()
+    if getattr(config, "azure_search_api_key", ""):
+        return AzureKeyCredential(config.azure_search_api_key)
     raise RuntimeError("Falta AZURE_SEARCH_API_KEY o AZURE_SEARCH_USE_ENTRA_ID=true.")
 
 
@@ -779,9 +779,22 @@ def _is_release_guidance_question(user_message: str) -> bool:
 
 def _has_direct_document_access_failure_coverage(record: dict) -> bool:
     """Require local troubleshooting evidence, not merely download instructions."""
+    title = str(record.get("title") or "").casefold()
+    content = str(record.get(CONTENT_FIELD) or "")
+    # Release notes frequently mention a historical permission/download change
+    # in the same line. They are not operational troubleshooting procedures
+    # unless the fragment itself describes the failure and its diagnostic path.
+    if "readme" in title or "changelog" in title or "actualiz" in title:
+        normalized_content = " ".join(content.casefold().split())
+        if not re.search(
+            r"(?:no\s+(?:puede|logra)|error|falla|problema).{0,80}"
+            r"(?:descarg|baj|document)",
+            normalized_content,
+        ):
+            return False
     # Titles, document metadata and token indexes are retrieval hints, not
     # local evidence. Each prose unit must independently express the link.
-    units = re.split(r"(?<=[.!?;])\s+|\n+", str(record.get(CONTENT_FIELD) or ""))
+    units = re.split(r"(?<=[.!?;])\s+|\n+", content)
     for unit in units:
         record_tokens = tokenize(unit)
         for start in range(len(record_tokens)):
@@ -2215,7 +2228,23 @@ def _retrieve_legacy_azure_search_evidence(
     best_score = ranked_records[0][0]
     if best_score < 8 and not explicit_file_records:
         return []
-    relevance_floor = 0.70 if _is_dtc_validation_question(user_message) else 0.80
+    # Procedural and facet questions often span adjacent pages: one page names
+    # the operation while the next lists its parameters or validation checks.
+    # Keep a slightly wider, still bounded relevance band for those generic
+    # question shapes so composition can recover the complete procedure. The
+    # deterministic evidence gate below remains mandatory for every fragment.
+    query_tokens = set(tokenize(user_message))
+    multi_fragment_shape = bool(
+        query_tokens.intersection({
+            "parametro", "paso", "procedimiento", "estructura", "revis",
+            "valid", "verific", "confirm", "hace", "como",
+        })
+    )
+    relevance_floor = (
+        0.65
+        if multi_fragment_shape
+        else (0.70 if _is_dtc_validation_question(user_message) else 0.80)
+    )
     relevant_records = [
         item for item in ranked_records if item[0] >= best_score * relevance_floor
     ][:limit]

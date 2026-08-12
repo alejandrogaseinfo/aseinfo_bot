@@ -2836,6 +2836,66 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
 
         self.assertIn("no confirma explícitamente", response)
 
+    def test_unconfirmed_version_is_never_presented_as_confirmed(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Manual de Relacion DB V1.2.docx — Documento",
+            ubicacion="https://contoso.example/manual.docx",
+            fragmento=(
+                "wfl.ira_instancias_rutas_aut almacena información de flujos; "
+                "campos de relación ira_codrau e ira_codigo_entidad."
+            ),
+            version_confirmed=False,
+            fallback_reason="version_no_confirmada",
+        )
+        decision = classify_case_by_rules(
+            "¿Cuál es la estructura de la tabla IRA en versión 1.24.1.3?",
+            [source],
+        )
+        self.assertNotIn("Para Evolution 1.24.1.3", decision.resumen)
+        self.assertIn("no confirma explícitamente", decision.resumen)
+
+    def test_jquery_answer_keeps_release_version_from_readme(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Readme 1.24.1.2.pdf — Página 5",
+            ubicacion="https://contoso.example/readme.pdf",
+            fragmento=(
+                "La mejora actualiza la biblioteca jQuery a la versión 3.7.2, "
+                "reemplazando la versión anterior 1.12.4."
+            ),
+        )
+        decision = classify_case_by_rules("¿En qué versión se actualizó jQuery?", [source])
+        self.assertIn("Evolution 1.24.1.2", decision.resumen)
+        self.assertIn("3.7.2", decision.resumen)
+
+    def test_download_failure_with_revision_wording_abstains_without_direct_diagnostics(self):
+        record = {
+            "id": "download-only",
+            "title": "Gestión de documentos.pdf",
+            "source_url": "https://contoso.example/gestion.pdf",
+            "source_system": "sharepoint",
+            "folder_path": "",
+            "drive_id": "drive-manuales",
+            "content": (
+                "Los permisos se administran por roles. Los documentos se "
+                "descargan desde el portal."
+            ),
+            "content_tokens": "permisos administran roles documentos descargan portal",
+        }
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return [record]
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "Un usuario tiene permisos, pero no puede descargar documentos. ¿Qué reviso?",
+                self._config(),
+                return_trace=True,
+            )
+        self.assertEqual([], trace.sources)
+
 
 if __name__ == "__main__":
     unittest.main()

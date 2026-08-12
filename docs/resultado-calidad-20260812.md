@@ -92,6 +92,31 @@ y redacción es aceptable para Teams.
 
 ### A/B posterior a validación de fuentes
 
+> Este bloque conserva la primera repetición con el redactor encendido. La
+> repetición vigente solicitada el 2026-08-12 se ejecutó con ambos LLM apagados
+> y está en `output/revision-humana-redactor-20260812-postfix2.json`.
+
+### Repetición posterior a correcciones generales — 2026-08-12
+
+Se repitieron las mismas 12 preguntas contra `srch-libras-prod/libras-docs`,
+con `legacy`, sin fallback local, `USE_LLM_EVIDENCE_VERIFIER=false` y
+`USE_LLM_GROUNDED_RESPONSE=false`.
+
+- **12/12** consultas ejecutadas sin error.
+- **10** resueltas y **2** abstenciones: OPS-11 solicita contexto de versión y
+  OPS-12 se abstiene por ausencia de cobertura diagnóstica directa.
+- Latencia media: **3.15 s**.
+- OPS-01 incluye explícitamente Evolution **1.24.1.2**.
+- OPS-02 conserva advertencia de versión no confirmada (`version_confirmed=false`).
+- OPS-04/07/10 recuperan procedimientos y parámetros desde evidencia del índice.
+- OPS-06 responde desde el script real; OPS-09 mantiene el procedimiento SQL
+  autorizado sin exponer código innecesario.
+- OPS-08 combina validaciones de firewall, reglas DTC y Component Services.
+
+Reporte vigente: `output/revision-humana-redactor-20260812-postfix2.json`.
+
+El redactor grounded sigue apagado y no existe autorización de piloto.
+
 Se repitieron las 12 preguntas operativas contra `srch-libras-prod/libras-docs`
 con `RETRIEVAL_STRATEGY=legacy`, fallback local desactivado y el evaluador LLM
 apagado. La comparación se ejecutó con el redactor apagado y encendido, sin
