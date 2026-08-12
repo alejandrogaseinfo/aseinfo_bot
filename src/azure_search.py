@@ -1462,6 +1462,17 @@ def _has_minimum_content_coverage(
             f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}"
         ),
     )
+    management_question = (
+        set(tokenize(user_message)).intersection({"administrar", "gestionar", "gestion"})
+        and any(token.startswith("document") for token in tokenize(user_message))
+    )
+    if management_question:
+        management_action_tokens = set(tokenize(fragment)).intersection(
+            {"administrar", "gestionar", "crear", "editar", "eliminar", "subir", "nuevo", "seleccionar", "tipo"}
+        )
+        action_is_covered = action_is_covered or bool(
+            "documento" in record_tokens and management_action_tokens
+        )
     if _is_release_guidance_question(user_message) and _is_release_guidance_record(record):
         # "Tomar precauciones" is commonly documented as preparation,
         # backups and update instructions rather than with the literal verb.
