@@ -363,6 +363,8 @@ No promover el redactor a una audiencia amplia hasta cumplir todos estos puntos:
 - [x] Comparación A/B local del redactor ejecutada con evidencias controladas.
 - [x] A/B ampliado sobre 29 preguntas; quedan pendientes revisión humana y
   decisión de activación.
+- [x] Regresión de citas, IRA versionada y procedimiento SQL de ofuscación
+  corregida; A/B operativo de 12 preguntas repetido contra Azure.
 - [x] Dimensión y cobertura vectorial del índice verificadas en paralelo.
 - [ ] Matriz ampliada y revisión humana completadas.
 - [ ] Experimento híbrido ejecutado o descartado con métricas.
@@ -371,7 +373,7 @@ No promover el redactor a una audiencia amplia hasta cumplir todos estos puntos:
 - [ ] Redactor consolidado como etapa final, si la matriz lo aprueba.
 - [x] `git diff` revisado y cambios funcionales/documentales separados.
 - [x] Suite completa y corpus ejecutados después de la consolidación.
-- [x] Commit `ecb8d84` creado y bundle generado; la evaluación posterior al
+- [x] Commit `0353b55` creado y bundle generado; la evaluación posterior al
   commit terminó en 29/29.
 - [ ] Validación real desde SSH → Application completada.
 - [ ] Despliegue con redactor apagado autorizado.

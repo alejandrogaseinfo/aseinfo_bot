@@ -90,6 +90,32 @@ La conclusión provisional es mantener el redactor apagado hasta revisar las
 respuestas con una persona y confirmar que la latencia combinada de recuperación
 y redacción es aceptable para Teams.
 
+### A/B posterior a validación de fuentes
+
+Se repitieron las 12 preguntas operativas contra `srch-libras-prod/libras-docs`
+con `RETRIEVAL_STRATEGY=legacy`, fallback local desactivado y el evaluador LLM
+apagado. La comparación se ejecutó con el redactor apagado y encendido, sin
+cambiar producción:
+
+- **12/12** casos ejecutados sin error de proveedor ni fallback local.
+- Latencia media: **4.21 s** sin redactor y **4.83 s** con redactor.
+- **OPS-01** quedó limitado a `Readme 1.24.1.2.pdf — Página 5`; ya no cita
+  `1.24.1.4` para el cambio histórico de jQuery.
+- **OPS-02** prioriza `Manual de Relacion DB V1.2 .docx — Documento`, con
+  `version_confirmed=false` y advertencia visible de que el manual no confirma
+  la correspondencia con Evolution 1.24.1.3.
+- **OPS-09** recupera `Ofuscación de datos.sql — Documento` y permite el
+  procedimiento autorizado, sin abrir la puerta a credenciales, contraseñas,
+  tokens o secretos.
+- La salida del redactor conserva fuentes únicas y acota la respuesta a los
+  fragmentos recibidos; la prueba unitaria rechaza una cita de Readme cuyo
+  título no coincide con la versión afirmada.
+
+Reporte detallado: `output/revision-humana-redactor-20260812-postfix.json`.
+
+La activación sigue pendiente de revisión humana final y autorización para un
+piloto controlado.
+
 ## Auditoría de Azure AI Search en modo lectura
 
 - Índice: `libras-docs` en `srch-libras-prod`.
@@ -106,9 +132,9 @@ No se modificó el índice, la configuración productiva ni el despliegue.
 
 ## Bundle posterior al commit
 
-- Revisión de código: `ecb8d84`.
-- Bundle: `output/libras-eval-bundle-20260812-ecb8d84.zip`.
-- SHA-256: `83845F731AAAC36753B5CE3BA21EBAA0EB97901734290B9D1DF8BA333DF71A70`.
+- Revisión de código: `0353b55`.
+- Bundle: `output/libras-eval-bundle-20260812-0353b55.zip`.
+- SHA-256: `EA3EAF2C177054947A298303C83A6F616DDD3037B19BF08549DEDF6A7774AEDE`.
 - El bundle contiene el código, las pruebas y el corpus, pero no contiene
   `.env`, `data` ni archivos de salida.
 - La evaluación posterior al commit, ejecutada desde el bundle con la misma
