@@ -117,6 +117,15 @@ Reporte vigente: `output/revision-humana-redactor-20260812-postfix2.json`.
 
 El redactor grounded sigue apagado y no existe autorización de piloto.
 
+### Revisión humana posterior — correcciones prioritarias
+
+La repetición `postfix3` confirma que OPS-02 ya limita la respuesta a la tabla
+IRA y sus campos, OPS-04 prioriza el manual de gestión documental, OPS-09
+explica el procedimiento SQL autorizado sin exponer código y OPS-11 solicita la
+versión exacta. OPS-10 permanece en abstención segura porque Azure devuelve
+solo el encabezado del PDF, sin pasos accionables; no se debe completar ese
+procedimiento hasta corregir la cobertura del documento en el índice.
+
 Se repitieron las 12 preguntas operativas contra `srch-libras-prod/libras-docs`
 con `RETRIEVAL_STRATEGY=legacy`, fallback local desactivado y el evaluador LLM
 apagado. La comparación se ejecutó con el redactor apagado y encendido, sin

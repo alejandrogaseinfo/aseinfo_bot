@@ -2855,6 +2855,68 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
         self.assertNotIn("Para Evolution 1.24.1.3", decision.resumen)
         self.assertIn("no confirma explícitamente", decision.resumen)
 
+    def test_ira_version_summary_keeps_only_requested_table_window(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Manual de Relacion DB V1.2.docx — Documento",
+            ubicacion="https://contoso.example/manual.docx",
+            fragmento=(
+                "wrp.rfs_rep_field_sort Esta tabla ordena reportes. "
+                "Flujos wfl.ira_instancias_rutas_aut Tabla que almacena la "
+                "información de los flujos. Campos con los que se puede unir "
+                "a otras tablas: ira_codrau, ira_codigo_entidad.") ,
+            version_confirmed=False,
+        )
+        decision = classify_case_by_rules(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?", [source]
+        )
+        self.assertIn("ira_instancias_rutas_aut", decision.resumen)
+        self.assertIn("ira_codrau", decision.resumen)
+        self.assertNotIn("rfs_rep_field_sort", decision.resumen)
+
+    def test_sql_obfuscation_summary_explains_authorized_procedure_without_code(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Ofuscación de datos.sql — Documento",
+            ubicacion="https://contoso.example/ofuscacion.sql",
+            fragmento="UPDATE exp_expedientes SET exp_nombre = @rnd;",
+            document_type="sql",
+        )
+        summary = _grounded_document_summary("¿Cómo se ofuscan datos sensibles en SQL?", [source])
+        self.assertIn("procedimiento SQL autorizado", summary)
+        self.assertNotIn("UPDATE", summary)
+
+    def test_procedure_heading_without_steps_is_not_answered(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ampliar Tiempo de Sesion.pdf — Página 1",
+                ubicacion="https://contoso.example/sesion.pdf",
+                fragmento="Proceso para Ampliar tiempo de Sesión 1.",
+            )
+        ]
+        decision = classify_case_by_rules("¿Cómo amplío el tiempo de sesión en Evolution?", evidence)
+        self.assertEqual("sin_evidencia", decision.estado)
+
+    def test_document_management_prefers_management_manual_over_download_flow(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Portal Consultas.pdf — Página 30",
+                ubicacion="https://contoso.example/portal.pdf",
+                fragmento="Seleccione el módulo Consultas y descargue el documento.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Gestion de documentos.pdf — Página 4",
+                ubicacion="https://contoso.example/gestion.pdf",
+                fragmento="Gestión de documentos. Haga clic en Nuevo y seleccione el tipo de documento.",
+            ),
+        ]
+        decision = classify_case_by_rules("Necesito administrar documentos en Evolution, ¿cómo se hace?", evidence)
+        self.assertIn("Nuevo", decision.resumen)
+        self.assertNotIn("módulo Consultas", decision.resumen)
+
     def test_jquery_answer_keeps_release_version_from_readme(self):
         source = EvidenceSource(
             tipo="sharepoint",

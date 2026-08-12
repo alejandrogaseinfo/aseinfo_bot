@@ -777,6 +777,11 @@ def _is_release_guidance_question(user_message: str) -> bool:
     )
 
 
+def is_release_guidance_question(user_message: str) -> bool:
+    """Public policy signal for versioned installation guidance."""
+    return _is_release_guidance_question(user_message)
+
+
 def _has_direct_document_access_failure_coverage(record: dict) -> bool:
     """Require local troubleshooting evidence, not merely download instructions."""
     title = str(record.get("title") or "").casefold()
@@ -921,6 +926,18 @@ def _focused_keyword_query(user_message: str) -> str:
     # conservative heading bridge only when both concepts are explicit in the
     # user's question; it must not broaden unrelated incapacity searches.
     focused_token_set = set(focused_tokens)
+    # Administration questions are commonly answered in the management
+    # section under the nouns ``tipos`` and ``documentos gestionados`` rather
+    # than the operator's verb. This generic intent expansion keeps the
+    # retrieval pass from selecting only the manual cover page.
+    if (
+        focused_token_set.intersection({"administrar", "gestionar", "gestion"})
+        and any(token.startswith("document") for token in focused_token_set)
+    ):
+        focused_tokens.extend(
+            token for token in ("gestion", "documento", "gestionado", "tipo")
+            if token not in focused_token_set
+        )
     # Operators often call ``ira_instancias_rutas_aut`` simply "la tabla IRA".
     # Keep that documented identifier in the lexical pass whenever the query
     # is clearly structural; this is a technical-anchor expansion, not a
@@ -1188,6 +1205,20 @@ def _document_relevance_score(
         and document_token_set.intersection(_DTC_VALIDATION_EVIDENCE_TOKENS)
         else 0
     )
+    # Distinguish document-management guidance from a Portal download path.
+    # Both may mention managed documents, but an operator asking how to
+    # administer them needs the management manual, not the consultation flow.
+    management_score = 0
+    query_set = set(tokenize(user_message))
+    if "document" in query_set and query_set.intersection({"administr", "gestionar", "gestion"}):
+        title_text = " ".join(tokenize(record.get("title", "")))
+        content_text = " ".join(tokenize(record.get(CONTENT_FIELD, "")))
+        if "gestion" in title_text and "document" in title_text:
+            management_score += 650
+            if any(marker in content_text for marker in ("haga clic", "seleccione", "crear", "editar", "nuevo", "documento gestionado")):
+                management_score += 420
+        elif "portal" in title_text and "descarg" in content_text:
+            management_score -= 180
     # Coverage across the question's concepts matters more than one isolated
     # exact phrase. This prevents a page that merely lists a decree number
     # from outranking the page that explains its calculation.
@@ -1227,6 +1258,7 @@ def _document_relevance_score(
         + preinstallation_score
         + release_guidance_score
         + dtc_validation_score
+        + management_score
     )
 
 

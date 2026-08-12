@@ -23,6 +23,7 @@ from intent import IntentResult, classify_intent
 from logging_utils import get_logger
 from models import BotDecision, EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
+from azure_search import is_release_guidance_question
 
 logger = get_logger()
 
@@ -922,6 +923,17 @@ async def process_user_message(
         )
         )
     )
+    if (
+        is_release_guidance_question(retrieval_message)
+        and not has_explicit_version_request(retrieval_message)
+    ):
+        logger.info(
+            "query_completed duration_ms=%s evidence_count=0 "
+            "source_types=none decision_state=solicita_contexto "
+            "reason=release_version_required",
+            round((perf_counter() - started_at) * 1000),
+        )
+        return _ambiguous_release_version_response()
     if (
         getattr(config, "use_context_guard", False)
         and getattr(config, "model_endpoint_configured", True)

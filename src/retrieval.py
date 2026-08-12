@@ -1,4 +1,5 @@
-from azure_search import retrieve_azure_search_evidence
+from azure_search import is_release_guidance_question, retrieve_azure_search_evidence
+from classification import has_explicit_version_request
 from document_index import retrieve_document_evidence
 from logging_utils import get_logger
 from models import EvidenceSource, RetrievalTrace
@@ -56,6 +57,15 @@ def retrieve_evidence(
                     return result
                 return deduped
             if isinstance(result, RetrievalTrace) and result.requires_version_context:
+                return result
+            if (
+                isinstance(result, RetrievalTrace)
+                and not result.sources
+                and is_release_guidance_question(user_message)
+                and not has_explicit_version_request(user_message)
+            ):
+                result.requires_version_context = True
+                result.rejected_reasons["release_version_required"] = 1
                 return result
             # V2 deliberately abstains when Azure AI Search cannot establish
             # direct evidence. Falling back to the local development corpus

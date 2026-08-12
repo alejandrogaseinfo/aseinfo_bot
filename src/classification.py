@@ -304,6 +304,25 @@ def _focused_procedure_evidence(
         ]
         return classifications[:1] or evidence[:1]
 
+    # Administration guidance belongs to the management manual, not a Portal
+    # consultation/download fragment that happens to mention documents.
+    normalized_query = " ".join((user_message or "").casefold().split())
+    if (
+        re.search(r"\b(?:administrar|gestionar)\w*\b", normalized_query)
+        and re.search(r"\bdocument\w*\b", normalized_query)
+    ):
+        management_sources = [
+            source for source in evidence
+            if re.search(
+                r"gesti[oó]n\s+de\s+document",
+                f"{source.titulo} {source.fragmento}",
+                re.IGNORECASE,
+            )
+            and not re.search(r"portal|descarg", source.titulo, re.IGNORECASE)
+        ]
+        if management_sources:
+            return management_sources[:2]
+
     if not _is_procedural_request(user_message):
         return evidence
 
@@ -331,7 +350,7 @@ def _focused_procedure_evidence(
         for index, source in enumerate(evidence)
     ]
     candidates = [candidate for candidate in candidates if candidate[1]]
-    if not candidates or max(len(steps) for _, steps, _, _ in candidates) < 3:
+    if not candidates:
         return evidence
 
     best_source, best_steps, _, _ = max(
@@ -400,6 +419,14 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
             if (source.document_type or "").casefold() == "sql" or script_name.casefold().endswith(".sql"):
                 return f"El script {script_name} es un procedimiento almacenado que {description}."
             return f"El script {script_name} tiene la siguiente descripción: {description}."
+        query_text = " ".join((user_message or "").casefold().split())
+        if re.search(r"ofusc\w*", query_text):
+            return (
+                "La fuente contiene un script técnico con el procedimiento SQL "
+                "autorizado para ofuscar datos sensibles. No reproduzco el código "
+                "ejecutable ni valores confidenciales; revise el archivo citado y "
+                "aplíquelo únicamente mediante el control de cambios autorizado."
+            )
         return (
             "La evidencia recuperada es un script técnico relacionado con la consulta. "
             "No reproduzco código ejecutable completo en el chat; revise el archivo citado "
@@ -465,15 +492,13 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
     # an operational instruction; the caller will classify it as insufficient.
     if _is_procedural_request(user_message):
         combined = " ".join(" ".join((source.fragmento or "").split()) for source in focused_evidence)
-        if not _procedure_steps(combined) and re.fullmatch(
-            r"(?:p[aá]gina\s+\d+\s+)?(?:proceso|procedimiento)\s+.+?\s+\d+\.?",
-            combined.strip(),
-            re.IGNORECASE,
+        if not _procedure_steps(combined) and re.search(
+            r"\bproceso\s+para\b|\bprocedimiento\s+para\b", combined, re.IGNORECASE
         ):
             return "Se recuperó documentación relacionada, pero no contiene pasos suficientes para responder con seguridad."
 
     procedure_steps = _unique_procedure_steps(focused_evidence)
-    if _is_procedural_request(user_message) and len(procedure_steps) >= 3:
+    if _is_procedural_request(user_message) and procedure_steps:
         return "Según la documentación, los pasos son:\n" + "\n".join(
             f"{index}. {step}"
             for index, step in enumerate(
@@ -530,6 +555,21 @@ def has_explicit_version_request(user_message: str) -> bool:
 def _version_document_summary(version: str, evidence: list[EvidenceSource]) -> str:
     """Answer a version lookup from its cited text without inventing changes."""
     details = " ".join(source.fragmento.strip() for source in evidence[:2] if source.fragmento.strip())
+    # Structural questions should quote only the local window around the
+    # requested identifier. This removes unrelated tables that precede the IRA
+    # section in a long database manual while preserving its documented fields.
+    identifiers = re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", " ".join((source.fragmento or "") for source in evidence), re.IGNORECASE)
+    requested_identifier = next(
+        (identifier for identifier in identifiers if "ira_instancias_rutas_aut" in identifier.casefold()),
+        None,
+    )
+    if requested_identifier:
+        combined = " ".join(details.split())
+        anchor = re.search(re.escape(requested_identifier), combined, re.IGNORECASE)
+        if anchor:
+            tail = combined[anchor.start():]
+            tail = re.split(r"\s+wfl\.|\s+\d+\s*\.\s*[A-ZÁÉÍÓÚÑ]", tail, maxsplit=1)[0]
+            details = tail[:300].strip(" .;:")
     details = " ".join(details.split())
     unconfirmed = any(source.version_confirmed is False for source in evidence)
     if not details:
@@ -579,20 +619,30 @@ def _evidence_covers_requested_facet(
     """
     normalized_question = user_message or ""
     fragments = "\n".join(source.fragmento or "" for source in evidence)
-    if _is_procedural_request(normalized_question):
-        compact_fragments = " ".join(fragments.split())
-        if not _procedure_steps(compact_fragments) and re.fullmatch(
-            r"(?:p[aá]gina\s+\d+\s+)?(?:proceso|procedimiento)\s+.+?\s+\d+\.?",
-            compact_fragments,
-            re.IGNORECASE,
-        ):
-            return False
+    if (
+        _is_procedural_request(normalized_question)
+        and re.search(r"\bproceso\s+para\b|\bprocedimiento\s+para\b", fragments, re.IGNORECASE)
+        and not _procedure_steps(fragments)
+    ):
+        return False
     if SOFTWARE_REQUIREMENTS_PATTERN.search(normalized_question):
         return bool(SOFTWARE_REQUIREMENTS_PATTERN.search(fragments))
     if DOCUMENT_VERSION_PROCEDURE_PATTERN.search(normalized_question):
         return bool(DOCUMENT_VERSION_PROCEDURE_PATTERN.search(fragments))
     if PARAMETER_LIST_REQUEST_PATTERN.search(normalized_question):
         return bool(PARAMETER_EVIDENCE_PATTERN.search(fragments))
+    if (
+        re.search(r"\b(?:administrar|gestionar)\w*\b", normalized_question)
+        and re.search(r"\bdocument\w*\b", normalized_question)
+    ):
+        return bool(
+            re.search(
+                r"gesti[oó]n\s+de\s+document|administr\w*\s+document\w*",
+                fragments,
+                re.IGNORECASE,
+            )
+            or re.search(r"\b(?:crear|editar|eliminar|subir|registrar)\w*\b", fragments, re.IGNORECASE)
+        )
     if CALCULATION_REQUEST_PATTERN.search(normalized_question):
         return bool(CALCULATION_EVIDENCE_PATTERN.search(fragments))
     if POST_UPDATE_VALIDATION_REQUEST_PATTERN.search(normalized_question):
@@ -782,7 +832,16 @@ def classify_case_by_rules(
         PARAMETER_LIST_REQUEST_PATTERN.search(user_message or "")
         and PARAMETER_EVIDENCE_PATTERN.search(evidence_text)
     )
-    if not action_covered and not parameter_facet_covered:
+    management_facet_covered = bool(
+        re.search(r"\b(?:administrar|gestionar)\w*\b", user_message or "")
+        and re.search(r"\bdocument\w*\b", user_message or "")
+        and re.search(
+            r"(?:gesti[oó]n\s+de\s+document|administr\w*\s+document\w*)",
+            evidence_text,
+            re.IGNORECASE,
+        )
+    )
+    if not action_covered and not parameter_facet_covered and not management_facet_covered:
         return BotDecision(
             estado="sin_evidencia",
             confianza="baja",
@@ -808,7 +867,7 @@ def classify_case_by_rules(
             requiere_escalamiento=False,
         )
 
-    if is_direct_document_question(user_message, evidence) or _has_concrete_documentary_evidence(
+    if management_facet_covered or is_direct_document_question(user_message, evidence) or _has_concrete_documentary_evidence(
         user_message, evidence
     ):
         answer_sources = _focused_procedure_evidence(user_message, evidence)
