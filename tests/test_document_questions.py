@@ -53,7 +53,7 @@ from classification import (
 )
 from document_index import tokenize
 from formatting import format_user_response
-from models import EvidenceSource
+from models import EvidenceSource, RetrievalTrace
 from models import BotDecision
 from sharepoint_sync import (
     CHANGE_MANIFEST_NAME as SYNC_CHANGE_MANIFEST_NAME,
@@ -2465,6 +2465,101 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
 
         self.assertEqual(["Readme 1.19.1.6.pdf — Página 4"], [source.titulo for source in trace.sources])
         self.assertGreaterEqual(trace.stage_counts.get("release_readme_candidates", 0), 1)
+
+    def _versioned_readme_records(self):
+        def record(identifier, version, text):
+            return {
+                "id": identifier,
+                "title": f"Readme {version}.pdf — Página 4",
+                "source_url": f"https://contoso.example/readme-{identifier}.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": text,
+                "content_tokens": "antes instalar actualizacion evolution respaldo recomendaciones previas cambios",
+            }
+
+        return [
+            record(
+                "readme-11916",
+                "1.19.1.6",
+                "Antes de instalar la actualización de Evolution, realice un respaldo y revise las recomendaciones previas.",
+            ),
+            record(
+                "readme-119110",
+                "1.19.1.10",
+                "Antes de instalar la actualización de Evolution, realice un respaldo y revise los cambios documentados.",
+            ),
+        ]
+
+    def test_ambiguous_installation_without_version_requests_context(self):
+        records = self._versioned_readme_records()
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertTrue(trace.requires_version_context)
+        self.assertEqual([], trace.sources)
+        self.assertEqual(2, trace.rejected_reasons["ambiguous_release_version"])
+
+    def test_explicit_version_selects_matching_readme(self):
+        records = self._versioned_readme_records()
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Qué precauciones se deben tomar antes de instalar la actualización 1.19.1.6 de Evolution?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertFalse(trace.requires_version_context)
+        self.assertEqual(["Readme 1.19.1.6.pdf — Página 4"], [source.titulo for source in trace.sources])
+
+    def test_single_candidate_version_answers_normally(self):
+        records = self._versioned_readme_records()[:1]
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertFalse(trace.requires_version_context)
+        self.assertTrue(trace.sources)
+
+    def test_non_release_question_is_not_changed_by_multiple_readmes(self):
+        records = self._versioned_readme_records()
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Qué cambios documenta Evolution?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertFalse(trace.requires_version_context)
+        self.assertTrue(trace.sources)
 
     def test_release_readme_rank_survives_later_candidate_passes(self):
         record = {

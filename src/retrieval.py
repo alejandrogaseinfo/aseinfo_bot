@@ -55,6 +55,8 @@ def retrieve_evidence(
                     result.sources = deduped
                     return result
                 return deduped
+            if isinstance(result, RetrievalTrace) and result.requires_version_context:
+                return result
             # V2 deliberately abstains when Azure AI Search cannot establish
             # direct evidence. Falling back to the local development corpus
             # turns that safe abstention into an unrelated answer and makes a

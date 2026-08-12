@@ -48,6 +48,10 @@ class RetrievalTrace:
     requirement_count: int = 0
     covered_requirement_count: int = 0
     rejected_reasons: dict[str, int] = field(default_factory=dict)
+    # Retrieval found mutually incompatible versioned release documents for
+    # an installation/update question. The handler must ask for the version
+    # before presenting any evidence.
+    requires_version_context: bool = False
     # Conteos agregados por etapa; nunca contiene preguntas, fragmentos ni
     # secretos. Permite comparar la recuperación sin exponer los candidatos.
     stage_counts: dict[str, int] = field(default_factory=dict)

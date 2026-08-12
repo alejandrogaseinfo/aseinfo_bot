@@ -681,6 +681,31 @@ def _requests_readme(user_message: str) -> bool:
     return bool(re.search(r"\breadme\b", user_message or "", re.IGNORECASE))
 
 
+def _is_installation_or_update_query(user_message: str) -> bool:
+    """Return whether the question needs release-version scoping."""
+    return bool(
+        re.search(
+            r"\b(?:instal\w*|actualiz\w*|reinstal\w*|upgrade\w*)\b",
+            user_message or "",
+            re.IGNORECASE,
+        )
+    )
+
+
+def _readme_versions(records: Iterable[dict]) -> tuple[str, ...]:
+    """Return distinct versions represented by versioned Readme titles."""
+    versions: set[str] = set()
+    for record in records:
+        title = str(record.get("title") or "")
+        if "readme" not in title.casefold():
+            continue
+        versions.update(
+            match.group(1).casefold()
+            for match in _VERSION_PATTERN.finditer(title)
+        )
+    return tuple(sorted(versions))
+
+
 def _is_release_guidance_question(user_message: str) -> bool:
     """Recognize pre-installation release guidance without requiring its filename.
 
@@ -1927,6 +1952,24 @@ def _retrieve_legacy_azure_search_evidence(
         ]
         if readme_records:
             version_scoped_records = readme_records
+    # Installation/update questions must not silently choose one release when
+    # Azure returns multiple incompatible versioned Readmes. This policy is
+    # intentionally limited to release operations; ordinary technical and
+    # non-release questions keep the existing retrieval behavior.
+    ambiguous_readme_versions = ()
+    if (
+        not requested_versions
+        and _is_installation_or_update_query(user_message)
+    ):
+        ambiguous_readme_versions = _readme_versions(version_scoped_records)
+        if len(ambiguous_readme_versions) > 1:
+            if diagnostics is not None:
+                diagnostics["requires_version_context"] = True
+                diagnostics["ambiguous_readme_versions"] = len(ambiguous_readme_versions)
+                diagnostics["rejected_reasons"]["ambiguous_release_version"] = len(
+                    ambiguous_readme_versions
+                )
+            return []
     if diagnostics is not None:
         diagnostics["stage_counts"]["version_scoped"] = len(version_scoped_records)
         if _is_release_guidance_question(user_message):
@@ -2560,6 +2603,7 @@ def retrieve_azure_search_evidence(
             direct_evidence_count=len(sources),
             rejected_reasons=dict(diagnostics.get("rejected_reasons", {})),
             stage_counts=dict(diagnostics.get("stage_counts", {})),
+            requires_version_context=bool(diagnostics.get("requires_version_context", False)),
         )
     return sources
 

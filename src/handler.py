@@ -20,7 +20,7 @@ from document_index import tokenize
 from formatting import format_user_response
 from intent import IntentResult, classify_intent
 from logging_utils import get_logger
-from models import BotDecision, EvidenceSource
+from models import BotDecision, EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
 
 logger = get_logger()
@@ -671,6 +671,14 @@ def _capability_response() -> str:
     )
 
 
+def _ambiguous_release_version_response() -> str:
+    return (
+        "solicita_contexto: encontré varios Readme de versiones incompatibles para "
+        "esta instalación o actualización. Indica la versión exacta que necesitas "
+        "consultar (por ejemplo, 1.19.1.6) para revisar la evidencia correcta."
+    )
+
+
 def _scope_response(config=None) -> str:
     """Describe only operator-configured, user-visible document sources."""
     source_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
@@ -1017,6 +1025,7 @@ async def process_user_message(
             retrieval_message,
             client=client,
             config=config,
+            return_trace=True,
             timeout_seconds=config.retrieval_timeout_seconds,
             grace_seconds=getattr(config, "retrieval_grace_seconds", 0),
         )
@@ -1029,6 +1038,16 @@ async def process_user_message(
     except Exception:
         logger.exception("Falló la recuperación documental.")
         evidence = []
+
+    retrieval_trace = evidence if isinstance(evidence, RetrievalTrace) else None
+    if retrieval_trace and retrieval_trace.requires_version_context:
+        logger.info(
+            "query_completed duration_ms=%s evidence_count=0 source_types=none "
+            "decision_state=solicita_contexto escalated=False reason=ambiguous_release_version",
+            round((perf_counter() - started_at) * 1000),
+        )
+        return _ambiguous_release_version_response()
+    evidence = retrieval_trace.sources if retrieval_trace else evidence
 
     if evidence and not _evidence_matches_explicit_product(retrieval_message, evidence):
         logger.info("La evidencia no contiene el producto solicitado explícitamente.")

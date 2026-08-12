@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from handler import process_user_message
 from intent import IntentResult
-from models import BotDecision, EvidenceSource
+from models import BotDecision, EvidenceSource, RetrievalTrace
 
 
 class HandlerTests(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +41,33 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             response = await process_user_message("¿Qué dice el manual?", None, self.config)
 
         self.assertIn("No se encontro evidencia suficiente", response)
+
+    async def test_ambiguous_release_version_requests_context_without_presenting_evidence(self):
+        self.config.retrieval_timeout_seconds = 0.2
+        trace = RetrievalTrace(
+            requires_version_context=True,
+            sources=[
+                EvidenceSource(
+                    tipo="sharepoint",
+                    titulo="Readme 1.19.1.6.pdf",
+                    ubicacion="https://contoso.example/readme.pdf",
+                    fragmento="No debe mostrarse.",
+                )
+            ],
+        )
+        with patch("handler.retrieve_evidence", return_value=trace), patch(
+            "handler.classify_case"
+        ) as classify:
+            response = await process_user_message(
+                "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
+                None,
+                self.config,
+            )
+
+        self.assertIn("solicita_contexto", response)
+        self.assertIn("versión exacta", response)
+        self.assertNotIn("Readme 1.19.1.6", response)
+        classify.assert_not_called()
 
     async def test_retrieval_grace_accepts_evidence_that_finishes_late(self):
         evidence = [
