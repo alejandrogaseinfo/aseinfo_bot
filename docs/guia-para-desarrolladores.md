@@ -5,6 +5,11 @@ producción. No sustituye la configuración de Azure ni contiene secretos. Para
 el estado operativo más reciente, consulta primero
 [contexto-actual.md](contexto-actual.md).
 
+En producción la estrategia sigue siendo `legacy`; el verificador de evidencia
+y el redactor grounded son opt-in y permanecen apagados. Cualquier cambio en
+esas banderas requiere evaluación A/B, revisión humana y autorización
+explícita.
+
 ## Qué hace Libras
 
 Libras es un bot personal de Microsoft Teams para consultar documentación

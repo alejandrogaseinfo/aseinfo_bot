@@ -1,22 +1,22 @@
 # Contexto actual de Libras
 
-## Actualización de calidad y decisión RAG — 2026-08-12
+## Estado vigente — 2026-08-12
 
-La evaluación controlada contra `libras-docs` confirmó **14/15 casos**, recall
-de evidencia de **91.7%** y abstención correcta de **100%** después de la
-corrección de RAG-10. Las instrucciones normales de descarga ya no se presentan
-como diagnóstico de una falla. El único caso pendiente es RAG-09: una pregunta
-sin versión devuelve varios Readme incompatibles.
+La validación posterior de calidad se ejecutó contra `srch-libras-prod/libras-docs`
+con **315/315 pruebas locales aprobadas** y una comparación A/B de 12 preguntas
+operativas sin fallback local. El redactor grounded mejoró claridad en varios
+procedimientos, pero sigue apagado en producción hasta completar la revisión
+humana y autorizar un piloto.
 
-Decisión: cuando una pregunta de instalación/actualización no mencione versión
-y existan varios Readme incompatibles, Libras no elegirá una versión por
-ranking. Debe solicitar la versión al usuario (`solicita_contexto`) y conservar
-la respuesta sin evidencia final hasta recibirla. Una versión explícita activa
-el filtro exacto y permite seleccionar el Readme correspondiente.
+Las correcciones vigentes incluyen deduplicación y validación de citas de
+Readme, priorización de `Manual de Relacion DB V1.2` para consultas IRA con
+versión no confirmada y permiso acotado para `Ofuscación de datos.sql`. La
+estrategia productiva sigue siendo `legacy` y
+`USE_LLM_EVIDENCE_VERIFIER=false`.
 
-El evaluador LLM acotado permanece desactivado (`USE_LLM_EVIDENCE_VERIFIER=false`)
-y la estrategia productiva continúa en `legacy`. La promoción de V2 queda
-pendiente de implementar y probar esta política de ambigüedad.
+El detalle reproducible está en
+[docs/resultado-calidad-20260812.md](resultado-calidad-20260812.md) y la
+muestra humana en [docs/revision-humana-redactor-20260812.md](revision-humana-redactor-20260812.md).
 
 ### Ejecución segura de evaluaciones en App Service
 
@@ -33,11 +33,14 @@ regresiones se validan en el repositorio local. Una evaluación Azure remota
 puede ejecutarse por separado con el corpus, registrando siempre qué copia de
 `src` se utilizó y sin interpretar el resultado como prueba de despliegue.
 
-La primera ejecución de la copia `src` produjo 13/15 porque la regla de
-ambigüedad confundía una reinstalación técnica de MSDTC con una actualización
-de release. Esa condición fue corregida: ahora la abstención por versiones
-solo se activa para preguntas de preparación/precauciones de instalación o
-actualización. La suite local quedó en 303/303 pruebas OK.
+Las cifras 13/15 y 303/303 pertenecen a una ejecución histórica de agosto y no
+son la línea base vigente. La línea base actual es **315/315 pruebas OK**; el
+detalle y la comparación A/B de 12 preguntas están en
+[resultado-calidad-20260812.md](resultado-calidad-20260812.md). El contrato del
+corpus acepta `evidence`, `sin_evidencia` y `solicita_contexto`.
+
+Las secciones fechadas que siguen se conservan como bitácora de decisiones y
+no deben interpretarse como estado operativo actual.
 
 > Documento de continuidad para cualquier persona o chat nuevo que retome el
 > proyecto. Fecha de consolidación: 2026-07-31.

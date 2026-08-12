@@ -2,7 +2,7 @@
 
 ## Estado de la suite
 
-- Suite local completa después de la ampliación: **311/311 pruebas aprobadas**.
+- Suite local completa después de la consolidación: **315/315 pruebas aprobadas**.
 - La regresión de RAG-07 permanece cubierta: reinstalar MSDTC no se trata como
   una actualización de release.
 - El evaluador acepta explícitamente la categoría `conceptual`.

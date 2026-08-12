@@ -1,5 +1,9 @@
 # Implementación de recuperación híbrida sobre la estrategia legacy
 
+> Diseño histórico. La producción continúa en `legacy` y no se ha autorizado
+> implementar ni activar una ruta híbrida nueva. El plan vigente está en
+> [plan.md](plan.md).
+
 > Estado: **diseño aprobado para iniciar implementación local**. Fecha:
 > 2026-08-11. Este anexo implementa la fase 2 de
 > [plan-correccion-calidad-libras.md](plan-correccion-calidad-libras.md); no

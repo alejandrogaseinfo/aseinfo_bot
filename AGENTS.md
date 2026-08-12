@@ -1,120 +1,115 @@
 # AGENTS.md
 
-## Proyecto y prioridad activa
+## Prioridad activa
 
-`Libras` es un bot interno de Microsoft Teams que responde preguntas a partir de documentación aprobada. La prioridad de esta semana es llevarlo a producción con este único flujo:
+Libras es un bot interno de Microsoft Teams que responde únicamente con
+documentación autorizada. La prioridad actual es cerrar la validación de
+calidad del flujo RAG y preparar, si se autoriza, un piloto controlado. No se
+debe desplegar ni activar el redactor sin autorización explícita.
+
+Configuración productiva vigente:
 
 ```text
-Microsoft Teams -> Libras en Azure -> Azure AI Search <- SharePoint / OneDrive
+RETRIEVAL_STRATEGY=legacy
+USE_LLM_EVIDENCE_VERIFIER=false
+USE_LLM_GROUNDED_RESPONSE=false
 ```
 
-## Incorporación de un nuevo desarrollador
+El índice productivo de referencia es `libras-docs` en el servicio Azure AI
+Search `srch-libras-prod`. La fuente documental autorizada es SharePoint en el
+alcance aprobado del sitio `Soportealcliente`; no ampliar bibliotecas ni
+copiar secretos al entorno local.
 
-Para entender el código antes de modificarlo, leer en este orden:
+## Fuente de verdad documental
+
+Leer en este orden antes de modificar código:
 
 1. `README.md`.
-2. `docs/guia-para-desarrolladores.md`.
-3. `docs/contexto-actual.md`.
-4. `docs/arquitectura-produccion.md`.
+2. `docs/contexto-actual.md`.
+3. `docs/plan.md`.
+4. `docs/resultado-calidad-20260812.md`.
+5. `docs/arquitectura-produccion.md`.
 
-El repositorio permite revisar y probar el código sin credenciales. Para
-conectarse a Teams, Azure, SharePoint o al índice productivo se necesitan los
-permisos y archivos de entorno correspondientes; esos valores no forman parte
-del repositorio. No inventar configuraciones productivas ni copiar secretos al
-crear un `.env` local.
+La muestra humana del redactor está en
+`docs/revision-humana-redactor-20260812.md`. Las bitácoras fechadas y los
+planes archivados son antecedentes; no sustituyen estos documentos vigentes.
 
-El objetivo de producción es que personas autorizadas de la organización puedan consultar, desde Teams, documentación ubicada en una biblioteca o carpeta aprobada de SharePoint/OneDrive.
+## Arquitectura vigente
 
-## Mapa rector vigente
+```text
+Teams
+  -> App Service / bot
+  -> intención y alcance
+  -> Azure AI Search (legacy: léxico + apoyo vectorial)
+  -> filtros de procedencia, seguridad y versión
+  -> ranking determinista
+  -> clasificación de evidencia
+  -> respuesta determinista o redactor grounded opt-in
+  -> respuesta y enlaces
+```
 
-Antes de planificar o implementar, leer:
-
-- [docs/contexto-actual.md](docs/contexto-actual.md)
-- [docs/produccion-semana.md](docs/produccion-semana.md)
-- [docs/azure-ai-search-sharepoint.md](docs/azure-ai-search-sharepoint.md)
-
-No crear roadmaps paralelos. Actualizar `docs/contexto-actual.md` y
-`docs/produccion-semana.md` si cambia el alcance, una dependencia o el estado
-de producción.
-
-## Fases posteriores al objetivo de esta semana
-
-El objetivo inmediato está definido en `docs/produccion-semana.md`. Después de cerrar producción, el orden aprobado es:
-
-1. Integrar ClickUp y GitHub.
-2. Integrar Jira como fuente de documentación histórica.
-3. Crear un MCP de solo lectura para `https://downloads.aseinfo.net/home`.
-
-`docs/planes-posteriores/` y `src/planes_posteriores/` solo pueden guiar esas fases en ese orden. No introducirlas en el flujo productivo de esta semana ni crear una arquitectura paralela.
-
-## Estado técnico relevante
-
-El proyecto ya tiene:
-
-- integración funcional con Microsoft Teams / Microsoft 365 Agents Playground;
-- backend Python con `microsoft-agents-hosting-aiohttp`;
-- flujo modular en `agent.py`, `handler.py`, `retrieval.py`, `classification.py` y `formatting.py`;
-- índice documental local como respaldo de desarrollo;
-- sincronización delegada de PDFs desde una carpeta piloto de OneDrive/SharePoint;
-- ingesta de documentos en Azure AI Search.
-
-Para producción, el acceso personal/delegado a SharePoint debe sustituirse por una identidad corporativa con permisos mínimos sobre el sitio autorizado. Azure AI Search será el índice documental de producción; el índice local queda únicamente como fallback de desarrollo.
-
-## Decisiones de implementación
-
-1. No rehacer la integración de Teams ni el backend principal.
-2. Limitar esta semana a Teams, Azure AI Search y SharePoint/OneDrive.
-3. Usar una sola biblioteca o carpeta documental aprobada como fuente inicial.
-4. Aplicar mínimo privilegio: `Sites.Selected` y lectura exclusiva del sitio aprobado; no usar permisos globales de Microsoft Graph.
-5. Mantener autenticación corporativa, identidades administradas y secretos fuera del código y logs.
-6. No mostrar documentos, fragmentos ni enlaces que la audiencia autorizada no pueda consultar.
-7. Mantener la clasificación por reglas y la política de evidencia como red de seguridad.
-
-## Fuera de alcance esta semana
-
-- Integración de ClickUp y GitHub.
-- Integración histórica de Jira.
-- MCP y `downloads.aseinfo.net`.
-- Nuevas fuentes documentales distintas de SharePoint/OneDrive.
-- Otras bibliotecas o carpetas de SharePoint distintas de
-  `Documentos compartidos/SOLUCIONES`, salvo autorización explícita.
-- Automatización incremental avanzada, Blob Storage y enriquecimientos no solicitados.
-- Cambios de arquitectura que no sean necesarios para producción.
+El redactor recibe solo evidencias ya autorizadas. No decide permisos,
+versiones ni alcance. Una respuesta inválida, una cita no sustentada, una
+inyección documental o una falta de evidencia debe fallar cerrado y conservar
+la salida determinista o la abstención segura.
 
 ## Reglas de implementación
 
-- Mantener la orquestación fuera de `agent.py`.
-- Aplicar límites y timeouts a llamadas externas.
-- No guardar secretos en el código ni en logs.
-- Usar rutas relativas con `pathlib` y conservar compatibilidad Windows/macOS.
-- No cambiar el alcance para experimentar con IA local u otras integraciones.
-- Antes de modificar código, leer este archivo, `README.md` y
-  `docs/contexto-actual.md`.
+- No cambiar `legacy`, activar el evaluador LLM ni activar el redactor en
+  producción durante la validación.
+- Mantener filtros estrictos para secretos/credenciales, inyección documental,
+  fuentes no autorizadas, versiones incompatibles y ausencia clara de
+  evidencia.
+- Permitir procedimientos técnicos autorizados, incluido SQL de ofuscación;
+  no confundir datos sensibles tratados por un procedimiento con secretos que
+  deben bloquearse.
+- No crear reglas aisladas para un solo caso. Preferir mejoras generales de
+  recuperación, deduplicación, validación de citas y clasificación.
+- No reindexar, cambiar el índice, modificar permisos ni desplegar sin una
+  instrucción explícita del responsable.
+- No guardar secretos, tokens, PDFs sincronizados ni razonamiento del modelo en
+  el repositorio o los logs.
+- Mantener límites y timeouts de todas las llamadas externas.
+- Usar `pathlib`, rutas relativas y compatibilidad Windows/macOS.
+- Escribir los commits en español con formato breve, por ejemplo
+  `fix: valida las fuentes del redactor`.
 
 ## Archivos clave
 
-- `src/agent.py`: entrada y eventos de Teams.
-- `src/app.py`: host HTTP.
-- `src/handler.py`: orquestación.
-- `src/retrieval.py`: recuperación documental.
-- `src/document_index.py`: índice local de respaldo.
+- `src/agent.py`: entrada y actividades de Teams.
+- `src/app.py`: host HTTP (`/api/messages`, `/healthz`, `/readyz`).
+- `src/handler.py`: orquestación, barreras y decisión final.
+- `src/retrieval.py` y `src/azure_search.py`: recuperación y ranking.
+- `src/grounded_response.py`: redactor grounded acotado y validación de citas.
+- `src/classification.py`: reglas de evidencia y abstención.
+- `src/formatting.py`: respuesta y enlaces visibles.
 - `src/config.py`: configuración por entorno.
-- `src/sharepoint_sync.py`: sincronización actual desde OneDrive/SharePoint.
-- `src/azure_search_ingest.py`: carga hacia Azure AI Search.
+- `src/sharepoint_sync.py` y `src/azure_search_ingest.py`: ingesta separada.
 
-## Pruebas mínimas antes de producción
+## Validación mínima
 
-- Probar una pregunta desde Teams con evidencia real de SharePoint.
-- Verificar que Azure AI Search devuelve el documento y enlace correctos.
-- Probar una consulta sin evidencia.
-- Verificar que el bot no expone secretos ni datos fuera de la biblioteca autorizada.
-- Verificar que una persona de la audiencia objetivo puede instalar y usar Libras en Teams.
+Antes de consolidar cambios:
 
-## Convención de commits
+```powershell
+python -m unittest discover -s tests -q
+git diff --check
+```
 
-- Escribir siempre los mensajes de commit en español.
-- Usar un formato breve y descriptivo, preferiblemente `tipo: descripción`, por
-  ejemplo: `fix: corrige la recuperación de parámetros`.
-- Mantener en español el tipo, la descripción y cualquier cuerpo del commit;
-  conservar nombres propios, identificadores técnicos y nombres de archivos en
-  su forma original cuando corresponda.
+Para Azure, usar una consola con permisos de lectura y verificar sin mostrar
+secretos:
+
+```powershell
+Resolve-DnsName srch-libras-prod.search.windows.net
+```
+
+En App Service, ejecutar Python desde **SSH → Application** con las
+dependencias activas. Kudu se limita a inspección o transferencia de archivos.
+Una evaluación local contra Azure debe usar temporalmente fallback desactivado,
+`libras-docs`, `legacy` y ambos LLM apagados.
+
+## Fuera de alcance
+
+ClickUp, GitHub, Jira, MCP de `downloads.aseinfo.net`, nuevas bibliotecas de
+SharePoint, reconstrucciones de índice y la estrategia `v2` no forman parte de
+esta entrega. Sus documentos permanecen como planes futuros o antecedentes y
+no deben entrar en el flujo productivo actual.

@@ -9,13 +9,13 @@ el backend que se ejecuta en Azure App Service y atiende mensajes de Teams.
 
 ## Estado y alcance
 
-Libras ya tiene un backend desplegado en Azure App Service y se valida desde
-Microsoft Teams y Microsoft 365 Agents Playground. La fuente documental
-autorizada son las bibliotecas documentales aprobadas del sitio
-`Soportealcliente`; `SOLUCIONES` se consulta como carpeta dentro de
-`Documentos`. `Teams Wiki Data` queda fuera inicialmente. El contexto consolidado está en
-[docs/contexto-actual.md](docs/contexto-actual.md); no ampliar el alcance ni
-crear roadmaps paralelos sin actualizarlo.
+Libras mantiene producción en `RETRIEVAL_STRATEGY=legacy`. El evaluador LLM y
+el redactor grounded permanecen desactivados mientras termina la revisión
+humana para un piloto controlado. El índice de referencia es `libras-docs` en
+`srch-libras-prod`; la fuente es SharePoint autorizado en el sitio
+`Soportealcliente`. El estado vigente está en
+[docs/contexto-actual.md](docs/contexto-actual.md) y el plan activo en
+[docs/plan.md](docs/plan.md). No ampliar el alcance ni crear roadmaps paralelos.
 
 Si estás conociendo el código, empieza por la
 [guía para desarrolladores](docs/guia-para-desarrolladores.md). Explica el flujo
@@ -32,19 +32,6 @@ El proyecto ya incluye:
 - clasificación estructurada con fallback por reglas;
 
 El trabajo posterior a producción seguirá este orden: primero ClickUp + GitHub, luego Jira como fuente histórica y finalmente un MCP de solo lectura para `downloads.aseinfo.net`. El mapa y el estado de estas fases están en [docs/planes-posteriores](docs/planes-posteriores/README.md).
-
-## Integración ClickUp en revisión
-
-La integración con ClickUp se planifica como una conexión de solo lectura para
-consultar tareas, hotfixes y releases relacionados con una versión de Evolution.
-ClickUp está revisando la solicitud de allowlist para esta URL de redirección de
-staging:
-
-`https://app-libras-staging.azurewebsites.net/auth/clickup/callback`
-
-La integración no se considera activa hasta que ClickUp apruebe la solicitud.
-Mientras tanto, Libras no consulta ClickUp en producción y responde que la
-fuente todavía no está integrada.
 
 ## Inicio rápido
 
@@ -125,7 +112,7 @@ Escucha en `http://127.0.0.1:3978/api/messages`. El inicio desde Teams requiere 
 2. [Contexto actual](docs/contexto-actual.md): alcance, estado y pendientes reales.
 3. [Arquitectura productiva](docs/arquitectura-produccion.md): Azure, Teams, Search, SharePoint y secretos.
 4. [Guía breve de Azure](docs/guia-azure-para-desarrolladores.md): recursos, identidades y revisión del entorno.
-5. [Pruebas del piloto](docs/plan-pruebas-playground.md): casos funcionales y de seguridad.
+5. [Resultados y revisión del piloto](docs/resultado-calidad-20260812.md): línea base, A/B y criterios de promoción.
 6. [Despliegue productivo](docs/despliegue-produccion.md): operación y validación en Azure.
 
 ## Configuración y secretos
@@ -155,6 +142,9 @@ de secretos desde Key Vault.
 - [Guía breve de Azure](docs/guia-azure-para-desarrolladores.md)
 - [Contexto actual y continuidad](docs/contexto-actual.md)
 - [Foco de producción de esta semana](docs/produccion-semana.md)
+- [Plan activo de calidad RAG](docs/plan.md)
+- [Resultados y A/B del redactor](docs/resultado-calidad-20260812.md)
+- [Archivo de planes y bitácoras históricas](docs/archivo/README.md)
 - [Azure AI Search y SharePoint/OneDrive](docs/azure-ai-search-sharepoint.md)
 - [Guía de desarrollo en macOS y Codex](docs/desarrollo-macos.md)
 - [Roadmap de integraciones posteriores](docs/planes-posteriores/README.md)

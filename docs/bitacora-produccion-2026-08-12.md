@@ -1,5 +1,10 @@
 # Bitácora de cierre — 2026-08-12
 
+> Registro histórico de una ejecución anterior. La línea base vigente es
+> 315/315 pruebas locales y la decisión actual está en
+> [resultado-calidad-20260812.md](resultado-calidad-20260812.md). Este archivo
+> no autoriza despliegues ni activación del redactor.
+
 ## Política de ambigüedad de versión
 
 Se implementó la política general para consultas de instalación o actualización

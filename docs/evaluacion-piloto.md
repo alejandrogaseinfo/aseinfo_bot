@@ -1,5 +1,9 @@
 # Matriz de evaluación del piloto de Libras
 
+> Matriz histórica y de referencia. La revisión humana vigente de 2026-08-12
+> está en [revision-humana-redactor-20260812.md](revision-humana-redactor-20260812.md);
+> este documento no constituye autorización de publicación en Teams.
+
 > **Corrección de alcance (2026-07-31):** las referencias posteriores a
 > políticas de planilla de México, Guatemala o El Salvador son registros de
 > un entorno anterior de Bot-Salvador/RAG-Piloto. No pertenecen al sitio
@@ -65,8 +69,9 @@ planillas por país no se pueden reutilizar para validar Libras.
   los tres pasos y preservó la fuente y el enlace de SharePoint, sin búsqueda
   adicional. Latencia inferior a 1 s.
 
-Resultado provisional: **listo para solicitar autorización de publicación en
-Teams**. No se realizó publicación ni cambio de distribución en Teams.
+Resultado histórico: en esa fecha se consideró **listo para solicitar
+autorización de publicación en Teams**. No se realizó publicación ni cambio de
+distribución en Teams. Esta conclusión no aplica al piloto actual del redactor.
 
 ## Registro histórico descartado: preparación de P2, P3, P4, P8 y P9 — 2026-07-29
 

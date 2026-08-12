@@ -1,5 +1,9 @@
 # Plan de corrección de calidad de Libras
 
+> Documento histórico supersedido por [plan.md](plan.md). Se conserva como
+> trazabilidad de decisiones; sus fechas, métricas y tareas pendientes no son
+> el estado operativo actual.
+
 > Estado: **en ejecución**. Inicio: 2026-08-03. Este documento concentra la
 > corrección de calidad del piloto. Complementa, sin sustituir,
 > [contexto-actual.md](contexto-actual.md) y
