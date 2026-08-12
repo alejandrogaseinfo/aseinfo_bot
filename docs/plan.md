@@ -371,7 +371,7 @@ No promover el redactor a una audiencia amplia hasta cumplir todos estos puntos:
 - [ ] Redactor consolidado como etapa final, si la matriz lo aprueba.
 - [x] `git diff` revisado y cambios funcionales/documentales separados.
 - [x] Suite completa y corpus ejecutados después de la consolidación.
-- [x] Commit `4ebaaa5` creado y bundle generado; la evaluación posterior al
+- [x] Commit `ecb8d84` creado y bundle generado; la evaluación posterior al
   commit terminó en 29/29.
 - [ ] Validación real desde SSH → Application completada.
 - [ ] Despliegue con redactor apagado autorizado.
