@@ -3,11 +3,14 @@
 ## Estado vigente — 2026-08-12
 
 Producción permanece en `RETRIEVAL_STRATEGY=legacy`, con el verificador y el
-redactor grounded apagados. La suite local vigente es **315/315**. La prueba
-A/B posterior a las correcciones ejecutó **12/12 preguntas** contra
-`srch-libras-prod/libras-docs`, sin fallback local; promedios: 4.21 s sin
-redactor y 4.83 s con redactor. El piloto sigue pendiente de revisión humana y
-autorización explícita; no es una autorización de despliegue.
+redactor grounded apagados. La suite local vigente es **327/327**. La prueba
+A/B instrumentada ejecutó **12/12 preguntas** contra
+`srch-libras-prod/libras-docs`, sin fallback local: promedio/p95 de 4.10/6.67 s
+sin redactor y 4.55/7.93 s con redactor. El piloto sigue pendiente de
+consolidación, despliegue controlado y autorización operativa; esta medición no
+es una autorización de activación en producción.
+
+Reporte vigente: `output/revision-humana-redactor-20260812-postfix6.json`.
 
 Consulta el detalle en [resultado-calidad-20260812.md](resultado-calidad-20260812.md)
 y la muestra revisable en

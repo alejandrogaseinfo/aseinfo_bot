@@ -2886,6 +2886,51 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
         self.assertIn("procedimiento SQL autorizado", summary)
         self.assertNotIn("UPDATE", summary)
 
+    def test_sql_obfuscation_explains_mechanics_without_secrets_or_executable_sql(self):
+        source = EvidenceSource(
+            tipo="sharepoint",
+            titulo="Ofuscación de datos.sql — Documento",
+            ubicacion="https://contoso.example/ofuscacion.sql",
+            fragmento=(
+                "BEGIN TRANSACTION; SELECT valor INTO #temporal FROM datos; "
+                "DECLARE @token varchar(80); UPDATE datos SET valor = @token;"
+            ),
+            document_type="sql",
+        )
+        summary = _grounded_document_summary("¿Cómo se ofuscan datos sensibles en SQL?", [source])
+        self.assertIn("Objetivo", summary)
+        self.assertIn("Mecánica documentada", summary)
+        self.assertNotIn("BEGIN TRANSACTION", summary)
+        self.assertNotIn("SELECT", summary)
+        self.assertNotIn("UPDATE", summary)
+        self.assertNotIn("@token", summary)
+
+    def test_procedure_combines_consecutive_fragments_from_same_manual(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ampliar Tiempo de Sesion.pdf — Página 1",
+                ubicacion="https://contoso.example/sesion.pdf#1",
+                fragmento="Proceso para ampliar tiempo de sesión. 1. Ingrese al servidor de aplicaciones.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ampliar Tiempo de Sesion.pdf — Página 2",
+                ubicacion="https://contoso.example/sesion.pdf#2",
+                fragmento="2. Abra IIS y seleccione el estado de la sesión.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ampliar Tiempo de Sesion.pdf — Página 3",
+                ubicacion="https://contoso.example/sesion.pdf#3",
+                fragmento="3. Modifique el tiempo de espera y presione Aplicar.",
+            ),
+        ]
+        summary = _grounded_document_summary("¿Cómo amplío el tiempo de sesión?", evidence)
+        self.assertIn("Ingrese al servidor", summary)
+        self.assertIn("Abra IIS", summary)
+        self.assertIn("Modifique el tiempo", summary)
+
     def test_procedure_heading_without_steps_is_not_answered(self):
         evidence = [
             EvidenceSource(
@@ -2916,6 +2961,35 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
         decision = classify_case_by_rules("Necesito administrar documentos en Evolution, ¿cómo se hace?", evidence)
         self.assertIn("Nuevo", decision.resumen)
         self.assertNotIn("módulo Consultas", decision.resumen)
+
+    def test_document_management_summary_includes_documented_types_and_steps(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Gestion de documentos.pdf — Página 4",
+                ubicacion="https://contoso.example/gestion.pdf#4",
+                fragmento=(
+                    "Tipos de documentos gestionados. Ejemplo de los tipos de documento "
+                    "que puede administrar: Formularios, Manuales, Procedimientos e Instructivos. "
+                    "Seleccione Gestión de documentos y haga clic en Nuevo."
+                ),
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Gestion de documentos.pdf — Página 6",
+                ubicacion="https://contoso.example/gestion.pdf#6",
+                fragmento=(
+                    "Administrar documentos gestionados. Seleccione la opción Administrar "
+                    "documentos y haga clic en el botón Nuevo."
+                ),
+            ),
+        ]
+        summary = _grounded_document_summary(
+            "Necesito administrar documentos en Evolution, ¿cómo se hace?", evidence
+        )
+        self.assertIn("Tipos documentados", summary)
+        self.assertIn("Formularios", summary)
+        self.assertIn("haga clic", summary.casefold())
 
     def test_jquery_answer_keeps_release_version_from_readme(self):
         source = EvidenceSource(

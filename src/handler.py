@@ -826,6 +826,42 @@ def is_persistable_user_message(user_message: str) -> bool:
     )
 
 
+def _grounded_draft_preserves_procedure(
+    user_message: str, deterministic_summary: str, draft_response: str
+) -> bool:
+    """Keep a concise draft only when it preserves a multi-step procedure.
+
+    The grounded writer may legally shorten prose, but it must not collapse a
+    documented multi-page procedure to its heading or first page. This check
+    is intentionally based on numbered steps and generic token overlap; it
+    does not name a manual, case ID or special answer.
+    """
+    if not re.search(r"\b(?:c[oó]mo|como|pasos?|procedimiento)\b", user_message or "", re.IGNORECASE):
+        return True
+    expected_steps = [
+        match.group(1).strip()
+        for match in re.finditer(r"^\s*\d+\.\s+(.+)$", deterministic_summary or "", re.MULTILINE)
+    ]
+    if len(expected_steps) < 3:
+        return True
+    draft_tokens = set(tokenize(draft_response or ""))
+    matched = 0
+    for step in expected_steps:
+        step_tokens = {token for token in tokenize(step) if len(token) >= 4}
+        if step_tokens and len(step_tokens.intersection(draft_tokens)) >= max(1, min(3, len(step_tokens)) // 2):
+            matched += 1
+    # Preserve at least 80% of the documented steps; a two-line excerpt is
+    # not an acceptable replacement for a four-page procedure.
+    required = max(3, (len(expected_steps) * 4 + 4) // 5)
+    if matched < required:
+        return False
+    if re.search(r"tipos?\s+documentados\s*:", deterministic_summary or "", re.IGNORECASE):
+        type_tokens = set(tokenize(deterministic_summary.split(":", 1)[-1]))
+        if type_tokens.intersection({"formulario", "manual", "procedimiento", "instructivo"}) and not type_tokens.intersection(draft_tokens):
+            return False
+    return True
+
+
 async def process_user_message(
     user_message: str,
     client,
@@ -980,8 +1016,15 @@ async def process_user_message(
                 return _context_guard_response()
 
     intent = None
-    if getattr(config, "use_llm_intent_classifier", False) and getattr(
-        config, "model_endpoint_configured", True
+    # A concrete documentary question already has a bounded retrieval path.
+    # Do not spend an extra LLM call classifying it as conversational help or
+    # an underspecified report; that can both add latency and bypass Azure AI
+    # Search before the evidence filters get a chance to run.
+    documentary_question = _looks_like_documentary_question(retrieval_message)
+    if (
+        getattr(config, "use_llm_intent_classifier", False)
+        and getattr(config, "model_endpoint_configured", True)
+        and not documentary_question
     ):
         try:
             intent = await _run_blocking_with_timeout(
@@ -1138,6 +1181,15 @@ async def process_user_message(
                         requiere_escalamiento=True,
                     )
                     logger.info("El redactor fundamentado devolvió una abstención explícita.")
+                elif not _grounded_draft_preserves_procedure(
+                    retrieval_message,
+                    fallback_decision.resumen,
+                    draft.response,
+                ):
+                    logger.info(
+                        "El redactor fundamentado omitió pasos de un procedimiento; "
+                        "se conserva la respuesta determinista."
+                    )
                 else:
                     fallback_decision.resumen = draft.response
                     fallback_decision.fuentes = draft.sources

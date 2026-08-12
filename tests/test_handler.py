@@ -9,7 +9,7 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from handler import process_user_message
+from handler import _grounded_draft_preserves_procedure, process_user_message
 from intent import IntentResult
 from models import BotDecision, EvidenceSource, RetrievalTrace
 
@@ -30,6 +30,22 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             context_guard_mode="observe",
             context_guard_failure_policy="block",
             sharepoint_source_labels=("ReadME Hotfixes", "Documentos/SOLUCIONES"),
+        )
+
+    def test_grounded_writer_cannot_collapse_multipage_procedure(self):
+        deterministic = (
+            "Según la documentación, los pasos son:\n"
+            "1. Ingresar al servidor de aplicaciones.\n"
+            "2. Abrir IIS.\n"
+            "3. Modificar el tiempo de espera.\n"
+            "4. Presionar Aplicar.\n"
+            "5. Reiniciar IIS."
+        )
+        short_draft = "Ingrese al servidor de aplicaciones y abra IIS."
+        self.assertFalse(
+            _grounded_draft_preserves_procedure(
+                "¿Cómo amplío el tiempo de sesión?", deterministic, short_draft
+            )
         )
 
     async def test_retrieval_timeout_returns_safe_no_evidence_response(self):
@@ -931,6 +947,42 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("Claro, cuéntame qué quieres revisar.", response)
         retrieval.assert_not_called()
+
+    async def test_documentary_question_skips_conversational_intent_router(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        self.config.retrieval_timeout_seconds = 0.2
+        evidence = [
+            EvidenceSource(
+                tipo="azure_ai_search",
+                titulo="Gestion de documentos.pdf — Página 6",
+                ubicacion="https://contoso.example/gestion-documentos.pdf",
+                fragmento=(
+                    "Para administrar documentos en Evolution, seleccione "
+                    "Gestión de documentos y la opción Administrar documentos gestionados."
+                ),
+            )
+        ]
+        decision = BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen="La documentación describe cómo administrar documentos.",
+            fuentes=evidence,
+        )
+
+        with patch("handler.classify_intent") as classify, patch(
+            "handler.retrieve_evidence", return_value=evidence
+        ) as retrieval, patch("handler.classify_case", return_value=decision):
+            response = await process_user_message(
+                "Necesito administrar documentos en Evolution, ¿cómo se hace?",
+                None,
+                self.config,
+            )
+
+        classify.assert_not_called()
+        retrieval.assert_called_once()
+        self.assertIn("administrar documentos", response.lower())
+        self.assertIn("Gestion de documentos.pdf", response)
 
     async def test_llm_capability_route_is_deterministic_and_skips_generation(self):
         self.config.use_llm_intent_classifier = True

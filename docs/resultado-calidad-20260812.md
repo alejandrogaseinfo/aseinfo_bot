@@ -2,10 +2,32 @@
 
 ## Estado de la suite
 
-- Suite local completa después de la consolidación: **315/315 pruebas aprobadas**.
+- Suite local completa después de la consolidación: **327/327 pruebas aprobadas**.
 - La regresión de RAG-07 permanece cubierta: reinstalar MSDTC no se trata como
   una actualización de release.
 - El evaluador acepta explícitamente la categoría `conceptual`.
+
+## Repetición A/B instrumentada — 2026-08-12
+
+La repetición posterior a la corrección general del router evitó que una
+pregunta documental concreta se desviara a conversación antes de consultar
+Azure AI Search. Se ejecutaron las mismas 12 preguntas con
+`RETRIEVAL_STRATEGY=legacy`, índice `libras-docs`, Entra ID y fallback local
+deshabilitado.
+
+| Variante | Aprobación funcional | Latencia promedio | Latencia p95 |
+|---|---:|---:|---:|
+| Redactor apagado | 12/12 | 4.10 s | 6.67 s |
+| Redactor encendido | 12/12 | 4.55 s | 7.93 s |
+
+OPS-01, OPS-02, OPS-03, OPS-04, OPS-05, OPS-06, OPS-07, OPS-08, OPS-09,
+OPS-10, OPS-11 y OPS-12 conservaron el resultado esperado. OPS-10 usó el
+fallback determinista porque el borrador no preservaba todos los pasos. OPS-11
+pidió la versión exacta y OPS-12 mantuvo la abstención por falta de evidencia
+diagnóstica directa.
+
+Reporte instrumentado: `output/revision-humana-redactor-20260812-postfix6.json`.
+Esta corrida no modificó producción, no activó ningún LLM y no reindexó Azure.
 
 ## Línea base de `legacy`
 

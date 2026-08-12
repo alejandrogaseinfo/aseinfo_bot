@@ -89,9 +89,43 @@ MAX_CANDIDATES_PER_DOCUMENT = 3
 # Azure's retrieval pool so secondary candidates remain available for review.
 MAX_MERGED_CANDIDATES = 60
 RERANK_POOL_SIZE = 20
+
+# Imperative markers identify an operational fragment without tying retrieval
+# to a document name or an OPS case. They are used only to keep adjacent
+# pages from the same manual after deterministic ranking.
+_PROCEDURE_FRAGMENT_PATTERN = re.compile(
+    r"\b(?:haga\s+clic|seleccion\w*|digit\w*|ingres\w*|abr\w*|presion\w*|modific\w*|complete|"
+    r"agreg\w*|asign\w*|sub\w*|guard\w*|apliqu\w*|reinici\w*|dar\s+doble\s+clic|"
+    r"\d+\s*[.)])",
+    re.IGNORECASE,
+)
+
+
+def _record_document_family(record: dict) -> str:
+    """Return a stable manual family key, excluding page/chunk labels."""
+    title = str(record.get("title") or "")
+    title = re.sub(
+        r"\s+[—-]\s*(?:p[aá]gina|documento)\b.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"\s+\b(?:p[aá]gina|documento)\s+\d+\b.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    normalized = " ".join(tokenize(title))
+    return normalized or str(record.get("document_id") or record.get("id") or "")
+
+
+def _record_has_procedure_fragment(record: dict) -> bool:
+    return bool(_PROCEDURE_FRAGMENT_PATTERN.search(str(record.get(CONTENT_FIELD) or "")))
 _CANDIDATE_RANK_FIELDS = (
     "_keyword_rank",
     "_focused_keyword_rank",
+    "_management_rank",
     "_release_readme_rank",
     "_vector_rank",
     "_prefix_rank",
@@ -1241,6 +1275,7 @@ def _document_relevance_score(
         # A compact lexical query favors a section heading made of the user's
         # meaningful concepts over filler words from the natural question.
         + max(0, MAX_CANDIDATES - int(record.get("_focused_keyword_rank", MAX_CANDIDATES))) * 1.5
+        + max(0, MAX_CANDIDATES - int(record.get("_management_rank", MAX_CANDIDATES))) * 2.5
         # This bounded pass exists only for pre-installation release guidance.
         + max(0, MAX_CANDIDATES - int(record.get("_release_readme_rank", MAX_CANDIDATES))) * 1.5
         # Prefix lookup is reserved for concrete error reports whose subject
@@ -1468,11 +1503,26 @@ def _has_minimum_content_coverage(
     )
     if management_question:
         management_action_tokens = set(tokenize(fragment)).intersection(
-            {"administrar", "gestionar", "crear", "editar", "eliminar", "subir", "nuevo", "seleccionar", "tipo"}
+            {
+                "crear", "editar", "eliminar", "subir", "nuevo", "seleccionar",
+                "seleccione", "haga", "clic", "digitar", "digite", "ingresar",
+                "ingrese", "agregar", "agregue", "asignar", "asigne", "guardar",
+                "guarde",
+            }
         )
         action_is_covered = action_is_covered or bool(
             "documento" in record_tokens and management_action_tokens
         )
+        # The manual's operational pages do not repeat the product name on
+        # every page. Once the same page carries the management-manual anchor
+        # and an action marker, inherit that document-level product context;
+        # this is not a bypass for unrelated or introductory fragments.
+        management_manual_anchor = re.search(
+            r"gesti[oó]n\s+de\s+document", f"{record.get('title', '')} {fragment}", re.IGNORECASE
+        )
+        if management_manual_anchor and management_action_tokens and "evolution" in required_tokens:
+            required_matches.add("evolution")
+            subject_matches.add("evolution")
     if _is_release_guidance_question(user_message) and _is_release_guidance_record(record):
         # "Tomar precauciones" is commonly documented as preparation,
         # backups and update instructions rather than with the literal verb.
@@ -1541,7 +1591,7 @@ def _diversify_candidate_records(records: list[dict]) -> list[dict]:
         ranks = [
             int(record[field])
             for field in (
-                "_vector_rank", "_keyword_rank", "_focused_keyword_rank",
+                "_vector_rank", "_keyword_rank", "_focused_keyword_rank", "_management_rank",
                 "_release_readme_rank", "_prefix_rank",
             )
             if record.get(field) is not None
@@ -1599,7 +1649,7 @@ def _limit_candidate_pool(
         ranks = [
             int(record[field])
             for field in (
-                "_vector_rank", "_keyword_rank", "_focused_keyword_rank",
+                "_vector_rank", "_keyword_rank", "_focused_keyword_rank", "_management_rank",
                 "_release_readme_rank", "_prefix_rank",
             )
             if record.get(field) is not None
@@ -1785,6 +1835,37 @@ def _retrieve_legacy_azure_search_evidence(
                     _merge_candidate_record(existing, record)
                 existing["_focused_keyword_rank"] = rank
             pass_counts["focused_keyword"] = focused_count
+
+        # Administration and consultation are different intents.  A compact
+        # management-only lexical pass keeps the operational manual in the
+        # union even when a natural-language question ranks a Portal download
+        # page or a manual cover higher.  It is vocabulary-based, not tied to
+        # a particular filename or test case.
+        management_query = set(tokenize(user_message))
+        if (
+            management_query.intersection({"administrar", "gestionar", "gestion"})
+            and any(token.startswith("document") for token in management_query)
+        ):
+            management_count = 0
+            for rank, result in enumerate(
+                search_client.search(
+                    search_text="gestion documentos gestionados tipos administrar",
+                    search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                    **keyword_search_args,
+                ),
+                start=1,
+            ):
+                management_count += 1
+                record = dict(result)
+                record_id = str(record.get("id", ""))
+                existing = records_by_id.get(record_id)
+                if existing is None:
+                    existing = record
+                    records_by_id[record_id] = existing
+                else:
+                    _merge_candidate_record(existing, record)
+                existing["_management_rank"] = rank
+            pass_counts["management"] = management_count
 
         # Database operators frequently shorten a named table to its acronym.
         # Search the normalized identifier tokens with an AND pass so the
@@ -2291,6 +2372,31 @@ def _retrieve_legacy_azure_search_evidence(
     relevant_records = [
         item for item in ranked_records if item[0] >= best_score * relevance_floor
     ][:limit]
+
+    # A manual often splits one procedure across consecutive pages. The page
+    # that repeats the full heading can score much higher than its continuation
+    # even though the continuation contains the actionable step. Keep those
+    # same-manual operational fragments in the bounded set; unrelated manuals
+    # and introductory-only pages still have to pass the normal coverage gate.
+    procedural_request = bool(
+        query_tokens.intersection({"paso", "procedimiento", "administrar", "gestionar"})
+        or re.search(r"\b(?:c[oó]mo|como|pasos?|procedimiento)\b", user_message or "", re.IGNORECASE)
+    )
+    if procedural_request and ranked_records:
+        best_family = _record_document_family(ranked_records[0][1])
+        selected_record_ids = {id(record) for _, record in relevant_records}
+        continuation_records = [
+            item
+            for item in ranked_records
+            if _record_document_family(item[1]) == best_family
+            and _record_has_procedure_fragment(item[1])
+            and id(item[1]) not in selected_record_ids
+        ]
+        for item in continuation_records:
+            if len(relevant_records) >= max(limit, 4):
+                break
+            relevant_records.append(item)
+            selected_record_ids.add(id(item[1]))
     if diagnostics is not None and len(relevant_records) < len(ranked_records):
         rejected_reasons["relevance_floor"] = len(ranked_records) - len(relevant_records)
     if diagnostics is not None:

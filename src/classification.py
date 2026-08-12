@@ -136,9 +136,10 @@ DOWNLOAD_DIAGNOSTIC_EVIDENCE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 PROCEDURE_STEP_MARKER = re.compile(
-    r"\b(?:haga clic|seleccione|selecciona|digite|ingrese|elija|marque|abra|presione|"
-    r"seleccionar|confirme|renombre|renombrar|"
-    r"importe|importar|ejecute)\b",
+    r"\b(?:haga clic|seleccione|selecciona|seleccionar|digit\w*|ingres\w*|elija|marque|"
+    r"abr\w*|presion\w*|confirme|renombr\w*|modifi\w*|complete|agreg\w*|asign\w*|"
+    r"sub\w*|guard\w*|apliqu\w*|dar doble clic|haga doble clic|"
+    r"importe|importar|ejecute|\d+\s*[.)]\s+)\b",
     re.IGNORECASE,
 )
 PROCEDURE_NOISE_BOUNDARY = re.compile(
@@ -241,6 +242,7 @@ def _procedure_steps(text: str) -> list[str]:
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(compact)
         step = compact[match.start() : end]
+        step = re.sub(r"^\d+\s*[.)]\s*", "", step)
         # Los fragmentos indexados pueden incluir trazas o cadenas de conexión
         # después del último paso. No son instrucciones y no deben llegar al chat.
         step = PROCEDURE_NOISE_BOUNDARY.split(step, maxsplit=1)[0].strip(" .;:")
@@ -278,6 +280,73 @@ def _steps_are_equivalent(left: str, right: str) -> bool:
 
 def _contains_equivalent_step(step: str, existing: list[str]) -> bool:
     return any(_steps_are_equivalent(step, candidate) for candidate in existing)
+
+
+def _source_document_family(source: EvidenceSource) -> str:
+    """Group consecutive pages of one manual without relying on an ID."""
+    title = re.sub(
+        r"\s+[—-]\s*(?:p[aá]gina|documento)\b.*$",
+        "",
+        source.titulo or "",
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(
+        r"\s+\b(?:p[aá]gina|documento)\s+\d+\b.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    normalized = " ".join(tokenize(title))
+    return normalized or source.document_id or source.ubicacion
+
+
+def _management_source_score(source: EvidenceSource) -> int:
+    """Prefer operational management pages over headings and navigation."""
+    text = f"{source.titulo} {source.fragmento}"
+    steps = _procedure_steps(source.fragmento)
+    operations = re.findall(
+        r"\b(?:administr\w*|gesti\w*|crear\w*|editar\w*|eliminar\w*|"
+        r"subir\w*|agregar\w*|nuevo|seleccionar\w*|asignar\w*)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    type_markers = re.findall(r"\btipos?\s+de\s+document\w*\b", text, flags=re.IGNORECASE)
+    navigation = re.findall(r"\b(?:portal|consult\w*|descarg\w*)\b", text, flags=re.IGNORECASE)
+    return len(steps) * 80 + len(operations) * 12 + len(type_markers) * 25 - len(navigation) * 20
+
+
+def _source_page_number(source: EvidenceSource) -> int:
+    match = re.search(r"\b(?:p[aá]gina)\s+(\d+)\b", source.titulo or "", re.IGNORECASE)
+    return int(match.group(1)) if match else 10_000
+
+
+def _management_source_order(source: EvidenceSource) -> tuple[int, int]:
+    """Place the administration path before catalog/type continuation pages."""
+    text = f"{source.titulo} {source.fragmento}"
+    if re.search(r"administr\w*\s+document\w*", text, re.IGNORECASE):
+        category = 0
+    elif re.search(r"tipos?\s+de\s+document\w*", text, re.IGNORECASE):
+        category = 1
+    else:
+        category = 2
+    return category, _source_page_number(source)
+
+
+def _management_type_details(evidence: list[EvidenceSource]) -> list[str]:
+    """Extract documented document types without inventing or enumerating a catalog."""
+    details: list[str] = []
+    for source in evidence:
+        text = " ".join((source.fragmento or "").split())
+        for match in re.finditer(
+            r"\b(?:ejemplo\s+de\s+los\s+)?tipos?\s+de\s+document\w*[^:]{0,100}:\s*(.+?)(?=\b(?:del\s+[aá]rea|seleccione|haga\s+clic|\d+\.)|$)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            detail = re.sub(r"[•●]+", ", ", match.group(1))
+            detail = " ".join(detail.split()).strip(" ,.;:")
+            if detail and detail not in details:
+                details.append(detail[:360])
+    return details[:2]
 
 
 def _focused_procedure_evidence(
@@ -321,7 +390,13 @@ def _focused_procedure_evidence(
             and not re.search(r"portal|descarg", source.titulo, re.IGNORECASE)
         ]
         if management_sources:
-            return management_sources[:2]
+            operational_sources = sorted(
+                management_sources,
+                key=_management_source_score,
+                reverse=True,
+            )
+            selected_management = operational_sources[:3]
+            return sorted(selected_management, key=_management_source_order)
 
     if not _is_procedural_request(user_message):
         return evidence
@@ -335,7 +410,13 @@ def _focused_procedure_evidence(
             source for source in evidence if "/soluciones/" in unquote(urlparse(source.ubicacion).path).casefold()
         ]
         if solution_sources:
-            return [solution_sources[0]]
+            primary_family = _source_document_family(solution_sources[0])
+            same_solution = [
+                source
+                for source in solution_sources
+                if _source_document_family(source) == primary_family
+            ]
+            return same_solution[:4] or [solution_sources[0]]
 
     candidates = [
         (
@@ -359,13 +440,18 @@ def _focused_procedure_evidence(
     )
     selected = [best_source]
     covered_steps = list(best_steps)
+    best_family = _source_document_family(best_source)
     for source, steps, _, _ in candidates:
         if source is best_source:
             continue
         new_steps = [step for step in steps if not _contains_equivalent_step(step, covered_steps)]
+        same_manual = _source_document_family(source) == best_family
         if (
-            source.covered_requirements
-            and len(new_steps) >= MIN_SECONDARY_PROCEDURE_STEPS
+            new_steps
+            and (
+                (same_manual and len(new_steps) >= 1)
+                or (source.covered_requirements and len(new_steps) >= MIN_SECONDARY_PROCEDURE_STEPS)
+            )
         ):
             selected.append(source)
             covered_steps.extend(new_steps)
@@ -422,10 +508,14 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
         query_text = " ".join((user_message or "").casefold().split())
         if re.search(r"ofusc\w*", query_text):
             return (
-                "La fuente contiene un script técnico con el procedimiento SQL "
-                "autorizado para ofuscar datos sensibles. No reproduzco el código "
-                "ejecutable ni valores confidenciales; revise el archivo citado y "
-                "aplíquelo únicamente mediante el control de cambios autorizado."
+                "La fuente contiene un script técnico autorizado. Objetivo: "
+                "ofuscar datos sensibles de expedientes mediante el "
+                "procedimiento SQL autorizado. Mecánica documentada: el script "
+                "prepara conjuntos temporales de valores de reemplazo, recorre "
+                "los registros y sustituye los datos sensibles; después actualiza "
+                "los campos derivados relacionados. No reproduzco código ejecutable, "
+                "contraseñas, tokens ni otros valores confidenciales; aplíquelo solo "
+                "mediante el control de cambios autorizado."
             )
         return (
             "La evidencia recuperada es un script técnico relacionado con la consulta. "
@@ -486,6 +576,29 @@ def _grounded_document_summary(user_message: str, evidence: list[EvidenceSource]
                 for name, detail in parameters[:6]
             ]
             return "Según la documentación, los parámetros identificados son:\n" + "\n".join(lines)
+
+    management_request = bool(
+        re.search(r"\b(?:administrar|gestionar)\w*\b", user_message or "", re.IGNORECASE)
+        and re.search(r"\bdocument\w*\b", user_message or "", re.IGNORECASE)
+    )
+    if management_request:
+        management_steps = _unique_procedure_steps(focused_evidence)
+        type_details = _management_type_details(focused_evidence)
+        sections: list[str] = []
+        if management_steps:
+            sections.append(
+                "Pasos documentados:\n"
+                + "\n".join(
+                    f"{index}. {step}"
+                    for index, step in enumerate(
+                        management_steps[:MAX_PROCEDURE_STEPS_IN_RESPONSE], start=1
+                    )
+                )
+            )
+        if type_details:
+            sections.append("Tipos documentados: " + "; ".join(type_details) + ".")
+        if sections:
+            return "Según el manual de gestión de documentos:\n" + "\n".join(sections)
 
     # A page heading such as ``Proceso para ... 1`` is a retrieval hit, not a
     # usable procedure. Do not turn a title or table-of-contents fragment into
@@ -635,13 +748,18 @@ def _evidence_covers_requested_facet(
         re.search(r"\b(?:administrar|gestionar)\w*\b", normalized_question)
         and re.search(r"\bdocument\w*\b", normalized_question)
     ):
+        # A manual title or module introduction is not an answer to "cómo".
+        # Require a documented operational marker before citing it as the
+        # management procedure; this remains independent of any document ID.
         return bool(
             re.search(
-                r"gesti[oó]n\s+de\s+document|administr\w*\s+document\w*",
+                r"\b(?:haga\s+clic|seleccione|digite|ingrese|abra|presione|"
+                r"modifique|complete|agregue|asigne|suba|guarde|aplique|"
+                r"crear\w*|editar\w*|eliminar\w*|registrar\w*|nuevo)\b|"
+                r"\b\d+\s*[.)]\s*\S",
                 fragments,
                 re.IGNORECASE,
             )
-            or re.search(r"\b(?:crear|editar|eliminar|subir|registrar)\w*\b", fragments, re.IGNORECASE)
         )
     if CALCULATION_REQUEST_PATTERN.search(normalized_question):
         return bool(CALCULATION_EVIDENCE_PATTERN.search(fragments))
