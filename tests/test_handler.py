@@ -598,6 +598,31 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
 
         retrieval.assert_called_once()
 
+    async def test_authorized_sql_obfuscation_is_not_blocked_by_out_of_scope_intent(self):
+        self.config.use_llm_intent_classifier = True
+        self.config.model_endpoint_configured = True
+        self.config.retrieval_timeout_seconds = 0.2
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Ofuscación de datos.sql — Documento",
+                ubicacion="https://contoso.example/ofuscacion.sql",
+                fragmento="Procedimiento SQL Server para ofuscar datos sensibles.",
+                document_type="sql",
+            )
+        ]
+        with patch(
+            "handler.classify_intent",
+            return_value=IntentResult("fuera_alcance", False),
+        ), patch("handler.retrieve_evidence", return_value=evidence) as retrieval:
+            response = await process_user_message(
+                "¿Cómo se ofuscan datos sensibles en SQL?", None, self.config
+            )
+
+        retrieval.assert_called_once()
+        self.assertNotIn("fuera del alcance", response)
+        self.assertIn("script técnico", response)
+
     async def test_version_question_uses_deterministic_document_summary(self):
         self.config.model_endpoint_configured = True
         self.config.retrieval_timeout_seconds = 0.2

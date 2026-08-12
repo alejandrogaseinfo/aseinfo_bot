@@ -95,3 +95,29 @@ class GroundedResponseTests(unittest.TestCase):
         self.assertIsNotNone(draft)
         self.assertEqual("", draft.response)
         self.assertEqual([], draft.sources)
+
+    def test_rejects_release_citation_that_does_not_match_claimed_version(self):
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Readme 1.24.1.4.pdf — Página 5",
+                ubicacion="https://contoso.example/readme-12414.pdf",
+                fragmento=(
+                    "La mejora para la versión 1.24.1.2 actualiza la biblioteca "
+                    "jQuery a la versión 3.7.2, reemplazando la versión anterior 1.12.4."
+                ),
+            )
+        ]
+        draft = generate_grounded_response(
+            "¿En qué versión se actualizó jQuery y qué versión reemplazó?",
+            evidence,
+            self._client(
+                {
+                    "respuesta": "La versión 1.24.1.2 actualizó jQuery a 3.7.2 y reemplazó 1.12.4.",
+                    "fuentes": ["s1"],
+                }
+            ),
+            "test-model",
+        )
+
+        self.assertIsNone(draft)

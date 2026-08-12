@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 
+from document_index import tokenize
 from models import EvidenceSource
 
 
@@ -34,12 +35,45 @@ _INJECTION_PATTERN = re.compile(
     r"(?:system|developer)\s+message\s*:)"
 )
 _MAX_RESPONSE_CHARACTERS = 1_600
+_VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
+_IDENTIFIER_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b")
 
 
 @dataclass(frozen=True)
 class GroundedDraft:
     response: str
     sources: list[EvidenceSource]
+
+
+def _claims_are_supported(
+    user_message: str, answer: str, selected_sources: list[EvidenceSource]
+) -> bool:
+    """Fail closed when a cited source cannot support literal technical claims."""
+    source_text = " ".join(
+        f"{source.titulo} {source.fragmento}" for source in selected_sources
+    )
+    source_folded = source_text.casefold()
+    for version in _VERSION_PATTERN.findall(answer):
+        if version.casefold() not in source_folded:
+            return False
+    for identifier in _IDENTIFIER_PATTERN.findall(answer):
+        if identifier.casefold() not in source_folded:
+            return False
+
+    # For open version lookups, a Readme title must match the release version
+    # asserted by the answer. A later Readme may repeat an older change, but it
+    # is not the right citation for that release-level claim.
+    question_tokens = set(tokenize(user_message))
+    if question_tokens.intersection({"version", "versiones"}) and not _VERSION_PATTERN.search(user_message):
+        answer_versions = set(_VERSION_PATTERN.findall(answer))
+        titled_versions = {
+            version
+            for source in selected_sources
+            for version in _VERSION_PATTERN.findall(source.titulo)
+        }
+        if titled_versions and answer_versions and not answer_versions.intersection(titled_versions):
+            return False
+    return True
 
 
 def _payload(evidence: list[EvidenceSource]) -> list[dict[str, str]]:
@@ -105,4 +139,7 @@ def generate_grounded_response(
     selected_ids = list(dict.fromkeys(source_ids))
     if any(source_id not in allowed_sources for source_id in selected_ids):
         return None
-    return GroundedDraft(answer, [allowed_sources[source_id] for source_id in selected_ids])
+    selected_sources = [allowed_sources[source_id] for source_id in selected_ids]
+    if not _claims_are_supported(user_message, answer, selected_sources):
+        return None
+    return GroundedDraft(answer, selected_sources)

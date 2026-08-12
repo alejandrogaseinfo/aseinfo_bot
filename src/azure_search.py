@@ -598,6 +598,13 @@ def _record_matches_technical_anchor(record: dict, user_message: str) -> bool:
         f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')} "
         f"{record.get(CONTENT_FIELD, '')} {record.get('content_tokens', '')}"
     )
+    if "ira" in set(tokenize(user_message)) and set(tokenize(user_message)).intersection(
+        _STRUCTURAL_QUERY_TERMS
+    ):
+        compact_record = re.sub(r"[^a-z0-9]", "", record_text.casefold())
+        return "irainstanciasrutasaut" in compact_record or (
+            "iracodrau" in compact_record and "iracodigoentidad" in compact_record
+        )
     # Compound identifiers are the strongest signal in structural questions.
     # Do not let a generic Readme page match merely because it contains words
     # such as "estructura" or "tabla"; the identifier itself must be present.
@@ -675,6 +682,67 @@ def _record_answers_anchor_version(record: dict, user_message: str) -> bool:
         if any(abs(index - version_index) <= 24 for version_index in version_like):
             return True
     return False
+
+
+def _source_release_version(title: str) -> tuple[int, ...] | None:
+    match = _VERSION_PATTERN.search(str(title or ""))
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _deduplicate_equivalent_sources(
+    sources: list[EvidenceSource], user_message: str
+) -> list[EvidenceSource]:
+    """Collapse near-identical release fragments before citation.
+
+    Successive Readmes can repeat the same historical paragraph. For an open
+    version lookup, retain the earliest release copy so the cited title does
+    not point at a later document that merely repeats the change.
+    """
+    groups: list[list[EvidenceSource]] = []
+    anchor_terms = _technical_anchor_tokens(user_message)
+
+    def comparable_text(source: EvidenceSource) -> str:
+        text = str(source.fragmento or "").casefold()
+        if not anchor_terms:
+            return text
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        focused = [
+            sentence
+            for sentence in sentences
+            if any(_token_matches_query_concept(term, set(tokenize(sentence))) for term in anchor_terms)
+        ]
+        return " ".join(focused) or text
+
+    for source in sources:
+        source_tokens = set(
+            re.sub(_VERSION_PATTERN, "", comparable_text(source)).split()
+        )
+        for group in groups:
+            representative_tokens = set(
+                re.sub(_VERSION_PATTERN, "", comparable_text(group[0])).split()
+            )
+            union = source_tokens | representative_tokens
+            overlap = len(source_tokens & representative_tokens) / len(union) if union else 1
+            if overlap >= (0.65 if anchor_terms else 0.90):
+                group.append(source)
+                break
+        else:
+            groups.append([source])
+
+    selected: list[EvidenceSource] = []
+    anchor_lookup = _is_anchor_version_lookup(user_message)
+    for group in groups:
+        if anchor_lookup:
+            versioned = [item for item in group if _source_release_version(item.titulo)]
+            if versioned:
+                selected.append(
+                    min(versioned, key=lambda item: _source_release_version(item.titulo))
+                )
+                continue
+        selected.append(group[0])
+    return selected
 
 
 def _requests_readme(user_message: str) -> bool:
@@ -840,6 +908,20 @@ def _focused_keyword_query(user_message: str) -> str:
     # conservative heading bridge only when both concepts are explicit in the
     # user's question; it must not broaden unrelated incapacity searches.
     focused_token_set = set(focused_tokens)
+    # Operators often call ``ira_instancias_rutas_aut`` simply "la tabla IRA".
+    # Keep that documented identifier in the lexical pass whenever the query
+    # is clearly structural; this is a technical-anchor expansion, not a
+    # document-specific answer rule.
+    if "ira" in focused_token_set and focused_token_set.intersection(_STRUCTURAL_QUERY_TERMS):
+        focused_tokens.extend(
+            token
+            for token in (
+                "ira_instancias_rutas_aut",
+                "ira_codrau",
+                "ira_codigo_entidad",
+            )
+            if token not in focused_token_set
+        )
     if {"incapacidad", "parametro"}.issubset(focused_token_set):
         focused_tokens.extend(
             token
@@ -974,6 +1056,16 @@ def _document_relevance_score(
     title_tokens = set(tokenize(record.get("title", "")))
     title_overlap = set(query_tokens).intersection(title_tokens)
     title_score = len(title_overlap) * 10
+    technical_structure_score = 0
+    if (
+        set(tokenize(user_message)).intersection(_STRUCTURAL_QUERY_TERMS)
+        and _record_matches_technical_anchor(record, user_message)
+    ):
+        # A named table/technical identifier is stronger than incidental
+        # version or module words in a changelog page.
+        technical_structure_score = 3_000
+        if _is_structural_version_query(user_message):
+            technical_structure_score += 500 if not _is_script_record(record) else -500
     # Support sites commonly store a solution below a descriptive folder but
     # give the actual file a generic name (``Indicaciones.txt``, ``Custom``).
     # Treat a strong parent-folder match as document-level metadata, much like
@@ -1090,6 +1182,7 @@ def _document_relevance_score(
         (coverage_score * 6)
         + synonym_action_score
         + title_score
+        + technical_structure_score
         + parent_context_score
         # A phrase that follows the user's wording is stronger evidence than
         # isolated token overlap. This is especially important for manuals
@@ -1637,6 +1730,35 @@ def _retrieve_legacy_azure_search_evidence(
                 existing["_focused_keyword_rank"] = rank
             pass_counts["focused_keyword"] = focused_count
 
+        # Database operators frequently shorten a named table to its acronym.
+        # Search the normalized identifier tokens with an AND pass so the
+        # technical manual is discoverable even when Azure tokenizes the
+        # underscore-separated name differently from the natural-language
+        # question.
+        focused_terms = tokenize(focused_query)
+        if "ira" in focused_terms and set(focused_terms).intersection(_STRUCTURAL_QUERY_TERMS):
+            identifier_query = "ira instancias rutas aut"
+            identifier_count = 0
+            for rank, result in enumerate(
+                search_client.search(
+                    search_text=identifier_query,
+                    search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                    **search_args,
+                ),
+                start=1,
+            ):
+                identifier_count += 1
+                record = dict(result)
+                record_id = str(record.get("id", ""))
+                existing = records_by_id.get(record_id)
+                if existing is None:
+                    existing = record
+                    records_by_id[record_id] = existing
+                else:
+                    _merge_candidate_record(existing, record)
+                existing["_technical_anchor_rank"] = rank
+            pass_counts["technical_anchor"] = identifier_count
+
         # A pre-installation question often omits the word "Readme", although
         # that release artifact is where its precautions are documented. Add a
         # bounded lexical pass so a generic Upgrade manual cannot hide the
@@ -2132,7 +2254,7 @@ def _retrieve_legacy_azure_search_evidence(
                 ),
             )
         )
-    return sources
+    return _deduplicate_equivalent_sources(sources, user_message)
 
 
 def _v2_add_results(

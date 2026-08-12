@@ -144,6 +144,11 @@ INSTRUCTION_OVERRIDE_PATTERN = re.compile(
     r"\b(?:ignora|olvida|ignore|forget)\s+(?:todas?\s+|all\s+|previous\s+)?"
     r"(?:las?\s+)?(?:instrucciones|reglas|politicas|indicaciones|instructions|rules)\b"
 )
+AUTHORIZED_TECHNICAL_PROCEDURE_PATTERN = re.compile(
+    r"\b(?:sql|script)\b.{0,80}\bofusc(?:ar|acion|ado|an)\b|"
+    r"\bofusc(?:ar|acion|ado|an)\b.{0,80}\b(?:sql|script)\b",
+    re.IGNORECASE,
+)
 GENERIC_ISSUE_TOKENS = {
     "error",
     "problema",
@@ -462,6 +467,11 @@ def _requests_restricted_library(user_message: str) -> bool:
 def _attempts_instruction_override(user_message: str) -> bool:
     """Reject explicit instruction override attempts before any model call."""
     return bool(INSTRUCTION_OVERRIDE_PATTERN.search(_normalized_sensitive_text(user_message)))
+
+
+def _is_authorized_technical_procedure_request(user_message: str) -> bool:
+    """Keep documented SQL procedures in retrieval despite a noisy intent route."""
+    return bool(AUTHORIZED_TECHNICAL_PROCEDURE_PATTERN.search(_normalized_sensitive_text(user_message)))
 
 
 def _sensitive_secret_response() -> str:
@@ -969,9 +979,21 @@ async def process_user_message(
                 model=config.openai_intent_model_name,
                 timeout_seconds=config.intent_timeout_seconds,
             )
+            if intent and intent.name == "fuera_alcance" and _is_authorized_technical_procedure_request(
+                retrieval_message
+            ):
+                # A noisy router must not short-circuit an explicitly named,
+                # authorized technical procedure such as SQL obfuscation.
+                intent = None
             intent_response = _intent_response(intent, config, retrieval_message) if intent else None
             if intent_response:
-                if intent.conversation_purpose in {"capacidad", "alcance"} or intent.name == "fuera_alcance":
+                if (
+                    intent.conversation_purpose in {"capacidad", "alcance"}
+                    or (
+                        intent.name == "fuera_alcance"
+                        and not _is_authorized_technical_procedure_request(retrieval_message)
+                    )
+                ):
                     logger.info(
                         "query_completed duration_ms=%s evidence_count=0 source_types=none decision_state=intent_%s escalated=False",
                         round((perf_counter() - started_at) * 1000),

@@ -885,6 +885,11 @@ class DocumentQuestionTests(unittest.TestCase):
                 "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?"
             ),
         )
+        ira_query = _focused_keyword_query(
+            "En la versión 1.24.1.3, ¿qué se sabe de la tabla IRA?"
+        )
+        self.assertIn("ira_instancias_rutas_aut", ira_query)
+        self.assertIn("ira_codrau", ira_query)
 
     def test_preinstallation_precautions_retrieve_preparation_evidence(self):
         class FakeSearchClient:
