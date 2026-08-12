@@ -113,7 +113,7 @@ con `legacy`, sin fallback local, `USE_LLM_EVIDENCE_VERIFIER=false` y
   autorizado sin exponer código innecesario.
 - OPS-08 combina validaciones de firewall, reglas DTC y Component Services.
 
-Reporte vigente: `output/revision-humana-redactor-20260812-postfix2.json`.
+Reporte vigente: `output/revision-humana-redactor-20260812-postfix3.json`.
 
 El redactor grounded sigue apagado y no existe autorización de piloto.
 
