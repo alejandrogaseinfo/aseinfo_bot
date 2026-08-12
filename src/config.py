@@ -109,6 +109,18 @@ class Config:
         self.evidence_verifier_model_name = env.get(
             "EVIDENCE_VERIFIER_MODEL", self.openai_intent_model_name
         ).strip()
+        # The grounded writer is a separate, opt-in presentation layer. It
+        # never expands retrieval or authorization and remains off until its
+        # quality matrix has been reviewed.
+        self.use_llm_grounded_response = env.get(
+            "USE_LLM_GROUNDED_RESPONSE", "false"
+        ).lower() == "true"
+        self.grounded_response_model_name = env.get(
+            "GROUNDED_RESPONSE_MODEL", self.openai_model_name
+        ).strip()
+        self.grounded_response_timeout_seconds = float(
+            env.get("GROUNDED_RESPONSE_TIMEOUT_SECONDS", "5")
+        )
         self.classification_timeout_seconds = float(
             env.get("CLASSIFICATION_TIMEOUT_SECONDS", "12")
         )

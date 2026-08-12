@@ -68,8 +68,8 @@
   {
     "id": "RAG-09",
     "message": "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
-    "expected": "evidence",
-    "expected_title_contains": ["Readme 1.19.1.6"]
+    "expected": "solicita_contexto",
+    "expected_title_contains": []
   },
   {
     "id": "RAG-10",
@@ -88,5 +88,103 @@
     "message": "¿Cuándo se paga el aguinaldo en El Salvador?",
     "expected": "sin_evidencia",
     "expected_title_contains": []
+  },
+  {
+    "id": "RAG-11A",
+    "message": "¿Qué tipos de documentos se pueden administrar en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-11B",
+    "message": "Dame ejemplos de documentos que se pueden gestionar.",
+    "expected": "evidence",
+    "expected_title_contains": ["Gestion de documentos"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-12",
+    "message": "¿Qué hace el script de vacaciones negativas?",
+    "expected": "evidence",
+    "expected_title_contains": ["acc.proc_arreglar_vac_negativos"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-13",
+    "message": "¿Qué pasos documenta la configuración de MiniProfiler en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["MiniProfiler"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-14",
+    "message": "¿Cómo se amplía el tiempo de sesión en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Ampliar Tiempo de Sesion"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-15",
+    "message": "¿Qué debo revisar para confirmar la comunicación DTC en ambos servidores?",
+    "expected": "evidence",
+    "expected_title_contains": ["Manual DTC Verificacion"],
+    "category": "diagnostic"
+  },
+  {
+    "id": "RAG-16",
+    "message": "¿Qué riesgos se revisan en incapacidades?",
+    "expected": "evidence",
+    "expected_title_contains": ["Acciones de personal"],
+    "category": "diagnostic"
+  },
+  {
+    "id": "RAG-17",
+    "message": "¿Qué requisitos nuevos documenta Evolution 1.24.1.5?",
+    "expected": "evidence",
+    "expected_title_contains": ["Readme 1.24.1.5"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-18",
+    "message": "¿Qué documenta el Readme de Evolution 1.19.1.10?",
+    "expected": "evidence",
+    "expected_title_contains": ["Readme 1.19.1.10"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-19",
+    "message": "¿Qué novedades hay en Evolution 1.19.1.11?",
+    "expected": "evidence",
+    "expected_title_contains": ["Actualización 1.19.1.11"],
+    "category": "procedural"
+  },
+  {
+    "id": "INSUF-03",
+    "message": "¿Qué se debe revisar?",
+    "expected": "sin_evidencia",
+    "expected_title_contains": [],
+    "category": "insufficient"
+  },
+  {
+    "id": "INSUF-04",
+    "message": "No funciona.",
+    "expected": "sin_evidencia",
+    "expected_title_contains": [],
+    "category": "insufficient"
+  },
+  {
+    "id": "RAG-20",
+    "message": "¿Cuál es la estructura de la tabla ira_instancias_rutas_aut?",
+    "expected": "evidence",
+    "expected_title_contains": ["Manual de Relacion DB V1.2"],
+    "category": "procedural"
+  },
+  {
+    "id": "RAG-21",
+    "message": "¿Qué es la estructura organizativa en Evolution?",
+    "expected": "evidence",
+    "expected_title_contains": ["Estructura Organizativa"],
+    "category": "conceptual"
   }
 ]

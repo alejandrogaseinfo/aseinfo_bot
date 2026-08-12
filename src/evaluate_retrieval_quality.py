@@ -22,8 +22,14 @@ from models import RetrievalTrace
 from retrieval import retrieve_evidence
 
 
-VALID_EXPECTATIONS = {"evidence", "sin_evidencia"}
-VALID_CATEGORIES = {"procedural", "diagnostic", "out_of_scope", "insufficient"}
+VALID_EXPECTATIONS = {"evidence", "sin_evidencia", "solicita_contexto"}
+VALID_CATEGORIES = {
+    "procedural",
+    "conceptual",
+    "diagnostic",
+    "out_of_scope",
+    "insufficient",
+}
 
 
 def _normalized(value: str) -> str:
@@ -59,7 +65,7 @@ def load_cases(path: Path) -> list[dict]:
             raise ValueError(
                 f"El caso {case_id} requiere expected_title_contains para evitar una aprobación ambigua."
             )
-        if expected == "sin_evidencia" and expected_titles:
+        if expected in {"sin_evidencia", "solicita_contexto"} and expected_titles:
             raise ValueError(f"El caso {case_id} no debe declarar títulos esperados.")
         if category != "uncategorized" and category not in VALID_CATEGORIES:
             raise ValueError(f"category no es válido para {case_id}.")
@@ -91,8 +97,20 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
         titles = list(dict.fromkeys(source.titulo for source in evidence))
         normalized_titles = [_normalized(title) for title in titles]
         expected_titles = [_normalized(title) for title in case["expected_title_contains"]]
+        requires_context = bool(trace and trace.requires_version_context)
+        answer_state = (
+            "solicita_contexto"
+            if requires_context
+            else decision.estado
+        )
         if case["expected"] == "sin_evidencia":
             passed = not evidence
+        elif case["expected"] == "solicita_contexto":
+            # This is a distinct safe result: Azure found incompatible release
+            # documents and the handler must ask for the exact version instead
+            # of selecting one by rank. It is not an abstention caused by a
+            # missing document.
+            passed = requires_context and not evidence
         else:
             passed = bool(evidence) and all(
                 any(expected_title in title for title in normalized_titles)
@@ -106,11 +124,15 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
                 "latency_ms": latency_ms,
                 "evidence_count": len(evidence),
                 "source_count": len(decision.fuentes),
-                "answer_state": decision.estado,
+                "answer_state": answer_state,
                 "answer_passed": (
                     decision.estado == "resuelto"
                     if case["expected"] == "evidence"
-                    else decision.estado == "sin_evidencia"
+                    else (
+                        answer_state == "solicita_contexto"
+                        if case["expected"] == "solicita_contexto"
+                        else answer_state == "sin_evidencia"
+                    )
                 ),
                 "retrieved_titles": titles,
                 "candidate_count": trace.candidate_count if trace else None,
@@ -128,6 +150,9 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
     passed_count = sum(result["passed"] for result in results)
     expected_evidence = [result for result in results if result["expected"] == "evidence"]
     expected_no_evidence = [result for result in results if result["expected"] == "sin_evidencia"]
+    expected_context_requests = [
+        result for result in results if result["expected"] == "solicita_contexto"
+    ]
     traced_results = [result for result in results if result["candidate_count"] is not None]
     traced_evidence = [
         result for result in traced_results if result["expected"] == "evidence"
@@ -161,6 +186,12 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
             "correct_abstention_rate": (
                 sum(result["passed"] for result in expected_no_evidence) / len(expected_no_evidence)
                 if expected_no_evidence
+                else None
+            ),
+            "correct_context_request_rate": (
+                sum(result["passed"] for result in expected_context_requests)
+                / len(expected_context_requests)
+                if expected_context_requests
                 else None
             ),
             "candidate_document_recall": (
@@ -201,6 +232,15 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
                 sum(result["answer_state"] == "sin_evidencia" for result in answer_abstentions)
                 / len(answer_abstentions)
                 if answer_abstentions
+                else None
+            ),
+            "answer_context_request_rate": (
+                sum(
+                    result["answer_state"] == "solicita_contexto"
+                    for result in expected_context_requests
+                )
+                / len(expected_context_requests)
+                if expected_context_requests
                 else None
             ),
             "single_source_rate": (
@@ -244,12 +284,14 @@ def comparison_summary(reports: dict[str, dict]) -> dict[str, dict]:
                 "pass_rate",
                 "evidence_recall",
                 "correct_abstention_rate",
+                "correct_context_request_rate",
                 "candidate_document_recall",
                 "direct_evidence_rate",
                 "retrieval_latency_ms_avg",
                 "retrieval_latency_ms_p95",
                 "answer_resolution_rate",
                 "answer_correct_abstention_rate",
+                "answer_context_request_rate",
             )
         }
         for name, report in reports.items()

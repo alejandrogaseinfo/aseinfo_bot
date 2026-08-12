@@ -32,6 +32,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(12, config.classification_timeout_seconds)
         self.assertEqual("unversioned", config.runtime_revision)
 
+    def test_grounded_response_is_opt_in(self):
+        disabled = Config({})
+        enabled = Config({"USE_LLM_GROUNDED_RESPONSE": "true"})
+
+        self.assertFalse(disabled.use_llm_grounded_response)
+        self.assertTrue(enabled.use_llm_grounded_response)
+        self.assertEqual("gpt-4o", enabled.grounded_response_model_name)
+
     def test_runtime_revision_uses_a_non_empty_deployment_value(self):
         config = Config({"LIBRAS_RUNTIME_REVISION": "20260806-rag-evidence"})
 

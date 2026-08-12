@@ -2561,6 +2561,22 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
         self.assertFalse(trace.requires_version_context)
         self.assertTrue(trace.sources)
 
+    def test_technical_reinstallation_is_not_treated_as_release_ambiguity(self):
+        records = self._versioned_readme_records()
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "Después de reinstalar MSDTC en un servidor clonado, ¿qué hay que revisar en ambos servidores para confirmar que la comunicación DTC quedó funcionando correctamente?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertFalse(trace.requires_version_context)
+
     def test_release_readme_rank_survives_later_candidate_passes(self):
         record = {
             "id": "readme-multipass",

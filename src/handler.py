@@ -18,6 +18,7 @@ from conversation import generate_conversational_response
 from context_guard import evaluate_context_guard
 from document_index import tokenize
 from formatting import format_user_response
+from grounded_response import generate_grounded_response
 from intent import IntentResult, classify_intent
 from logging_utils import get_logger
 from models import BotDecision, EvidenceSource, RetrievalTrace
@@ -1064,6 +1065,33 @@ async def process_user_message(
     evidence = _filter_contextual_version_evidence(retrieval_message, evidence)
     logger.info("Consulta recibida. Evidencias recuperadas: %s", len(evidence))
     fallback_decision = classify_case_by_rules(retrieval_message, evidence)
+
+    # This presentation layer is intentionally opt-in. Retrieval, provenance,
+    # version boundaries and the deterministic evidence decision have already
+    # completed before a model sees any document text.
+    if (
+        getattr(config, "use_llm_grounded_response", False)
+        and fallback_decision.estado == "resuelto"
+        and not has_explicit_version_request(retrieval_message)
+        and getattr(config, "model_endpoint_configured", True)
+    ):
+        try:
+            draft = await _run_blocking_with_timeout(
+                generate_grounded_response,
+                retrieval_message,
+                fallback_decision.fuentes,
+                client=client,
+                model=getattr(config, "grounded_response_model_name", config.openai_model_name),
+                timeout_seconds=getattr(config, "grounded_response_timeout_seconds", 5),
+            )
+            if draft:
+                fallback_decision.resumen = draft.response
+                fallback_decision.fuentes = draft.sources
+                logger.info("Se usó el redactor fundamentado con %s fuentes.", len(draft.sources))
+        except TimeoutError:
+            logger.warning("El redactor fundamentado superó su tiempo límite.")
+        except Exception:
+            logger.exception("Falló el redactor fundamentado; se conserva la respuesta determinista.")
 
     # Version lookups have an exact retrieval boundary and are rendered from
     # the cited fragments. Keeping that deterministic prevents the classifier

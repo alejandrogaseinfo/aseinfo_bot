@@ -688,6 +688,42 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Evolution 1.19.1.10", response)
 
+    async def test_opt_in_grounded_writer_rephrases_approved_evidence_only(self):
+        self.config.use_llm_grounded_response = True
+        self.config.model_endpoint_configured = True
+        self.config.retrieval_timeout_seconds = 0.2
+        self.config.grounded_response_timeout_seconds = 0.2
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual de flujos.pdf — Página 4",
+                ubicacion="https://contoso.example/flujos.pdf",
+                fragmento="La tabla almacena las instancias de rutas de autorización.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Manual relacionado.pdf — Página 1",
+                ubicacion="https://contoso.example/relacionado.pdf",
+                fragmento="Contenido secundario relacionado.",
+            ),
+        ]
+        from grounded_response import GroundedDraft
+
+        with patch("handler.retrieve_evidence", return_value=evidence), patch(
+            "handler.generate_grounded_response",
+            return_value=GroundedDraft(
+                "La tabla registra instancias de rutas de autorización.", [evidence[0]]
+            ),
+        ) as writer:
+            response = await process_user_message(
+                "¿Qué información almacena la tabla de flujos?", None, self.config
+            )
+
+        writer.assert_called_once()
+        self.assertIn("La tabla registra instancias", response)
+        self.assertIn("Manual de flujos", response)
+        self.assertNotIn("Manual relacionado", response)
+
     async def test_documentary_follow_up_carries_previous_version_into_retrieval(self):
         previous_response = (
             "Para Evolution 1.19.1.10, la documentación indica cambios del hotfix.\n\n"

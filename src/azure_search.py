@@ -681,17 +681,6 @@ def _requests_readme(user_message: str) -> bool:
     return bool(re.search(r"\breadme\b", user_message or "", re.IGNORECASE))
 
 
-def _is_installation_or_update_query(user_message: str) -> bool:
-    """Return whether the question needs release-version scoping."""
-    return bool(
-        re.search(
-            r"\b(?:instal\w*|actualiz\w*|reinstal\w*|upgrade\w*)\b",
-            user_message or "",
-            re.IGNORECASE,
-        )
-    )
-
-
 def _readme_versions(records: Iterable[dict]) -> tuple[str, ...]:
     """Return distinct versions represented by versioned Readme titles."""
     versions: set[str] = set()
@@ -1957,10 +1946,7 @@ def _retrieve_legacy_azure_search_evidence(
     # intentionally limited to release operations; ordinary technical and
     # non-release questions keep the existing retrieval behavior.
     ambiguous_readme_versions = ()
-    if (
-        not requested_versions
-        and _is_installation_or_update_query(user_message)
-    ):
+    if not requested_versions and _is_release_guidance_question(user_message):
         ambiguous_readme_versions = _readme_versions(version_scoped_records)
         if len(ambiguous_readme_versions) > 1:
             if diagnostics is not None:

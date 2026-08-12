@@ -27,6 +27,12 @@ class RetrievalQualityEvaluationTests(unittest.TestCase):
                 "expected": "sin_evidencia",
                 "expected_title_contains": [],
             },
+            {
+                "id": "CTX-01",
+                "message": "Precauciones antes de actualizar.",
+                "expected": "solicita_contexto",
+                "expected_title_contains": [],
+            },
         ]
 
         def retriever(message):
@@ -39,18 +45,24 @@ class RetrievalQualityEvaluationTests(unittest.TestCase):
                         fragmento="Contenido de prueba.",
                     )
                 ]
+            if message.startswith("Precauciones"):
+                from models import RetrievalTrace
+
+                return RetrievalTrace(requires_version_context=True)
             return []
 
         report = evaluate_cases(cases, retriever)
 
-        self.assertEqual(2, report["summary"]["passed_count"])
+        self.assertEqual(3, report["summary"]["passed_count"])
         self.assertEqual(1.0, report["summary"]["evidence_recall"])
         self.assertEqual(1.0, report["summary"]["correct_abstention_rate"])
-        self.assertEqual(2, len(report["results"]))
+        self.assertEqual(1.0, report["summary"]["correct_context_request_rate"])
+        self.assertEqual(3, len(report["results"]))
         self.assertTrue(all(result["latency_ms"] >= 0 for result in report["results"]))
         self.assertIsNotNone(report["summary"]["retrieval_latency_ms_p95"])
         self.assertIn("answer_state", report["results"][0])
         self.assertIn("single_source_rate", report["summary"])
+        self.assertEqual("solicita_contexto", report["results"][2]["answer_state"])
 
     def test_loader_rejects_evidence_case_without_a_reviewed_document(self):
         with TemporaryDirectory() as directory:
@@ -86,6 +98,44 @@ class RetrievalQualityEvaluationTests(unittest.TestCase):
                             "category": "unknown",
                         }
                     ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                load_cases(path)
+
+    def test_loader_accepts_conceptual_quality_category(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": "CON-01",
+                            "message": "Pregunta conceptual revisada.",
+                            "expected": "evidence",
+                            "expected_title_contains": ["Manual general"],
+                            "category": "conceptual",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual("conceptual", load_cases(path)[0]["category"])
+
+    def test_loader_rejects_titles_for_context_request(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.json"
+            path.write_text(
+                json.dumps(
+                    [{
+                        "id": "CTX-01",
+                        "message": "Precauciones antes de actualizar.",
+                        "expected": "solicita_contexto",
+                        "expected_title_contains": ["Readme"],
+                    }]
                 ),
                 encoding="utf-8",
             )

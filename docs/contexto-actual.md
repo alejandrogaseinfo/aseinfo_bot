@@ -18,6 +18,27 @@ El evaluador LLM acotado permanece desactivado (`USE_LLM_EVIDENCE_VERIFIER=false
 y la estrategia productiva continúa en `legacy`. La promoción de V2 queda
 pendiente de implementar y probar esta política de ambigüedad.
 
+### Ejecución segura de evaluaciones en App Service
+
+Para validaciones remotas, Kudu se usa únicamente para File Manager y
+comprobaciones de archivos. La ejecución Python debe hacerse desde **SSH →
+Application**, donde está activo `antenv` y están instaladas las dependencias.
+Cuando se pruebe una copia temporal ubicada bajo `/home/site/wwwroot/src`, se
+debe anteponer `PYTHONPATH="$PWD/src"`; esto no activa el evaluador LLM ni
+promueve el código a producción.
+
+Un bundle de evaluación sin `tests/test_*.py` no permite validar la suite:
+`unittest discover` puede reportar `Ran 0 tests`. La suite completa y sus
+regresiones se validan en el repositorio local. Una evaluación Azure remota
+puede ejecutarse por separado con el corpus, registrando siempre qué copia de
+`src` se utilizó y sin interpretar el resultado como prueba de despliegue.
+
+La primera ejecución de la copia `src` produjo 13/15 porque la regla de
+ambigüedad confundía una reinstalación técnica de MSDTC con una actualización
+de release. Esa condición fue corregida: ahora la abstención por versiones
+solo se activa para preguntas de preparación/precauciones de instalación o
+actualización. La suite local quedó en 303/303 pruebas OK.
+
 > Documento de continuidad para cualquier persona o chat nuevo que retome el
 > proyecto. Fecha de consolidación: 2026-07-31.
 
