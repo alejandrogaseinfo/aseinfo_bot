@@ -360,7 +360,7 @@ class V2EvidenceTests(unittest.TestCase):
                         choices=[
                             SimpleNamespace(
                                 message=SimpleNamespace(
-                                    content='{"verdicts":[{"candidate_id":"contract-extension","requirements":["r1"]}]}'
+                                    content='{"verdicts":[{"candidate_id":"c01","requirements":["r1"],"confidence":0.9}]}'
                                 )
                             )
                         ]

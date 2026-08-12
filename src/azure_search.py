@@ -84,8 +84,30 @@ MAX_CANDIDATES = 30
 # slots and hide a relevant smaller document before reranking can inspect it.
 CANDIDATE_POOL_SIZE = 100
 MAX_CANDIDATES_PER_DOCUMENT = 3
+# Bound the merged result of the lexical, focused and vector passes before any
+# evaluator sees it. The smaller reranking pool is intentionally separate from
+# Azure's retrieval pool so secondary candidates remain available for review.
+MAX_MERGED_CANDIDATES = 60
+RERANK_POOL_SIZE = 20
+_CANDIDATE_RANK_FIELDS = (
+    "_keyword_rank",
+    "_focused_keyword_rank",
+    "_release_readme_rank",
+    "_vector_rank",
+    "_prefix_rank",
+    "_script_rank",
+)
 SEMANTIC_ACTION_MIN_SCORE = 2.0
 _UPPERCASE_ACRONYM = re.compile(r"\b[A-Z][A-Z0-9]{1,7}\b")
+_DOCUMENT_INJECTION_PATTERN = re.compile(
+    r"(?:ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?"
+    r"|disregard\s+(?:all\s+)?instructions?"
+    r"|reveal\s+(?:the\s+)?(?:system|developer)\s+prompt"
+    r"|system\s+message\s*:\s*"
+    r"|developer\s+message\s*:\s*"
+    r"|you\s+are\s+(?:chatgpt|an\s+ai\s+assistant))",
+    re.IGNORECASE,
+)
 _PREINSTALLATION_OPERATION_CONCEPTS = {"instal", "actualiz"}
 _PREINSTALLATION_CUE_CONCEPTS = {"antes", "precaucion", "previo"}
 _PREINSTALLATION_EVIDENCE_CONCEPTS = {"recomend", "inicial", "respald", "prepar", "previo"}
@@ -106,6 +128,12 @@ _LEGACY_PREINSTALLATION_EVIDENCE_TOKENS = {
     "previa",
     "previo",
 }
+_RELEASE_GUIDANCE_TITLE_MARKERS = ("readme", "release", "hotfix")
+_DOCUMENT_ACCESS_PERMISSION_PREFIXES = ("permis", "autoriz", "acces", "credencial")
+_DOCUMENT_ACCESS_DOWNLOAD_PREFIXES = ("baj", "descarg")
+_DOCUMENT_ACCESS_DIAGNOSTIC_PREFIXES = (
+    "revis", "verific", "valid", "configur", "error", "fall", "proble", "soluc",
+)
 _DTC_VALIDATION_EVIDENCE_TOKENS = {
     "firewall",
     "component",
@@ -653,6 +681,50 @@ def _requests_readme(user_message: str) -> bool:
     return bool(re.search(r"\breadme\b", user_message or "", re.IGNORECASE))
 
 
+def _is_release_guidance_question(user_message: str) -> bool:
+    """Recognize pre-installation release guidance without requiring its filename.
+
+    Operators normally ask for the precaution, not for a ``Readme`` by name.
+    The signal remains deliberately narrow: it needs an install/update action
+    and an explicit before/preparation/precaution cue.
+    """
+    tokens = set(tokenize(user_message))
+    return bool(
+        any(token.startswith(_LEGACY_PREINSTALLATION_OPERATION_PREFIXES) for token in tokens)
+        and any(token.startswith(_LEGACY_PREINSTALLATION_CUE_PREFIXES) for token in tokens)
+    )
+
+
+def _has_direct_document_access_failure_coverage(record: dict) -> bool:
+    """Require local troubleshooting evidence, not merely download instructions."""
+    # Titles, document metadata and token indexes are retrieval hints, not
+    # local evidence. Each prose unit must independently express the link.
+    units = re.split(r"(?<=[.!?;])\s+|\n+", str(record.get(CONTENT_FIELD) or ""))
+    for unit in units:
+        record_tokens = tokenize(unit)
+        for start in range(len(record_tokens)):
+            window = record_tokens[start : start + 28]
+            has_documents = any(token.startswith("document") for token in window)
+            has_permission = any(token.startswith(_DOCUMENT_ACCESS_PERMISSION_PREFIXES) for token in window)
+            has_download = any(token.startswith(_DOCUMENT_ACCESS_DOWNLOAD_PREFIXES) for token in window)
+            has_diagnostic = any(
+                token.startswith(_DOCUMENT_ACCESS_DIAGNOSTIC_PREFIXES) for token in window
+            )
+            if has_documents and has_permission and has_download and has_diagnostic:
+                return True
+    return False
+
+
+def _is_document_access_failure_question(user_message: str) -> bool:
+    """Identify a specific permission-plus-download failure, not generic document management."""
+    tokens = set(tokenize(user_message))
+    return bool(
+        any(token.startswith("document") for token in tokens)
+        and any(token.startswith(_DOCUMENT_ACCESS_PERMISSION_PREFIXES) for token in tokens)
+        and any(token.startswith(_DOCUMENT_ACCESS_DOWNLOAD_PREFIXES) for token in tokens)
+    )
+
+
 def _requests_script(user_message: str) -> bool:
     """Detect when the user is asking for an executable/script artifact."""
     return bool(SCRIPT_REQUEST_PATTERN.search(user_message or ""))
@@ -967,6 +1039,25 @@ def _document_relevance_score(
         if is_preinstallation_question
         else 0
     )
+    # Release notes are the authoritative artifact for precautions before an
+    # installation/update. This is a ranking signal, not a provenance or
+    # version exception: an authorized direct Upgrade guide can still answer
+    # when no Readme/release candidate exists.
+    release_guidance_score = 0
+    if _is_release_guidance_question(user_message):
+        title = str(record.get("title") or "").casefold()
+        if (
+            any(marker in title for marker in _RELEASE_GUIDANCE_TITLE_MARKERS)
+            and document_token_set.intersection(_LEGACY_PREINSTALLATION_EVIDENCE_TOKENS)
+        ):
+            release_guidance_score = 360 + (90 * sum(
+                (
+                    any(token.startswith(prefix) for token in document_token_set for prefix in ("prepar", "previo", "antes")),
+                    any(token.startswith(prefix) for token in document_token_set for prefix in ("respal", "backup")),
+                    any(token.startswith(prefix) for token in document_token_set for prefix in ("instal", "actualiz", "aplic")),
+                    any(token.startswith(prefix) for token in document_token_set for prefix in ("recomend", "advertenc", "precauc")),
+                )
+            ))
     is_dtc_validation_question = _is_dtc_validation_question(user_message)
     # A section heading may repeat all question terms while containing no
     # actionable check. Give equal preference to pages with a concrete DTC
@@ -999,6 +1090,8 @@ def _document_relevance_score(
         # A compact lexical query favors a section heading made of the user's
         # meaningful concepts over filler words from the natural question.
         + max(0, MAX_CANDIDATES - int(record.get("_focused_keyword_rank", MAX_CANDIDATES))) * 1.5
+        # This bounded pass exists only for pre-installation release guidance.
+        + max(0, MAX_CANDIDATES - int(record.get("_release_readme_rank", MAX_CANDIDATES))) * 1.5
         # Prefix lookup is reserved for concrete error reports whose subject
         # can be embedded in a CamelCase path. Its result is still checked by
         # normal coverage/provenance rules, but deserves ranking credit once
@@ -1012,6 +1105,7 @@ def _document_relevance_score(
         - (int(record.get("_missing_anchor_count", 0)) * 8)
         + script_score
         + preinstallation_score
+        + release_guidance_score
         + dtc_validation_score
     )
 
@@ -1086,6 +1180,20 @@ def _record_has_authorized_provenance(
     return record_folder_path in {
         str(path or "").strip("/") for path in allowed_sources if path is not None
     }
+
+
+def _record_contains_document_injection(record: dict) -> bool:
+    """Detect only strong instruction-like markers in indexed content.
+
+    This is a defense-in-depth gate, not a relevance classifier. It fails
+    closed for explicit instruction overrides while avoiding generic words
+    such as ``prompt`` or ``system`` that may occur in ordinary manuals.
+    """
+    searchable_text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", CONTEXT_FIELD, CONTENT_FIELD)
+    )
+    return bool(_DOCUMENT_INJECTION_PATTERN.search(searchable_text))
 
 
 def _filter_records_for_requested_country(
@@ -1202,6 +1310,10 @@ def _has_minimum_content_coverage(
             f"{record.get('title', '')} {record.get(CONTENT_FIELD, '')}"
         ),
     )
+    if _is_release_guidance_question(user_message) and _is_release_guidance_record(record):
+        # "Tomar precauciones" is commonly documented as preparation,
+        # backups and update instructions rather than with the literal verb.
+        action_is_covered = action_is_covered or _has_release_guidance_coverage(record)
     # ``qué se debe revisar`` is troubleshooting scaffolding, not a demand
     # that the cited manual literally contain the verb ``revisar``. Keep the
     # stronger subject/coverage checks; only relax this generic diagnostic verb.
@@ -1265,7 +1377,10 @@ def _diversify_candidate_records(records: list[dict]) -> list[dict]:
     def candidate_rank(record: dict) -> int:
         ranks = [
             int(record[field])
-            for field in ("_vector_rank", "_keyword_rank", "_focused_keyword_rank", "_prefix_rank")
+            for field in (
+                "_vector_rank", "_keyword_rank", "_focused_keyword_rank",
+                "_release_readme_rank", "_prefix_rank",
+            )
             if record.get(field) is not None
         ]
         return min(ranks) if ranks else CANDIDATE_POOL_SIZE
@@ -1280,6 +1395,95 @@ def _diversify_candidate_records(records: list[dict]) -> list[dict]:
         per_document_count[document_key] = count + 1
         diversified.append(record)
     return diversified
+
+
+def _is_release_guidance_record(record: dict) -> bool:
+    """Identify a release/readme page that contains preparation guidance."""
+    title = str(record.get("title") or "").casefold()
+    if not any(marker in title for marker in _RELEASE_GUIDANCE_TITLE_MARKERS):
+        return False
+    document_tokens = set(
+        tokenize(
+            " ".join(
+                str(record.get(field) or "")
+                for field in ("title", CONTEXT_FIELD, CONTENT_FIELD, "content_tokens")
+            )
+        )
+    )
+    return bool(document_tokens.intersection(_LEGACY_PREINSTALLATION_EVIDENCE_TOKENS))
+
+
+def _has_release_guidance_coverage(record: dict) -> bool:
+    """Recognize preparation guidance expressed without the query's exact verb."""
+    tokens = set(tokenize(str(record.get(CONTENT_FIELD) or "")))
+    families = (
+        any(token.startswith(prefix) for token in tokens for prefix in ("prepar", "previo", "antes")),
+        any(token.startswith(prefix) for token in tokens for prefix in ("respal", "backup")),
+        any(token.startswith(prefix) for token in tokens for prefix in ("instal", "actualiz", "aplic")),
+        any(token.startswith(prefix) for token in tokens for prefix in ("recomend", "advertenc", "precauc")),
+    )
+    return sum(families) >= 3
+
+
+def _limit_candidate_pool(
+    records: list[dict], limit: int, prioritize_release: bool = False
+) -> list[dict]:
+    """Apply a global bound while preserving explicit and high-ranked hits."""
+    if len(records) <= limit:
+        return records
+
+    def rank(record: dict) -> int:
+        ranks = [
+            int(record[field])
+            for field in (
+                "_vector_rank", "_keyword_rank", "_focused_keyword_rank",
+                "_release_readme_rank", "_prefix_rank",
+            )
+            if record.get(field) is not None
+        ]
+        return min(ranks) if ranks else CANDIDATE_POOL_SIZE
+
+    def sort_key(record: dict):
+        # For pre-installation guidance, preserve release/readme pages with
+        # local preparation evidence before generic manuals. This keeps a
+        # direct release page in the bounded pool even when Azure's broad
+        # lexical pass returns many unrelated historical pages.
+        release_priority = (
+            0 if prioritize_release and _is_release_guidance_record(record) else 1
+        )
+        release_rank = int(record.get("_release_readme_rank", CANDIDATE_POOL_SIZE))
+        return (
+            not bool(record.get("_explicit_filename_match")),
+            release_priority,
+            release_rank if prioritize_release else CANDIDATE_POOL_SIZE,
+            rank(record),
+        )
+
+    return sorted(records, key=sort_key)[:limit]
+
+
+def _candidate_diversity_stats(records: list[dict]) -> dict[str, int]:
+    """Return non-sensitive diversity metrics for a bounded candidate pool."""
+    counts: dict[str, int] = {}
+    for record in records:
+        key = str(record.get("document_id") or record.get("title") or record.get("id") or "")
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "unique_documents": len(counts),
+        "max_fragments_per_document": max(counts.values(), default=0),
+    }
+
+
+def _merge_candidate_record(existing: dict, incoming: dict) -> dict:
+    """Merge Azure payloads without losing a rank assigned by an earlier pass."""
+    preserved_ranks = {
+        field: existing[field]
+        for field in _CANDIDATE_RANK_FIELDS
+        if existing.get(field) is not None
+    }
+    existing.update(incoming)
+    existing.update(preserved_ranks)
+    return existing
 
 
 def _rerank_records(records: list[dict], user_message: str) -> list[tuple[float, dict]]:
@@ -1370,8 +1574,10 @@ def _retrieve_legacy_azure_search_evidence(
     # the handler's retrieval budget even for questions whose wording is
     # represented verbatim (or by the query-side vocabulary aliases) in the
     # index. Keep vector retrieval as a semantic fallback for paraphrases.
+    pass_counts: dict[str, int] = {}
     try:
         records_by_id: dict[str, dict] = {}
+        keyword_count = 0
         for rank, result in enumerate(
             search_client.search(
                 search_text=user_message,
@@ -1380,6 +1586,7 @@ def _retrieve_legacy_azure_search_evidence(
             ),
             start=1,
         ):
+            keyword_count += 1
             record = dict(result)
             record_id = str(record.get("id", ""))
             existing = records_by_id.get(record_id)
@@ -1387,16 +1594,15 @@ def _retrieve_legacy_azure_search_evidence(
                 existing = record
                 records_by_id[record_id] = existing
             else:
-                vector_rank = existing.get("_vector_rank")
-                existing.update(record)
-                if vector_rank is not None:
-                    existing["_vector_rank"] = vector_rank
+                _merge_candidate_record(existing, record)
             existing["_keyword_rank"] = rank
+        pass_counts["keyword"] = keyword_count
         focused_query = _focused_keyword_query(user_message)
         focused_query = " ".join(
             sorted(_query_synonym_tokens(tokenize(focused_query)))
         )
         if focused_query:
+            focused_count = 0
             for rank, result in enumerate(
                 search_client.search(
                     search_text=focused_query,
@@ -1404,7 +1610,8 @@ def _retrieve_legacy_azure_search_evidence(
                     **keyword_search_args,
                 ),
                 start=1,
-            ):
+                ):
+                focused_count += 1
                 record = dict(result)
                 record_id = str(record.get("id", ""))
                 existing = records_by_id.get(record_id)
@@ -1412,14 +1619,38 @@ def _retrieve_legacy_azure_search_evidence(
                     existing = record
                     records_by_id[record_id] = existing
                 else:
-                    vector_rank = existing.get("_vector_rank")
-                    keyword_rank = existing.get("_keyword_rank")
-                    existing.update(record)
-                    if vector_rank is not None:
-                        existing["_vector_rank"] = vector_rank
-                    if keyword_rank is not None:
-                        existing["_keyword_rank"] = keyword_rank
+                    _merge_candidate_record(existing, record)
                 existing["_focused_keyword_rank"] = rank
+            pass_counts["focused_keyword"] = focused_count
+
+        # A pre-installation question often omits the word "Readme", although
+        # that release artifact is where its precautions are documented. Add a
+        # bounded lexical pass so a generic Upgrade manual cannot hide the
+        # Readme before the 60-candidate union and deterministic reranking.
+        if _is_release_guidance_question(user_message):
+            release_query = " ".join(
+                dict.fromkeys(("readme", *tokenize(focused_query)))
+            )
+            release_count = 0
+            for rank, result in enumerate(
+                search_client.search(
+                    search_text=release_query,
+                    search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                    **keyword_search_args,
+                ),
+                start=1,
+            ):
+                release_count += 1
+                record = dict(result)
+                record_id = str(record.get("id", ""))
+                existing = records_by_id.get(record_id)
+                if existing is None:
+                    existing = record
+                    records_by_id[record_id] = existing
+                else:
+                    _merge_candidate_record(existing, record)
+                existing["_release_readme_rank"] = rank
+            pass_counts["release_readme"] = release_count
 
         # Older technical documents often use a CamelCase application path
         # (for example ``TiempoNoTrabajado``) while operators describe it as
@@ -1433,6 +1664,7 @@ def _retrieve_legacy_azure_search_evidence(
             if len(subject_terms) == 2 and all(len(term) >= 4 for term in subject_terms):
                 prefix_query = " AND ".join(f"{term}*" for term in subject_terms)
                 try:
+                    prefix_count = 0
                     for rank, result in enumerate(
                         search_client.search(
                             search_text=prefix_query,
@@ -1443,6 +1675,7 @@ def _retrieve_legacy_azure_search_evidence(
                         ),
                         start=1,
                     ):
+                        prefix_count += 1
                         record = dict(result)
                         record_id = str(record.get("id", ""))
                         existing = records_by_id.get(record_id)
@@ -1450,14 +1683,9 @@ def _retrieve_legacy_azure_search_evidence(
                             existing = record
                             records_by_id[record_id] = existing
                         else:
-                            keyword_rank = existing.get("_keyword_rank")
-                            focused_keyword_rank = existing.get("_focused_keyword_rank")
-                            existing.update(record)
-                            if keyword_rank is not None:
-                                existing["_keyword_rank"] = keyword_rank
-                            if focused_keyword_rank is not None:
-                                existing["_focused_keyword_rank"] = focused_keyword_rank
+                            _merge_candidate_record(existing, record)
                         existing["_prefix_rank"] = rank
+                    pass_counts["prefix"] = prefix_count
                 except Exception:
                     # The ordinary lexical pass remains valid when a legacy
                     # service does not accept full-query prefix syntax.
@@ -1485,6 +1713,7 @@ def _retrieve_legacy_azure_search_evidence(
                     k_nearest_neighbors=CANDIDATE_POOL_SIZE,
                     fields=CONTENT_VECTOR_FIELD,
                 )
+                vector_count = 0
                 for rank, result in enumerate(
                     search_client.search(
                         search_text=None,
@@ -1493,6 +1722,7 @@ def _retrieve_legacy_azure_search_evidence(
                     ),
                     start=1,
                 ):
+                    vector_count += 1
                     record = dict(result)
                     record_id = str(record.get("id", ""))
                     existing = records_by_id.get(record_id)
@@ -1500,14 +1730,9 @@ def _retrieve_legacy_azure_search_evidence(
                         existing = record
                         records_by_id[record_id] = existing
                     else:
-                        keyword_rank = existing.get("_keyword_rank")
-                        focused_keyword_rank = existing.get("_focused_keyword_rank")
-                        existing.update(record)
-                        if keyword_rank is not None:
-                            existing["_keyword_rank"] = keyword_rank
-                        if focused_keyword_rank is not None:
-                            existing["_focused_keyword_rank"] = focused_keyword_rank
+                        _merge_candidate_record(existing, record)
                     existing["_vector_rank"] = rank
+                pass_counts["vector"] = vector_count
             except Exception:
                 # Lexical retrieval remains a valid, bounded fallback when the
                 # embedding provider or vector field is temporarily slow.
@@ -1528,6 +1753,7 @@ def _retrieve_legacy_azure_search_evidence(
                     "artifact_role",
                 ]
                 try:
+                    script_count = 0
                     for rank, result in enumerate(
                         search_client.search(
                             search_text=script_query,
@@ -1536,6 +1762,7 @@ def _retrieve_legacy_azure_search_evidence(
                         ),
                         start=1,
                     ):
+                        script_count += 1
                         record = dict(result)
                         if not _is_script_record(record):
                             continue
@@ -1545,8 +1772,9 @@ def _retrieve_legacy_azure_search_evidence(
                             existing = record
                             records_by_id[record_id] = existing
                         else:
-                            existing.update(record)
+                            _merge_candidate_record(existing, record)
                         existing["_script_rank"] = rank
+                    pass_counts["script"] = script_count
                     candidate_records = [
                         _add_runtime_sharepoint_parent_context(record)
                         for record in _diversify_candidate_records(
@@ -1583,28 +1811,36 @@ def _retrieve_legacy_azure_search_evidence(
             str(record.get("id", "")): record for record in candidate_records
         }
         try:
+            explicit_count = 0
             for file_name in requested_file_names:
                 for result in search_client.search(
                     search_text=file_name,
                     search_fields=["title"],
                     **search_args,
                 ):
+                    explicit_count += 1
                     record = dict(result)
                     if not _record_matches_file_name(record, (file_name,)):
                         continue
                     record["_explicit_filename_match"] = True
                     records_by_id[str(record.get("id", ""))] = record
+            pass_counts["explicit_filename"] = explicit_count
             candidate_records = list(records_by_id.values())
         except Exception:
             # The regular keyword/vector candidates still provide a safe
             # fallback when a title-only query is temporarily unavailable.
             pass
 
+    raw_candidate_count = len(candidate_records)
     candidate_records = [
         _add_runtime_sharepoint_parent_context(record) for record in candidate_records
     ]
     if diagnostics is not None:
-        diagnostics["candidate_count"] = len(candidate_records)
+        diagnostics["candidate_count"] = raw_candidate_count
+        diagnostics["stage_counts"] = {
+            "azure_union": raw_candidate_count,
+            **{f"azure_{name}": count for name, count in pass_counts.items()},
+        }
     allowed_sources = getattr(config, "sharepoint_sources", None)
     if allowed_sources is None:
         allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
@@ -1619,9 +1855,22 @@ def _retrieve_legacy_azure_search_evidence(
     rejected_reasons = diagnostics.setdefault("rejected_reasons", {}) if diagnostics is not None else {}
     if diagnostics is not None and len(authorized_records) < len(candidate_records):
         rejected_reasons["provenance"] = len(candidate_records) - len(authorized_records)
+    injection_records = [
+        record for record in authorized_records if _record_contains_document_injection(record)
+    ]
+    if injection_records:
+        authorized_records = [
+            record for record in authorized_records if not _record_contains_document_injection(record)
+        ]
+        if diagnostics is not None:
+            rejected_reasons["document_injection"] = len(injection_records)
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["authorized"] = len(authorized_records)
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
     if diagnostics is not None and len(country_scoped_records) < len(authorized_records):
         rejected_reasons["country"] = len(authorized_records) - len(country_scoped_records)
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["country_scoped"] = len(country_scoped_records)
     version_fallback_ids: set[str] = set()
     exact_version_records = [
         record
@@ -1678,6 +1927,17 @@ def _retrieve_legacy_azure_search_evidence(
         ]
         if readme_records:
             version_scoped_records = readme_records
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["version_scoped"] = len(version_scoped_records)
+        if _is_release_guidance_question(user_message):
+            diagnostics["stage_counts"]["release_readme_candidates"] = sum(
+                1
+                for record in version_scoped_records
+                if any(
+                    marker in str(record.get("title") or "").casefold()
+                    for marker in _RELEASE_GUIDANCE_TITLE_MARKERS
+                )
+            )
     if requested_section:
         section_records = [
             record
@@ -1738,20 +1998,61 @@ def _retrieve_legacy_azure_search_evidence(
             # normally describe what the script fixes, not its file type.
             candidate_records = version_scoped_records
         else:
-            candidate_records = [
+            candidate_records = list(version_scoped_records)
+
+    # Apply the global bound only after provenance, country, version, filename,
+    # technical-anchor and script restrictions. A noisy Azure result must not
+    # evict an authorized record before the security boundary is evaluated.
+    merged_pool_limit = int(
+        getattr(config, "retrieval_merged_pool_limit", MAX_MERGED_CANDIDATES)
+    )
+    rerank_pool_limit = int(
+        getattr(config, "retrieval_rerank_pool_limit", RERANK_POOL_SIZE)
+    )
+    candidate_records = _limit_candidate_pool(
+        candidate_records,
+        merged_pool_limit,
+        prioritize_release=_is_release_guidance_question(user_message),
+    )
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["bounded_pool"] = len(candidate_records)
+        diagnostics["stage_counts"].update(_candidate_diversity_stats(candidate_records))
+
+    if not (_requests_script(user_message) and any(
+        _is_script_record(record) for record in version_scoped_records
+    )) and not explicit_file_records:
+        if _is_document_access_failure_question(user_message):
+            direct_access_records = [
                 record
-                for record in version_scoped_records
-                if _has_minimum_content_coverage(
-                    record,
-                    coverage_message,
-                    semantic_enabled=getattr(config, "azure_search_use_semantic", False),
-                )
+                for record in candidate_records
+                if _has_direct_document_access_failure_coverage(record)
             ]
+            if diagnostics is not None and len(direct_access_records) < len(candidate_records):
+                rejected_reasons["weak_document_access_coverage"] = (
+                    len(candidate_records) - len(direct_access_records)
+                )
+            candidate_records = direct_access_records
+        candidate_records = [
+            record
+            for record in candidate_records
+            if _has_minimum_content_coverage(
+                record,
+                coverage_message,
+                semantic_enabled=getattr(config, "azure_search_use_semantic", False),
+            )
+        ]
     if diagnostics is not None and len(candidate_records) < len(version_scoped_records):
         rejected_reasons["insufficient_direct_coverage"] = (
             len(version_scoped_records) - len(candidate_records)
         )
-    ranked_records = _rerank_records(candidate_records, user_message)
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["eligible"] = len(candidate_records)
+    rerank_records = _limit_candidate_pool(candidate_records, rerank_pool_limit)
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["rerank_pool"] = len(rerank_records)
+        if len(rerank_records) < len(candidate_records):
+            rejected_reasons["rerank_pool_limit"] = len(candidate_records) - len(rerank_records)
+    ranked_records = _rerank_records(rerank_records, user_message)
     if not ranked_records:
         if diagnostics is not None and candidate_records:
             rejected_reasons["relevance"] = len(candidate_records)
@@ -1769,6 +2070,8 @@ def _retrieve_legacy_azure_search_evidence(
     ][:limit]
     if diagnostics is not None and len(relevant_records) < len(ranked_records):
         rejected_reasons["relevance_floor"] = len(ranked_records) - len(relevant_records)
+    if diagnostics is not None:
+        diagnostics["stage_counts"]["final_relevant"] = len(relevant_records)
     sources: list[EvidenceSource] = []
     for _, record in relevant_records:
         fragment = _result_fragment(record, user_message)
@@ -1893,6 +2196,8 @@ def _v2_record_allowed(
         record, allowed_sources, allowed_source_labels
     ):
         return False, "provenance"
+    if _record_contains_document_injection(record):
+        return False, "document_injection"
     if str(record.get("quality_status") or "pendiente").casefold() in EXCLUDED_QUALITY_STATUSES:
         return False, "quality_status"
     if str(record.get("evidence_kind") or "primary").casefold() in {"navigation", "reference"}:
@@ -1975,10 +2280,9 @@ def _v2_semantic_candidate_payload(record: dict, plan: QueryPlan) -> dict:
         for requirement in plan.requirements
     ]
     return {
-        "candidate_id": str(record.get("id") or ""),
-        "title": str(record.get("title") or ""),
-        "artifact_role": str(record.get("artifact_role") or ""),
-        "evidence_kind": str(record.get("evidence_kind") or "primary"),
+        # candidate_id is assigned by the bounded caller; never serialize an
+        # Azure/document identifier to the model.
+        "candidate_id": str(record["_verifier_candidate_id"]),
         "fragments": fragments,
     }
 
@@ -2054,7 +2358,7 @@ def _v2_semantic_coverage_is_anchored(
     return True
 
 
-def _v2_semantic_verifier_records(records: list[dict], plan: QueryPlan, limit: int = 8) -> list[dict]:
+def _v2_semantic_verifier_records(records: list[dict], plan: QueryPlan, limit: int = 12) -> list[dict]:
     """Give the bounded verifier distinct documents, not many chunks of one."""
     selected: list[dict] = []
     seen_documents: set[str] = set()
@@ -2063,7 +2367,7 @@ def _v2_semantic_verifier_records(records: list[dict], plan: QueryPlan, limit: i
         if document_key in seen_documents:
             continue
         seen_documents.add(document_key)
-        selected.append(record)
+        selected.append({**record, "_verifier_candidate_id": f"c{len(selected) + 1:02d}"})
         if len(selected) >= limit:
             break
     return selected
@@ -2123,6 +2427,7 @@ def _retrieve_v2_azure_search_evidence(
 ) -> RetrievalTrace:
     plan = build_query_plan(user_message)
     candidate_records, rejected = _v2_search_candidates(plan, config, client=client)
+    raw_candidate_count = len(candidate_records)
     candidate_records = _filter_records_for_requested_country(candidate_records, user_message)
     allowed_sources = getattr(config, "sharepoint_sources", None)
     if allowed_sources is None:
@@ -2154,7 +2459,7 @@ def _retrieve_v2_azure_search_evidence(
                 model=getattr(config, "evidence_verifier_model_name", config.openai_intent_model_name),
             )
             for record in verifier_records:
-                coverage = semantic_coverage.get(str(record.get("id") or ""), ())
+                coverage = semantic_coverage.get(str(record["_verifier_candidate_id"]), ())
                 if coverage and _v2_semantic_coverage_is_anchored(record, plan, coverage):
                     direct_records.append((_v2_score(record, coverage, plan), record, coverage, "semantic"))
         except Exception:
@@ -2215,6 +2520,12 @@ def _retrieve_v2_azure_search_evidence(
         requirement_count=len(plan.requirements),
         covered_requirement_count=len(covered),
         rejected_reasons=rejected,
+        stage_counts={
+            "azure_union": raw_candidate_count,
+            "post_hard_filters": len(candidate_records),
+            "llm_candidate_pool": len(verifier_records) if getattr(config, "use_llm_evidence_verifier", False) else 0,
+            "final_relevant": len(sources),
+        },
     )
     logger.info(
         "retrieval_v2 query_hash=%s candidates=%s direct=%s requirements=%s covered=%s rejected=%s",
@@ -2248,6 +2559,7 @@ def retrieve_azure_search_evidence(
             candidate_count=int(diagnostics.get("candidate_count", 0)),
             direct_evidence_count=len(sources),
             rejected_reasons=dict(diagnostics.get("rejected_reasons", {})),
+            stage_counts=dict(diagnostics.get("stage_counts", {})),
         )
     return sources
 

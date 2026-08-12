@@ -34,6 +34,7 @@ class DebugRetrievalTests(unittest.TestCase):
             requirement_count=1,
             covered_requirement_count=1,
             rejected_reasons={"version": 2},
+            stage_counts={"azure_union": 7, "bounded_pool": 6, "final_relevant": 1},
         )
 
         with patch("debug_retrieval.retrieve_raw_azure_candidates", return_value=[]), patch(
@@ -43,6 +44,7 @@ class DebugRetrievalTests(unittest.TestCase):
 
         self.assertEqual("azure_ai_search", payload["origen"])
         self.assertEqual(7, payload["diagnostico"]["candidatos_recibidos"])
+        self.assertEqual(6, payload["diagnostico"]["etapas"]["bounded_pool"])
         self.assertEqual(
             "Readme 1.24.1.5.pdf — Página 5",
             payload["evidencia_que_recibe_el_bot"][0]["titulo"],

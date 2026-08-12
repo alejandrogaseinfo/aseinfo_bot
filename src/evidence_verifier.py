@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from query_plan import QueryPlan
 
@@ -21,9 +22,35 @@ Reglas estrictas:
   artefacto, pero no demuestra calificadores no documentados;
 - ante duda, no incluyas el requisito.
 
-Devuelve solamente JSON con: {"verdicts":[{"candidate_id":"...",
-"requirements":["r1"]}]}. Usa solo candidate_id y requisitos recibidos.
+Devuelve solamente JSON con exactamente este contrato:
+{"verdicts":[{"candidate_id":"...","requirements":["r1"],"confidence":0.0}]}.
+Usa solo candidate_id y requisitos recibidos. Si no hay evidencia directa,
+devuelve {"verdicts":[]}.
 """.strip()
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*[^\s,;]+"),
+    re.compile(r"(?i)\b(bearer)\s+[a-z0-9._~+/-]{12,}"),
+)
+_INJECTION_PATTERN = re.compile(
+    r"(?i)(ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?|"
+    r"disregard\s+(?:all\s+)?instructions?|reveal\s+(?:the\s+)?(?:system|developer)\s+prompt|"
+    r"(?:system|developer)\s+message\s*:)"
+)
+MIN_CONFIDENCE = 0.80
+
+
+def _redact(value):
+    """Remove credential-shaped values before document text leaves retrieval."""
+    if isinstance(value, str):
+        for pattern in _SECRET_PATTERNS:
+            value = pattern.sub(lambda match: f"{match.group(1) if match.lastindex else 'credencial'}: [REDACTED]", value)
+        return value
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _redact(item) for key, item in value.items()}
+    return value
 
 
 def verify_semantic_evidence(
@@ -35,29 +62,41 @@ def verify_semantic_evidence(
     """Fail closed when a model response is unavailable or malformed."""
     if not candidates or client is None:
         return {}
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "requirements": [
-                            {"id": requirement.identifier, "text": requirement.text}
-                            for requirement in plan.requirements
-                        ],
-                        "candidates": candidates,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-        ],
-    )
-    content = response.choices[0].message.content or "{}"
-    payload = json.loads(content)
+    # Treat prompt injection in a retrieved fragment as an untrusted-input
+    # failure, rather than asking the model to judge it.
+    serialized_candidates = _redact(candidates)
+    if _INJECTION_PATTERN.search(json.dumps(serialized_candidates, ensure_ascii=False)):
+        return {}
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "requirements": [
+                                {"id": requirement.identifier, "text": requirement.text}
+                                for requirement in plan.requirements
+                            ],
+                            "candidates": serialized_candidates,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = json.loads(content)
+    except Exception:
+        # Network errors, malformed JSON and provider schema changes must not
+        # promote an unverified fragment to documentary evidence.
+        return {}
+    if not isinstance(payload, dict) or set(payload) != {"verdicts"}:
+        return {}
     raw_verdicts = payload.get("verdicts")
     if not isinstance(raw_verdicts, list):
         return {}
@@ -65,12 +104,15 @@ def verify_semantic_evidence(
     allowed_requirements = set(plan.requirement_ids)
     verdicts: dict[str, tuple[str, ...]] = {}
     for raw_verdict in raw_verdicts:
-        if not isinstance(raw_verdict, dict):
-            continue
+        if not isinstance(raw_verdict, dict) or set(raw_verdict) != {"candidate_id", "requirements", "confidence"}:
+            return {}
         candidate_id = str(raw_verdict.get("candidate_id") or "")
         requirements = raw_verdict.get("requirements")
-        if candidate_id not in allowed_candidates or not isinstance(requirements, list):
-            continue
+        confidence = raw_verdict.get("confidence")
+        if (candidate_id not in allowed_candidates or not isinstance(requirements, list)
+                or isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+                or not MIN_CONFIDENCE <= confidence <= 1):
+            return {}
         approved = tuple(
             dict.fromkeys(
                 str(requirement)
@@ -78,6 +120,8 @@ def verify_semantic_evidence(
                 if str(requirement) in allowed_requirements
             )
         )
+        if len(approved) != len(requirements):
+            return {}
         if approved:
             verdicts[candidate_id] = approved
     return verdicts

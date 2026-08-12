@@ -1,5 +1,23 @@
 # Producción de Libras - foco de esta semana
 
+## Actualización de calidad — 2026-08-12
+
+La evaluación real de `libras-docs` quedó en **14/15 casos**, con recall de
+evidencia de **91.7%** y abstención correcta de **100%**. RAG-10 está corregido:
+las instrucciones de descarga no pasan como diagnóstico si no contienen una
+señal local de troubleshooting.
+
+RAG-09 reveló una ambigüedad de producto, no una falta de documento: la
+pregunta no especifica versión y el índice contiene varios Readme incompatibles.
+La política aprobada es solicitar la versión (`solicita_contexto`) en ese caso;
+no se debe forzar `Readme 1.19.1.6` ni otra versión por ranking. Con una versión
+explícita, el filtro exacto conserva la evidencia correspondiente.
+
+El evaluador LLM acotado sigue apagado por defecto y no se ha desplegado ni
+activado en producción. La estrategia activa continúa siendo `legacy`; V2 y el
+evaluador quedan pendientes de una promoción separada después de probar la
+política de ambigüedad.
+
 > **Estado consolidado 2026-07-31:** consultar primero
 > [contexto-actual.md](contexto-actual.md). El alcance autorizado incluye las
 > bibliotecas documentales aprobadas del sitio `Soportealcliente`; en la

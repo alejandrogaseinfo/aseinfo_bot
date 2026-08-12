@@ -101,7 +101,11 @@ def build_debug_payload(question: str, config: Config) -> dict:
     raw_candidates = retrieve_raw_azure_candidates(question, config)
     trace = retrieve_azure_search_evidence(question, config=config, return_trace=True)
     if not isinstance(trace, RetrievalTrace):  # Protección ante futuras estrategias.
-        trace = RetrievalTrace(sources=trace, direct_evidence_count=len(trace))
+        trace = RetrievalTrace(
+            sources=trace,
+            candidate_count=len(raw_candidates),
+            direct_evidence_count=len(trace),
+        )
 
     return {
         "pregunta": question,
@@ -114,6 +118,7 @@ def build_debug_payload(question: str, config: Config) -> dict:
             "requisitos": trace.requirement_count,
             "requisitos_cubiertos": trace.covered_requirement_count,
             "motivos_de_descartes": trace.rejected_reasons,
+            "etapas": trace.stage_counts,
         },
         "candidatos_crudos_de_azure": raw_candidates,
         "evidencia_que_recibe_el_bot": [_source_payload(source) for source in trace.sources],

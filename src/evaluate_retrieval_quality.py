@@ -118,6 +118,7 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
                 "requirement_count": trace.requirement_count if trace else None,
                 "covered_requirement_count": trace.covered_requirement_count if trace else None,
                 "rejected_reasons": trace.rejected_reasons if trace else {},
+                "stage_counts": trace.stage_counts if trace else {},
                 "split": case.get("split", "regression"),
                 "artifact_role": case.get("artifact_role", ""),
                 "category": case.get("category", "uncategorized"),
@@ -211,6 +212,47 @@ def evaluate_cases(cases: list[dict], retriever: Callable[[str], list | Retrieva
             "by_category": category_summary,
         },
         "results": results,
+    }
+
+
+def evaluate_strategy_variants(
+    cases: list[dict],
+    strategies: dict[str, Callable[[str], list | RetrievalTrace]],
+) -> dict[str, dict]:
+    """Run identical reviewed cases through named retrieval strategies.
+
+    The function is deliberately callback-based: local tests can compare
+    deterministic variants without Azure credentials, while a read-only
+    evaluation can inject production-compatible retrievers later. It never
+    changes the index or calls answer generation.
+    """
+    if not strategies:
+        raise ValueError("Se requiere al menos una estrategia de recuperación.")
+    return {
+        str(name): evaluate_cases(cases, retriever)
+        for name, retriever in strategies.items()
+    }
+
+
+def comparison_summary(reports: dict[str, dict]) -> dict[str, dict]:
+    """Extract comparable quality metrics without exposing case contents."""
+    return {
+        name: {
+            key: report.get("summary", {}).get(key)
+            for key in (
+                "case_count",
+                "pass_rate",
+                "evidence_recall",
+                "correct_abstention_rate",
+                "candidate_document_recall",
+                "direct_evidence_rate",
+                "retrieval_latency_ms_avg",
+                "retrieval_latency_ms_p95",
+                "answer_resolution_rate",
+                "answer_correct_abstention_rate",
+            )
+        }
+        for name, report in reports.items()
     }
 
 

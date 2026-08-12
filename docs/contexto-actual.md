@@ -1,5 +1,23 @@
 # Contexto actual de Libras
 
+## Actualización de calidad y decisión RAG — 2026-08-12
+
+La evaluación controlada contra `libras-docs` confirmó **14/15 casos**, recall
+de evidencia de **91.7%** y abstención correcta de **100%** después de la
+corrección de RAG-10. Las instrucciones normales de descarga ya no se presentan
+como diagnóstico de una falla. El único caso pendiente es RAG-09: una pregunta
+sin versión devuelve varios Readme incompatibles.
+
+Decisión: cuando una pregunta de instalación/actualización no mencione versión
+y existan varios Readme incompatibles, Libras no elegirá una versión por
+ranking. Debe solicitar la versión al usuario (`solicita_contexto`) y conservar
+la respuesta sin evidencia final hasta recibirla. Una versión explícita activa
+el filtro exacto y permite seleccionar el Readme correspondiente.
+
+El evaluador LLM acotado permanece desactivado (`USE_LLM_EVIDENCE_VERIFIER=false`)
+y la estrategia productiva continúa en `legacy`. La promoción de V2 queda
+pendiente de implementar y probar esta política de ambigüedad.
+
 > Documento de continuidad para cualquier persona o chat nuevo que retome el
 > proyecto. Fecha de consolidación: 2026-07-31.
 

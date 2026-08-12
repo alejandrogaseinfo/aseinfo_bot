@@ -48,3 +48,6 @@ class RetrievalTrace:
     requirement_count: int = 0
     covered_requirement_count: int = 0
     rejected_reasons: dict[str, int] = field(default_factory=dict)
+    # Conteos agregados por etapa; nunca contiene preguntas, fragmentos ni
+    # secretos. Permite comparar la recuperación sin exponer los candidatos.
+    stage_counts: dict[str, int] = field(default_factory=dict)
