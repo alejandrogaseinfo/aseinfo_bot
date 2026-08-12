@@ -86,8 +86,8 @@ No se modificó el índice, la configuración productiva ni el despliegue.
 
 ## Bundle posterior al commit
 
-- Revisión de código: `39e23f6`.
-- Bundle: `output/libras-eval-bundle-20260812-39e23f6.zip`.
+- Revisión de código: `4ebaaa5`.
+- Bundle: `output/libras-eval-bundle-20260812-4ebaaa5.zip`.
 - SHA-256: `6369E2C104FEB437BFD399A2B168D146DEBF2A0D1CCEA4DCAEAA03D398AFB8E2`.
 - El bundle contiene el código, las pruebas y el corpus, pero no contiene
   `.env`, `data` ni archivos de salida.
