@@ -83,3 +83,15 @@ class GroundedResponseTests(unittest.TestCase):
         )
 
         self.assertIsNone(draft)
+
+    def test_accepts_explicit_grounded_abstention(self):
+        draft = generate_grounded_response(
+            "Pregunta sin detalle suficiente",
+            self.evidence,
+            self._client({"respuesta": "", "fuentes": []}),
+            "test-model",
+        )
+
+        self.assertIsNotNone(draft)
+        self.assertEqual("", draft.response)
+        self.assertEqual([], draft.sources)

@@ -70,6 +70,26 @@ legacy + USE_LLM_GROUNDED_RESPONSE=true
 Este resultado es prometedor, pero todavía no autoriza activar el redactor: la
 muestra es pequeña y falta revisión humana sobre la matriz ampliada.
 
+### A/B ampliado con evidencia real
+
+Sobre las mismas 29 preguntas, el handler habría dejado **20 casos elegibles**
+para el redactor: las consultas genéricas se detienen antes de recuperar y las
+versiones o abstenciones permanecen deterministas. En una ejecución controlada
+se observaron:
+
+- **17/20** llamadas con contrato válido y respuesta redactada (85%).
+- **2/20** abstenciones explícitas del modelo, ambas apropiadas porque el
+  fragmento era solo un encabezado o portada sin pasos/definición suficiente.
+- **1/20** fallback técnico por respuesta inválida o vacía; una repetición del
+  mismo caso devolvió contrato válido, por lo que debe conservarse el fallback.
+- Latencia media del redactor en llamadas exitosas: **1.45 s**; p95: **1.89 s**.
+- Longitud media: **661 caracteres** en la salida determinista frente a
+  **292 caracteres** en la salida redactada.
+
+La conclusión provisional es mantener el redactor apagado hasta revisar las
+respuestas con una persona y confirmar que la latencia combinada de recuperación
+y redacción es aceptable para Teams.
+
 ## Auditoría de Azure AI Search en modo lectura
 
 - Índice: `libras-docs` en `srch-libras-prod`.

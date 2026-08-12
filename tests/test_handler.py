@@ -724,6 +724,35 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Manual de flujos", response)
         self.assertNotIn("Manual relacionado", response)
 
+    async def test_grounded_writer_explicit_abstention_is_safe(self):
+        self.config.use_llm_grounded_response = True
+        self.config.model_endpoint_configured = True
+        self.config.retrieval_timeout_seconds = 0.2
+        self.config.grounded_response_timeout_seconds = 0.2
+        evidence = [
+            EvidenceSource(
+                tipo="sharepoint",
+                titulo="Configuración de MiniProfiler.pdf — Página 1",
+                ubicacion="https://contoso.example/miniprofiler.pdf",
+                fragmento="Página 1 Configuración MiniProfiler Evolution 1.10.0 o superior.",
+            )
+        ]
+        from grounded_response import GroundedDraft
+
+        with patch("handler.retrieve_evidence", return_value=evidence), patch(
+            "handler.generate_grounded_response",
+            return_value=GroundedDraft("", []),
+        ) as writer:
+            response = await process_user_message(
+                "¿Qué pasos documenta la configuración de MiniProfiler en Evolution?",
+                None,
+                self.config,
+            )
+
+        writer.assert_called_once()
+        self.assertIn("No se encontro evidencia directa suficiente", response)
+        self.assertNotIn("MiniProfiler.pdf", response)
+
     async def test_documentary_follow_up_carries_previous_version_into_retrieval(self):
         previous_response = (
             "Para Evolution 1.19.1.10, la documentación indica cambios del hotfix.\n\n"

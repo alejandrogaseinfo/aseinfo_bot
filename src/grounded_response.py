@@ -93,7 +93,11 @@ def generate_grounded_response(
     if not isinstance(answer, str) or not isinstance(source_ids, list):
         return None
     answer = " ".join(answer.split())
-    if not answer or len(answer) > _MAX_RESPONSE_CHARACTERS:
+    if not answer:
+        # An empty answer with no cited sources is a valid grounded abstention,
+        # not a provider failure. The handler turns it into sin_evidencia.
+        return GroundedDraft("", []) if not source_ids else None
+    if len(answer) > _MAX_RESPONSE_CHARACTERS:
         return None
     allowed_sources = {item["id"]: source for item, source in zip(sources, evidence)}
     if not source_ids or not all(isinstance(source_id, str) for source_id in source_ids):

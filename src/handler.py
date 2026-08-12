@@ -1085,9 +1085,29 @@ async def process_user_message(
                 timeout_seconds=getattr(config, "grounded_response_timeout_seconds", 5),
             )
             if draft:
-                fallback_decision.resumen = draft.response
-                fallback_decision.fuentes = draft.sources
-                logger.info("Se usó el redactor fundamentado con %s fuentes.", len(draft.sources))
+                if not draft.response and not draft.sources:
+                    # The model's explicit empty contract means the approved
+                    # fragments were insufficient. Treat it as a safe
+                    # abstention; only None remains the technical-error path.
+                    fallback_decision = BotDecision(
+                        estado="sin_evidencia",
+                        confianza="baja",
+                        resumen=(
+                            "No se encontro evidencia directa suficiente en las "
+                            "fuentes documentales consultadas."
+                        ),
+                        fuentes=[],
+                        siguiente_accion=(
+                            "Escale el caso al equipo de desarrollo para una "
+                            "revision manual."
+                        ),
+                        requiere_escalamiento=True,
+                    )
+                    logger.info("El redactor fundamentado devolvió una abstención explícita.")
+                else:
+                    fallback_decision.resumen = draft.response
+                    fallback_decision.fuentes = draft.sources
+                    logger.info("Se usó el redactor fundamentado con %s fuentes.", len(draft.sources))
         except TimeoutError:
             logger.warning("El redactor fundamentado superó su tiempo límite.")
         except Exception:

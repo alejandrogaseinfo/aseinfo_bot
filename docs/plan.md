@@ -361,6 +361,8 @@ No promover el redactor a una audiencia amplia hasta cumplir todos estos puntos:
 - [x] Corpus ampliado a 29 casos y línea base `legacy` ejecutados en modo de
   lectura contra `libras-docs`.
 - [x] Comparación A/B local del redactor ejecutada con evidencias controladas.
+- [x] A/B ampliado sobre 29 preguntas; quedan pendientes revisión humana y
+  decisión de activación.
 - [x] Dimensión y cobertura vectorial del índice verificadas en paralelo.
 - [ ] Matriz ampliada y revisión humana completadas.
 - [ ] Experimento híbrido ejecutado o descartado con métricas.
