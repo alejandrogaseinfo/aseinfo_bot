@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
     env:
-      PYTHONPATH: src
+      PYTHONPATH: src:.ci-site-packages
       RETRIEVAL_STRATEGY: legacy
       USE_AI_FIRST_EXPERIMENTAL: 'false'
       USE_CONTEXT_GUARD: 'false'
