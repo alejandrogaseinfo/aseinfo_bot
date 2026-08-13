@@ -38,6 +38,39 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("authorized", CONTEXT_GUARD_PROMPT)
         self.assertIn("Missing version", CONTEXT_GUARD_PROMPT)
 
+    def test_prompt_allows_technical_terms_without_treating_them_as_secrets(self):
+        for term in (
+            "SQL",
+            "data obfuscation",
+            "vacation",
+            "contract",
+            "prórrogas",
+            "MSDTC",
+            "product name is omitted",
+            "jQuery",
+            "version or release",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, CONTEXT_GUARD_PROMPT)
+
+    def test_accepts_previous_context_guard_false_positive_regressions(self):
+        questions = (
+            "¿Qué hace el script de vacaciones negativas?",
+            "¿Qué parámetros reviso para una prórroga de contrato?",
+            "¿Cómo se ofuscan datos sensibles en SQL?",
+            "¿En qué versión se actualizó jQuery?",
+        )
+        for question in questions:
+            with self.subTest(question=question):
+                decision = evaluate_context_guard(
+                    question,
+                    self._client_with_content(
+                        '{"decision":"allow","reason_code":"safe","confidence":"high"}'
+                    ),
+                    "test-model",
+                )
+                self.assertTrue(decision.allows_request)
+
     def test_accepts_ambiguous_libras_complaint_for_context_collection(self):
         decision = evaluate_context_guard(
             "No funciona.",
