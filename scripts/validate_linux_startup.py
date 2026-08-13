@@ -63,17 +63,20 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--source-dir", type=Path)
     source.add_argument("--bundle", type=Path)
     args = parser.parse_args(argv)
-    if shutil.which("docker") is None:
-        print("Docker no está disponible; no se ejecutó la validación Linux.", file=sys.stderr)
-        return 2
     if args.bundle:
         with tempfile.TemporaryDirectory(prefix="libras-linux-startup-") as temporary:
             root = Path(temporary)
             extract_bundle(args.bundle, root)
+            if shutil.which("docker") is None:
+                print("Docker no está disponible; no se ejecutó la validación Linux.", file=sys.stderr)
+                return 2
             subprocess.run(docker_command(root), check=True)
     else:
         root = args.source_dir.resolve()
         validate_tree(root)
+        if shutil.which("docker") is None:
+            print("Docker no está disponible; no se ejecutó la validación Linux.", file=sys.stderr)
+            return 2
         subprocess.run(docker_command(root), check=True)
     return 0
 
