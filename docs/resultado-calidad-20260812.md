@@ -33,6 +33,13 @@ experimento; no se activó `USE_LLM_EVIDENCE_VERIFIER`, no se cambió a `v2` y
 la bandera AI-first no se desplegó. El redactor grounded queda activo solo en
 la ventana controlada vigente.
 
+La comprobación puntual de versión seleccionó únicamente `Readme 1.19.1.6.pdf
+— Página 13` para la consulta explícita, tanto con el redactor apagado como
+encendido, y no citó `1.19.1.7`. En la consulta sin versión AI-first no pidió
+`solicita_contexto`: el juez seleccionó fuentes de varias versiones, tal como
+permite este experimento. El detalle está en
+`output/revision-humana-ai-first-version-check-20260812.json`.
+
 ## Repetición A/B instrumentada — 2026-08-12
 
 La repetición posterior a la corrección general del router evitó que una
