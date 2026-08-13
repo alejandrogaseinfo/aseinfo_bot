@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import re
 import unicodedata
 from collections.abc import Callable
 from time import perf_counter
+from urllib.parse import urlparse
 
 from classification import (
     classify_case,
@@ -31,6 +33,20 @@ from ai_first import (
 )
 
 logger = get_logger()
+
+
+def _context_guard_call_metadata(user_message: str, config) -> tuple[str, str, str]:
+    """Return non-sensitive observability fields for one guard request."""
+    request_hash = hashlib.sha256(user_message.encode("utf-8")).hexdigest()[:16]
+    model = str(
+        getattr(config, "context_guard_model_name", "unknown") or "unknown"
+    )
+    try:
+        endpoint = str(config.resolved_openai_base_url)
+    except (AttributeError, TypeError):
+        endpoint = ""
+    endpoint_host = urlparse(endpoint).hostname or "unconfigured"
+    return request_hash, model, endpoint_host
 
 
 HELP_COMMANDS = {
@@ -1092,13 +1108,38 @@ async def process_user_message(
     ):
         guard_mode = getattr(config, "context_guard_mode", "observe")
         failure_policy = getattr(config, "context_guard_failure_policy", "block")
+        guard_timeout = getattr(config, "context_guard_timeout_seconds", 2)
+        request_hash, guard_model, endpoint_host = _context_guard_call_metadata(
+            retrieval_message, config
+        )
+        guard_started_at = perf_counter()
+        logger.info(
+            "context_guard_start request_hash=%s model=%s endpoint_host=%s "
+            "timeout_s=%.1f mode=%s",
+            request_hash,
+            guard_model,
+            endpoint_host,
+            guard_timeout,
+            guard_mode,
+        )
         try:
             guard_decision = await _run_blocking_with_timeout(
                 evaluate_context_guard,
                 retrieval_message,
                 client=client,
-                model=getattr(config, "context_guard_model_name", config.openai_intent_model_name),
-                timeout_seconds=getattr(config, "context_guard_timeout_seconds", 2),
+                model=guard_model,
+                timeout_seconds=guard_timeout,
+            )
+            logger.info(
+                "context_guard_end request_hash=%s outcome=decision duration_ms=%s "
+                "decision=%s reason_code=%s confidence=%s model=%s endpoint_host=%s",
+                request_hash,
+                round((perf_counter() - guard_started_at) * 1000, 2),
+                guard_decision.decision,
+                guard_decision.reason_code,
+                guard_decision.confidence,
+                guard_model,
+                endpoint_host,
             )
             if not guard_decision.allows_request:
                 if guard_mode == "enforce":
@@ -1119,14 +1160,30 @@ async def process_user_message(
                     return _context_guard_response()
         except TimeoutError:
             logger.warning(
+                "context_guard_end request_hash=%s outcome=timeout duration_ms=%s "
+                "model=%s endpoint_host=%s timeout_s=%.1f",
+                request_hash,
+                round((perf_counter() - guard_started_at) * 1000, 2),
+                guard_model,
+                endpoint_host,
+                guard_timeout,
+            )
+            logger.warning(
                 "ContextGuard superó el límite de %.1f segundos.",
-                getattr(config, "context_guard_timeout_seconds", 2),
+                guard_timeout,
             )
             if guard_mode == "enforce" and failure_policy == "block":
                 mark_trace(blocked=True)
                 return _context_guard_response()
         except Exception:
-            logger.exception("Falló ContextGuard; se aplicará su política de fallo configurada.")
+            logger.exception(
+                "context_guard_end request_hash=%s outcome=provider_error "
+                "duration_ms=%s model=%s endpoint_host=%s",
+                request_hash,
+                round((perf_counter() - guard_started_at) * 1000, 2),
+                guard_model,
+                endpoint_host,
+            )
             if guard_mode == "enforce" and failure_policy == "block":
                 mark_trace(blocked=True)
                 return _context_guard_response()

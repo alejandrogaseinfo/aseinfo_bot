@@ -60,6 +60,9 @@ payroll or vacation calculations, and similar application procedures are
 technical-domain requests even when the product name is omitted; allow them
 unless the user explicitly asks for a secret, an unauthorized action, or
 something clearly unrelated to Libras/Evolution.
+Questions asking for the purpose, meaning, or documented behavior of a payroll
+or vacation concept (for example, "¿Cuál es el propósito de vacaciones
+negativas?") are also technical documentation questions and must be allow.
 
 When a message asks how to perform an authorized documented procedure, classify
 the request as allow even if the procedure transforms sensitive business data.

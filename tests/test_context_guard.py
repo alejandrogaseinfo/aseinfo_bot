@@ -52,10 +52,12 @@ class ContextGuardTests(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, CONTEXT_GUARD_PROMPT)
+        self.assertIn("purpose, meaning, or documented behavior", CONTEXT_GUARD_PROMPT)
 
     def test_accepts_previous_context_guard_false_positive_regressions(self):
         questions = (
             "¿Qué hace el script de vacaciones negativas?",
+            "¿Cuál es el propósito de vacaciones negativas?",
             "¿Qué parámetros reviso para una prórroga de contrato?",
             "¿Cómo se ofuscan datos sensibles en SQL?",
             "¿En qué versión se actualizó jQuery?",

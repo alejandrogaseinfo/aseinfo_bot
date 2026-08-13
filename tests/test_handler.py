@@ -9,7 +9,11 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from handler import _grounded_draft_preserves_procedure, process_user_message
+from handler import (
+    _context_guard_call_metadata,
+    _grounded_draft_preserves_procedure,
+    process_user_message,
+)
 from intent import IntentResult
 from models import BotDecision, EvidenceSource, RetrievalTrace
 
@@ -47,6 +51,17 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
                 "¿Cómo amplío el tiempo de sesión?", deterministic, short_draft
             )
         )
+
+    def test_context_guard_metadata_is_non_sensitive_and_uses_endpoint_host(self):
+        self.config.resolved_openai_base_url = "https://api.example.test/v1"
+        request_hash, model, endpoint_host = _context_guard_call_metadata(
+            "consulta con contraseña no debe aparecer", self.config
+        )
+
+        self.assertEqual(16, len(request_hash))
+        self.assertNotIn("contraseña", request_hash)
+        self.assertEqual("test-guard-model", model)
+        self.assertEqual("api.example.test", endpoint_host)
 
     async def test_retrieval_timeout_returns_safe_no_evidence_response(self):
         def slow_retrieval(*_args, **_kwargs):
@@ -377,6 +392,21 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         with patch("handler.evaluate_context_guard", side_effect=slow_guard), patch(
             "handler.retrieve_evidence"
         ) as retrieval:
+            response = await process_user_message("Consulta técnica", None, self.config)
+
+        self.assertIn("Por seguridad", response)
+        retrieval.assert_not_called()
+
+    async def test_context_guard_provider_error_blocks_in_enforce_mode_by_default(self):
+        self.config.use_context_guard = True
+        self.config.context_guard_mode = "enforce"
+        self.config.model_endpoint_configured = True
+        self.config.context_guard_timeout_seconds = 5
+
+        with patch(
+            "handler.evaluate_context_guard",
+            side_effect=ValueError("invalid provider response"),
+        ), patch("handler.retrieve_evidence") as retrieval:
             response = await process_user_message("Consulta técnica", None, self.config)
 
         self.assertIn("Por seguridad", response)
