@@ -5,7 +5,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from validate_linux_startup import GUNICORN_COMMAND, docker_command, validate_tree
+from validate_linux_startup import (
+    GUNICORN_COMMAND,
+    PLACEHOLDER_ENVIRONMENT,
+    docker_command,
+    validate_tree,
+)
 
 
 class LinuxStartupValidationTests(unittest.TestCase):
@@ -37,4 +42,9 @@ class LinuxStartupValidationTests(unittest.TestCase):
         self.assertIn("none", command)
         self.assertIn("python:3.11.15-slim", command)
         self.assertIn(GUNICORN_COMMAND, command[-1])
-        self.assertNotIn("--env", command)
+        self.assertIn("--env", command)
+        self.assertIn(
+            "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET="
+            + PLACEHOLDER_ENVIRONMENT["CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET"],
+            command,
+        )

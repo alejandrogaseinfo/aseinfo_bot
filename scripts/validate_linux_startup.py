@@ -14,6 +14,12 @@ REQUIRED_ROOT_FILES = frozenset({"app.py", "requirements.txt", ".deployment"})
 FORBIDDEN_PARTS = frozenset({".env", "tests", "docs", "data", "output", "tmp"})
 PYTHON_IMAGE = "python:3.11.15-slim"
 GUNICORN_COMMAND = "gunicorn --check-config --bind 0.0.0.0:8000 --worker-class aiohttp.worker.GunicornWebWorker --timeout 600 app:app"
+PLACEHOLDER_ENVIRONMENT = {
+    "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTID": "00000000-0000-0000-0000-000000000001",
+    "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__CLIENTSECRET": "placeholder-not-a-secret",
+    "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__TENANTID": "00000000-0000-0000-0000-000000000002",
+    "CONNECTIONS__SERVICE_CONNECTION__SETTINGS__AUTHTYPE": "clientSecret",
+}
 
 
 def validate_tree(root: Path) -> None:
@@ -50,10 +56,11 @@ def docker_command(source_dir: Path) -> list[str]:
         "python -c \"import app, aiohttp, gunicorn; print('entrypoint_import=ok')\"",
         GUNICORN_COMMAND,
     ))
+    environment = [item for key, value in PLACEHOLDER_ENVIRONMENT.items() for item in ("--env", f"{key}={value}")]
     return [
         "docker", "run", "--rm", "--network", "none", "--mount",
         f"type=bind,source={source_dir.resolve()},target=/workspace,readonly",
-        "--workdir", "/workspace", PYTHON_IMAGE, "sh", "-ec", command,
+        "--workdir", "/workspace", *environment, PYTHON_IMAGE, "sh", "-ec", command,
     ]
 
 

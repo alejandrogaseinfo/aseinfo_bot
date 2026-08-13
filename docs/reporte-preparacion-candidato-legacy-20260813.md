@@ -10,7 +10,7 @@ a usar.
 
 `scripts/validate_linux_startup.py` valida un directorio de despliegue o ZIP
 con un contenedor `python:3.11.15-slim`. No propaga variables del host ni usa
-Azure: instala desde `requirements.txt`, importa `app`, `aiohttp` y `gunicorn`,
+Azure: usa solo valores ficticios de conexión Teams, instala desde `requirements.txt`, importa `app`, `aiohttp` y `gunicorn`,
 y ejecuta la comprobación de Gunicorn para
 `aiohttp.worker.GunicornWebWorker` y `app:app`.
 
