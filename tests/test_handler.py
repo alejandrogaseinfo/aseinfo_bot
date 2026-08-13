@@ -1091,6 +1091,7 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.config.model_endpoint_configured = True
         self.config.intent_timeout_seconds = 0.2
         self.config.classification_timeout_seconds = 0.2
+        self.config.retrieval_timeout_seconds = 0.2
         evidence = [
             EvidenceSource(
                 tipo="azure_ai_search",
@@ -1099,19 +1100,10 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
                 fragmento="En El Salvador se pagan la planilla mensual, el bono 14 y el aguinaldo.",
             )
         ]
-        decision = BotDecision(
-            estado="resuelto",
-            confianza="alta",
-            resumen="La documentación responde directamente la consulta.",
-            fuentes=evidence,
-        )
-
         with patch(
             "handler.classify_intent",
             return_value=IntentResult(name="consulta_ambigua", requires_context=True),
-        ), patch("handler.retrieve_evidence", return_value=evidence) as retrieval, patch(
-            "handler.classify_case", return_value=decision
-        ):
+        ), patch("handler.retrieve_evidence", return_value=evidence) as retrieval:
             response = await process_user_message(
                 "¿Cuáles son las planillas que se pagan en El Salvador?",
                 None,
@@ -1119,7 +1111,8 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         retrieval.assert_called_once()
-        self.assertIn("La documentación responde", response)
+        self.assertNotIn("No tengo evidencia", response)
+        self.assertIn("planilla mensual", response)
         self.assertIn("Políticas de Pago SV", response)
 
     async def test_llm_ambiguity_is_transparent_when_the_topic_is_not_documentary(self):

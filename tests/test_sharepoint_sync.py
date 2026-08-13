@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -104,15 +105,19 @@ class SharePointSyncTests(unittest.TestCase):
             create_sharepoint_client(config)
 
     def test_user_environment_files_override_repository_defaults(self):
-        with patch("config.load_dotenv") as load_dotenv_mock:
+        expected_environment = "ci-isolated"
+        with patch.dict(os.environ, {"TEAMSFX_ENV": expected_environment}, clear=False), patch(
+            "config.Path.exists", return_value=True
+        ), patch("config.load_dotenv") as load_dotenv_mock:
             load_project_environment()
+            self.assertEqual(expected_environment, os.environ["TEAMSFX_ENV"])
 
         user_calls = [
             call
             for call in load_dotenv_mock.call_args_list
             if call.args and str(call.args[0]).endswith(".user")
         ]
-        self.assertTrue(user_calls)
+        self.assertEqual(2, len(user_calls))
         self.assertTrue(all(call.kwargs.get("override") is True for call in user_calls))
 
     def test_multiple_sharepoint_folder_paths_are_parsed(self):
