@@ -687,15 +687,36 @@ def _requested_versions(user_message: str) -> tuple[str, ...]:
 
 
 def _record_matches_requested_version(record: dict, versions: tuple[str, ...]) -> bool:
-    """Avoid treating a shared version prefix as an exact version match."""
+    """Match an explicit version using document identity, never body prose.
+
+    Release fragments commonly mention a base, previous, or next version in
+    their instructions.  Those mentions are evidence text, not document
+    identity; using them for the scope would let a neighbouring Readme pass a
+    request for another release.
+    """
     if not versions:
         return True
+    found_versions = _record_identity_versions(record)
+    return any(version in found_versions for version in versions)
+
+
+def _record_identity_versions(record: dict) -> set[str]:
+    """Return versions declared by document identity metadata only."""
     searchable_text = " ".join(
         str(record.get(field) or "")
-        for field in ("title", CONTEXT_FIELD, CONTENT_FIELD)
+        for field in (
+            "title",
+            "version",
+            "document_version",
+            "product_version",
+            "release_version",
+            "metadata_version",
+        )
     ).casefold()
-    found_versions = {match.group(1).casefold() for match in _VERSION_PATTERN.finditer(searchable_text)}
-    return any(version in found_versions for version in versions)
+    return {
+        match.group(1).casefold()
+        for match in _VERSION_PATTERN.finditer(searchable_text)
+    }
 
 
 _STRUCTURAL_QUERY_TERMS = {
@@ -765,6 +786,30 @@ def _record_matches_technical_anchor(record: dict, user_message: str) -> bool:
         window = set(record_tokens[max(0, index - 24) : index + 25])
         if window.intersection(technical_context):
             return True
+    return False
+
+
+def _record_has_local_structural_detail(record: dict, user_message: str) -> bool:
+    """Require structural detail near the named technical anchor."""
+    text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", CONTEXT_FIELD, CONTENT_FIELD, "content_tokens")
+    )
+    normalized = text.casefold()
+    query_identifiers = re.findall(
+        r"(?<![\w])([A-Za-z][\w]*(?:_[\w]+)+)(?![\w])", user_message or ""
+    )
+    anchors = [identifier.casefold() for identifier in query_identifiers]
+    if not anchors:
+        anchors.extend(acronym.casefold() for acronym in _UPPERCASE_ACRONYM.findall(user_message or ""))
+    detail_tokens = {
+        "almacena", "campo", "columna", "relacion", "estructura",
+    }
+    for anchor in anchors:
+        for match in re.finditer(re.escape(anchor), normalized):
+            window = normalized[max(0, match.start() - 80) : match.end() + 140]
+            if set(tokenize(window)).intersection(detail_tokens):
+                return True
     return False
 
 
@@ -977,6 +1022,68 @@ def _is_script_record(record: dict) -> bool:
         f"{extension} —" in title
         or title.endswith(extension)
         for extension in (".sql", ".ps1", ".bat", ".cmd")
+    )
+
+
+_SCRIPT_QUERY_SCAFFOLDING_TOKENS = (
+    GENERIC_QUERY_TOKENS
+    | OPERATIONAL_QUERY_TOKENS
+    | DIAGNOSTIC_ACTION_TOKENS
+    | {
+        "script",
+        "scripts",
+        "procedimiento",
+        "almacenado",
+        "archivo",
+        "sql",
+        "powershell",
+        "indica",
+        "indicar",
+        "usa",
+        "usar",
+        "utiliza",
+        "utilizar",
+        "hay",
+        "algun",
+        "alguna",
+        "alguno",
+        "hace",
+        "exacta",
+        "explica",
+        "describ",
+        "funciona",
+        "sirve",
+        "realiza",
+    }
+)
+
+
+def _script_subject_tokens(user_message: str) -> set[str]:
+    """Return substantive concepts that identify the requested script purpose.
+
+    Script retrieval must distinguish an artifact that *mentions* a broad
+    module noun from one whose title or description identifies the operation
+    the operator asked about.  The vocabulary removed here is query grammar
+    and artifact type, not a list of business aliases, so the same boundary
+    applies to new scripts and domains.
+    """
+    return {
+        token
+        for token in tokenize(_question_without_background_action(user_message))
+        if token not in _SCRIPT_QUERY_SCAFFOLDING_TOKENS
+    }
+
+
+def _has_direct_script_subject_coverage(record: dict, user_message: str) -> bool:
+    """Require every substantive script concept in local title/description."""
+    subject_tokens = _script_subject_tokens(user_message)
+    if not subject_tokens:
+        return False
+    identity_text = f"{record.get('title', '')} {record.get(CONTEXT_FIELD, '')}"
+    identity_tokens = set(tokenize(identity_text))
+    return all(
+        _token_matches_query_concept(token, identity_tokens)
+        for token in subject_tokens
     )
 
 
@@ -1563,6 +1670,15 @@ def _has_minimum_content_coverage(
     query_navigation = set(tokenize(coverage_message)).intersection(NAVIGATION_QUERY_TOKENS)
     if is_navigation_fragment and not query_navigation:
         return False
+    # A structural lookup has already established its strongest evidence
+    # boundary through the named technical anchor. Do not require a second
+    # incidental term (for example the requested release number) inside an
+    # unversioned manual fragment; version compatibility is reported
+    # separately as unconfirmed rather than inferred from prose.
+    if set(tokenize(user_message)).intersection(_STRUCTURAL_QUERY_TERMS) and _record_matches_technical_anchor(
+        record, user_message
+    ):
+        return True
     # Accept ordinary gender/number variants (``negativa``/``negativo``)
     # without maintaining aliases for individual questions or documents.
     required_matches = {
@@ -1739,6 +1855,28 @@ def _has_release_guidance_coverage(record: dict) -> bool:
         any(token.startswith(prefix) for token in tokens for prefix in ("recomend", "advertenc", "precauc")),
     )
     return sum(families) >= 3
+
+
+_RELEASE_GUIDANCE_HEADING_PATTERN = re.compile(
+    r"\b(?:recomendaciones?(?:\s+(?:generales|iniciales))?|preparaci[oó]n|"
+    r"instrucciones\s+(?:para\s+)?(?:actualizar|actualizaci[oó]n|instalaci[oó]n))\b",
+    re.IGNORECASE,
+)
+_RELEASE_INCIDENT_PATTERN = re.compile(
+    r"\b(?:inc[-\s]?\d+|incidencias?|listado\s+de\s+errores|"
+    r"mejoras\s+de\s+funcionalidades)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_direct_release_guidance_coverage(record: dict) -> bool:
+    """Keep a preparation section, not an incident page that mentions it later."""
+    if not _has_release_guidance_coverage(record):
+        return False
+    content = str(record.get(CONTENT_FIELD) or "")
+    heading = _RELEASE_GUIDANCE_HEADING_PATTERN.search(content)
+    incident = _RELEASE_INCIDENT_PATTERN.search(content)
+    return not incident or (heading is not None and heading.start() <= incident.start())
 
 
 def _limit_candidate_pool(
@@ -2248,35 +2386,64 @@ def _retrieve_legacy_azure_search_evidence(
         rejected_reasons["country"] = len(authorized_records) - len(country_scoped_records)
     if diagnostics is not None:
         diagnostics["stage_counts"]["country_scoped"] = len(country_scoped_records)
-    version_fallback_ids: set[str] = set()
     exact_version_records = [
         record
         for record in country_scoped_records
         if _record_matches_requested_version(record, requested_versions)
     ]
+    version_scoped_records = exact_version_records
+    version_unconfirmed_fallback = False
+    # Structural lookups also need a direct technical anchor in the same
+    # version-scoped record.  This is a generic evidence-alignment check (it
+    # is not a document- or question-specific alias) and prevents an exact
+    # Readme that merely mentions an acronym from answering a table question.
     if requested_versions and _is_structural_version_query(user_message):
-        exact_technical_records = [
+        before_structural_scope = len(version_scoped_records)
+        version_scoped_records = [
             record
-            for record in exact_version_records
+            for record in version_scoped_records
             if _record_matches_technical_anchor(record, user_message)
         ]
-        if exact_technical_records:
-            version_scoped_records = exact_technical_records
-        else:
-            technical_records = [
+        if diagnostics is not None and len(version_scoped_records) < before_structural_scope:
+            rejected_reasons["version_scope_relevance"] = (
+                before_structural_scope - len(version_scoped_records)
+            )
+
+        # A versioned structural question can still be answered by an
+        # authorized technical manual whose identity carries no release
+        # number, provided Azure has no same-version fragment with the
+        # requested anchor. Keep every versioned neighbour excluded and mark
+        # the source as unconfirmed so the response warns instead of asserting
+        # compatibility.
+        if not version_scoped_records:
+            unversioned_anchor_records = [
                 record
                 for record in country_scoped_records
-                if _record_matches_technical_anchor(record, user_message)
+                if not _record_identity_versions(record)
+                and _record_matches_technical_anchor(record, user_message)
             ]
-            if technical_records:
-                version_scoped_records = technical_records
-                version_fallback_ids = {
-                    str(record.get("id") or "") for record in technical_records
-                }
-            else:
-                version_scoped_records = []
-    else:
-        version_scoped_records = exact_version_records
+            if unversioned_anchor_records:
+                version_scoped_records = unversioned_anchor_records
+                version_unconfirmed_fallback = True
+                for record in version_scoped_records:
+                    record["_version_confirmed"] = False
+                if diagnostics is not None:
+                    rejected_reasons["version_unconfirmed_fallback"] = len(
+                        unversioned_anchor_records
+                    )
+    if requested_versions and _is_release_guidance_question(user_message):
+        guidance_records = [
+            record
+            for record in version_scoped_records
+            if _is_release_guidance_record(record)
+            and _has_direct_release_guidance_coverage(record)
+        ]
+        if guidance_records:
+            if diagnostics is not None and len(guidance_records) < len(version_scoped_records):
+                rejected_reasons["release_guidance_scope"] = (
+                    len(version_scoped_records) - len(guidance_records)
+                )
+            version_scoped_records = guidance_records
     # When the user supplied an exact version, the version guard above is the
     # authoritative constraint.  The proximity check is only for open-ended
     # questions such as "qué versión de jQuery", where a page can otherwise
@@ -2292,10 +2459,13 @@ def _retrieve_legacy_azure_search_evidence(
             rejected_reasons["anchor_version_mismatch"] = (
                 before_anchor_version - len(version_scoped_records)
             )
-    if diagnostics is not None and requested_versions and len(version_scoped_records) < len(country_scoped_records):
-        rejected_reasons["version_strict"] = len(country_scoped_records) - len(version_scoped_records)
-    if diagnostics is not None and version_fallback_ids:
-        rejected_reasons["version_fallback"] = len(version_fallback_ids)
+    if diagnostics is not None and requested_versions:
+        versioned_records = [
+            record for record in country_scoped_records if _record_identity_versions(record)
+        ]
+        excluded_versioned = len(versioned_records) - len(exact_version_records)
+        if excluded_versioned > 0:
+            rejected_reasons["version_strict"] = excluded_versioned
     if requested_versions and _requests_readme(user_message):
         readme_records = [
             record
@@ -2355,12 +2525,16 @@ def _retrieve_legacy_azure_search_evidence(
             direct_script_records = [
                 record
                 for record in script_records
-                if _has_minimum_content_coverage(
-                    record,
-                    user_message,
-                    semantic_enabled=getattr(config, "azure_search_use_semantic", False),
-                )
+                if _has_direct_script_subject_coverage(record, user_message)
             ]
+            if diagnostics is not None:
+                diagnostics["stage_counts"]["script_subject_scoped"] = len(
+                    direct_script_records
+                )
+                if len(direct_script_records) < len(script_records):
+                    rejected_reasons["script_subject_scope"] = (
+                        len(script_records) - len(direct_script_records)
+                    )
             version_scoped_records = direct_script_records or script_records
     explicit_file_records = [
         record
@@ -2376,11 +2550,7 @@ def _retrieve_legacy_azure_search_evidence(
             return []
         candidate_records = explicit_file_records
     else:
-        coverage_message = (
-            _technical_anchor_query(user_message)
-            if version_fallback_ids
-            else user_message
-        )
+        coverage_message = user_message
         if _requests_script(user_message) and any(
             _is_script_record(record) for record in version_scoped_records
         ):
@@ -2439,6 +2609,40 @@ def _retrieve_legacy_azure_search_evidence(
         )
     if diagnostics is not None:
         diagnostics["stage_counts"]["eligible"] = len(candidate_records)
+
+    # Structural lookups should not cite a second manual merely because it
+    # shares broad words such as "tabla", "estructura" or "relación". When
+    # at least one eligible fragment contains the same technical anchor as the
+    # question, keep that coherent subset for ranking and citation. This is a
+    # generic anchor-alignment step; it does not name a table, document or OPS
+    # case and leaves ordinary procedural/conceptual queries unchanged.
+    if set(tokenize(user_message)).intersection(_STRUCTURAL_QUERY_TERMS):
+        anchored_records = [
+            record
+            for record in candidate_records
+            if _record_matches_technical_anchor(record, user_message)
+        ]
+        if anchored_records:
+            detailed_records = [
+                record
+                for record in anchored_records
+                if _record_has_local_structural_detail(record, user_message)
+            ]
+            if detailed_records:
+                anchored_records = detailed_records
+                if diagnostics is not None:
+                    diagnostics["stage_counts"]["structural_detail_scoped"] = len(
+                        detailed_records
+                    )
+            if diagnostics is not None and len(anchored_records) < len(candidate_records):
+                rejected_reasons["structural_anchor_scope"] = (
+                    len(candidate_records) - len(anchored_records)
+                )
+            candidate_records = anchored_records
+            if diagnostics is not None:
+                diagnostics["stage_counts"]["structural_anchor_scoped"] = len(
+                    candidate_records
+                )
     rerank_records = _limit_candidate_pool(candidate_records, rerank_pool_limit)
     if diagnostics is not None:
         diagnostics["stage_counts"]["rerank_pool"] = len(rerank_records)
@@ -2544,14 +2748,10 @@ def _retrieve_legacy_azure_search_evidence(
                 folder_path=str(record.get("folder_path") or ""),
                 descripcion=_record_description(record),
                 version_confirmed=(
-                    False
-                    if str(record.get("id") or "") in version_fallback_ids
-                    else (True if requested_versions else None)
+                    record.get("_version_confirmed", True if requested_versions else None)
                 ),
                 fallback_reason=(
-                    "version_no_confirmada"
-                    if str(record.get("id") or "") in version_fallback_ids
-                    else ""
+                    "version_no_confirmada" if version_unconfirmed_fallback else ""
                 ),
             )
         )
