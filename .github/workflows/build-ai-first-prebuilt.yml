@@ -43,6 +43,7 @@ jobs:
           python -m venv .ci-venv
           .ci-venv/bin/python -m pip install --upgrade pip
           .ci-venv/bin/python -m pip install -r src/requirements.txt
+          .ci-venv/bin/python -m pip install zstandard
       - name: Build flat prebuilt bundle
         run: |
           mkdir -p output
@@ -70,7 +71,7 @@ jobs:
           PY
       - name: Suite and whitespace checks
         run: |
-          PYTHONPATH=src .ci-venv/bin/python -m unittest discover -s tests -q
+          PYTHONPATH=src:.ci-site-packages .ci-venv/bin/python -m unittest discover -s tests -q
           git diff --check
       - name: SHA-256 and artifact
         uses: actions/upload-artifact@v4
