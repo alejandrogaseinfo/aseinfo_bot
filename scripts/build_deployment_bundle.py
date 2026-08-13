@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
+import tarfile
 import zipfile
 from pathlib import Path
+
+import zstandard
 
 
 APPLICATION_FILES = (
@@ -68,13 +72,40 @@ def build_bundle(source: Path, destination: Path) -> str:
     return hashlib.sha256(destination.read_bytes()).hexdigest().upper()
 
 
+def build_oryx_output(source: Path, destination: Path) -> str:
+    """Create a deterministic local equivalent of Oryx's compressed output.
+
+    Oryx compresses the *built destination directory*. Keeping this sidecar
+    derived from the exact ZIP members catches the historical failure where
+    the platform tarball contained only ``requirements.txt`` and metadata.
+    """
+    members = archive_members(source)
+    tar_buffer = io.BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for name in members:
+            content = DEPLOYMENT_CONFIG.encode("utf-8") if name == ".deployment" else (source / name).read_bytes()
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = 0
+            info.mode = 0o644
+            archive.addfile(info, io.BytesIO(content))
+    compressed = zstandard.ZstdCompressor(level=10, threads=0).compress(tar_buffer.getvalue())
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(compressed)
+    return hashlib.sha256(compressed).hexdigest().upper()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("src"))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--oryx-output", type=Path)
     args = parser.parse_args(argv)
     print(f"bundle={args.output}")
-    print(f"sha256={build_bundle(args.source.resolve(), args.output.resolve())}")
+    source = args.source.resolve()
+    print(f"sha256={build_bundle(source, args.output.resolve())}")
+    if args.oryx_output:
+        print(f"oryx_sha256={build_oryx_output(source, args.oryx_output.resolve())}")
     return 0
 
 
