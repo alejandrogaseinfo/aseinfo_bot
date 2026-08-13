@@ -1963,6 +1963,19 @@ class DocumentQuestionTests(unittest.TestCase):
             "¿Qué precauciones se deben tomar antes de instalar una actualización de Evolution?",
         ))
 
+    def test_release_guidance_discards_incident_page_with_late_preparation_section(self):
+        from azure_search import _has_direct_release_guidance_coverage
+
+        record = {
+            "title": "Readme 1.19.1.6.pdf — Página 11",
+            "content": (
+                "INC-358 No se muestra un permiso en el listado. "
+                "Instrucciones de Instalación Recomendaciones iniciales: "
+                "realice un respaldo antes de aplicar la actualización."
+            ),
+        }
+        self.assertFalse(_has_direct_release_guidance_coverage(record))
+
     def test_candidate_diversity_stats_report_unique_documents_and_maximum(self):
         records = [
             {"id": "manual-1", "document_id": "manual"},
@@ -2392,7 +2405,7 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
             },
         ]
 
-    def test_structural_version_query_keeps_direct_technical_manual_as_unconfirmed(self):
+    def test_structural_version_query_uses_unversioned_manual_with_warning(self):
         class FakeSearchClient:
             def search(self, **_kwargs):
                 return self.records
@@ -2405,11 +2418,155 @@ class LegacyDiagnosticRegressionTests(unittest.TestCase):
                 return_trace=True,
             )
 
-        self.assertEqual(["Manual de Relación DB V1.2.docx — Documento"], [source.titulo for source in trace.sources])
+        self.assertEqual(
+            ["Manual de Relación DB V1.2.docx — Documento"],
+            [source.titulo for source in trace.sources],
+        )
         self.assertFalse(trace.sources[0].version_confirmed)
         self.assertEqual("version_no_confirmada", trace.sources[0].fallback_reason)
         self.assertGreaterEqual(trace.candidate_count, 1)
-        self.assertGreaterEqual(trace.rejected_reasons.get("version_fallback", 0), 1)
+        self.assertGreaterEqual(trace.rejected_reasons.get("version_scope_relevance", 0), 1)
+        self.assertGreaterEqual(trace.rejected_reasons.get("version_unconfirmed_fallback", 0), 1)
+
+    def test_structural_anchor_scope_excludes_unrelated_manual(self):
+        records = self._records() + [
+            {
+                "id": "technical-guide",
+                "title": "Guía de temas tecnicos Evolution .docx — Documento",
+                "source_url": "https://contoso.example/technical-guide.docx",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Estructura de IIS y rutas de servicios de Evolution.",
+                "content_tokens": "estructura rutas servicios evolution",
+            }
+        ]
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            trace = retrieve_azure_search_evidence(
+                "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?",
+                self._config(),
+                return_trace=True,
+            )
+
+        self.assertEqual(
+            ["Manual de Relación DB V1.2.docx — Documento"],
+            [source.titulo for source in trace.sources],
+        )
+        self.assertEqual(1, trace.stage_counts.get("structural_anchor_scoped"))
+
+    def test_script_question_prefers_authorized_artifact_and_description(self):
+        records = [
+            {
+                "id": "script-vacaciones",
+                "title": "acc.proc_arreglar_vac_negativos.sql — Documento",
+                "source_url": "https://contoso.example/vacaciones.sql",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "document_type": "sql",
+                "document_context": (
+                    "Título del archivo: acc.proc_arreglar_vac_negativos.sql. "
+                    "Descripción de la solución: Corrige vacaciones con saldo negativo."
+                ),
+                "content": "CREATE PROCEDURE acc.proc_arreglar_vac_negativos; UPDATE vacaciones;",
+                "content_tokens": "acc proc arreglar vac negativos corrige vacaciones saldo negativo",
+            },
+            {
+                "id": "manual-vacaciones",
+                "title": "Manual de vacaciones.pdf — Documento",
+                "source_url": "https://contoso.example/vacaciones-manual.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Las vacaciones se registran y consultan por empleado.",
+                "content_tokens": "vacaciones registran consultan empleado",
+            },
+            {
+                "id": "script-calculo-vacaciones",
+                "title": "vac_get_dias_goce_entre_fechas_b30.sql — Documento",
+                "source_url": "https://contoso.example/calculo-vacaciones.sql",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "document_type": "sql",
+                "document_context": (
+                    "Título del archivo: vac_get_dias_goce_entre_fechas_b30.sql. "
+                    "Descripción de la solución: Calcula días de goce entre fechas."
+                ),
+                "content": "CREATE PROCEDURE vac_get_dias_goce_entre_fechas_b30;",
+                "content_tokens": "vac get dias goce fechas calcula",
+            },
+        ]
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            sources = retrieve_azure_search_evidence(
+                "El script de vacaciones negativas, ¿qué hace exactamente?",
+                self._config(),
+            )
+
+        self.assertEqual(
+            ["acc.proc_arreglar_vac_negativos.sql — Documento"],
+            [source.titulo for source in sources],
+        )
+        self.assertIn("Corrige vacaciones con saldo negativo", sources[0].fragmento)
+
+    def test_explicit_version_excludes_neighbor_readme_for_preinstallation_guidance(self):
+        records = [
+            {
+                "id": "readme-11916",
+                "title": "Readme 1.19.1.6.pdf — Página 13",
+                "source_url": "https://contoso.example/readme-11916.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Antes de instalar, realice respaldo y verifique los requisitos de la actualización.",
+                "content_tokens": "antes instalar respaldo verifique requisitos actualizacion",
+            },
+            {
+                "id": "readme-11917",
+                "title": "Readme 1.19.1.7.pdf — Página 13",
+                "source_url": "https://contoso.example/readme-11917.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Antes de instalar, detenga servicios y aplique las recomendaciones de la versión 1.19.1.7.",
+                "content_tokens": "antes instalar detenga servicios recomendaciones version",
+            },
+            {
+                "id": "readme-11916-incident",
+                "title": "Readme 1.19.1.6.pdf — Página 11",
+                "source_url": "https://contoso.example/readme-11916-incident.pdf",
+                "source_system": "sharepoint",
+                "folder_path": "",
+                "drive_id": "drive-manuales",
+                "content": "Incidencias: el permiso de edición no se muestra en el listado.",
+                "content_tokens": "incidencias permiso edicion muestra listado",
+            },
+        ]
+
+        class FakeSearchClient:
+            def search(self, **_kwargs):
+                return records
+
+        with patch("azure_search.SearchClient", return_value=FakeSearchClient()):
+            sources = retrieve_azure_search_evidence(
+                "¿Qué precauciones tomo antes de instalar una actualización 1.19.1.6?",
+                self._config(),
+            )
+
+        self.assertTrue(sources)
+        self.assertTrue(all("1.19.1.7" not in source.titulo for source in sources))
+        self.assertTrue(all("1.19.1.6" in source.titulo for source in sources))
+        self.assertTrue(all("Página 11" not in source.titulo for source in sources))
 
     def test_release_version_query_remains_strict(self):
         class FakeSearchClient:
