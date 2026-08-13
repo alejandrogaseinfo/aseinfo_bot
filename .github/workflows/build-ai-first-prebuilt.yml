@@ -1,0 +1,71 @@
+name: Build AI-first App Service bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'scripts/build_prebuilt_linux_bundle.py'
+      - 'scripts/validate_post_deployment_ai_first.sh'
+      - '.github/workflows/build-ai-first-prebuilt.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      PYTHONPATH: src
+      RETRIEVAL_STRATEGY: legacy
+      USE_AI_FIRST_EXPERIMENTAL: 'false'
+      USE_CONTEXT_GUARD: 'false'
+      USE_LLM_EVIDENCE_VERIFIER: 'false'
+      USE_LLM_GROUNDED_RESPONSE: 'false'
+      REQUIRE_AZURE_SEARCH: 'false'
+      ALLOW_LOCAL_DOCUMENT_FALLBACK: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: src/requirements.txt
+      - name: Install build and test dependencies
+        run: python -m pip install --upgrade pip gunicorn zstandard
+      - name: Install Linux runtime dependencies
+        run: python -m pip install --target .ci-site-packages -r src/requirements.txt
+      - name: Build flat prebuilt bundle
+        run: |
+          mkdir -p output
+          python scripts/build_prebuilt_linux_bundle.py \
+            --source src \
+            --site-packages .ci-site-packages \
+            --output output/libras-backend-ai-first-prebuilt-py311.zip
+      - name: Validate imports and Gunicorn configuration
+        run: |
+          PYTHONPATH=src:.ci-site-packages python -c "import app, handler, ai_first; print('imports=ok')"
+          PYTHONPATH=src:.ci-site-packages gunicorn --check-config app:app
+      - name: Validate ZIP extraction and contents
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          p = Path('output/libras-backend-ai-first-prebuilt-py311.zip')
+          required = {'app.py','handler.py','ai_first.py','config.py','requirements.txt','.deployment'}
+          with ZipFile(p) as z:
+              names = {n for n in z.namelist() if not n.endswith('/')}
+              assert required <= names
+              assert '.python_packages/lib/site-packages' in '/'.join(names)
+              assert not any(n.startswith(('tests/','.env','logs/','output/')) for n in names)
+          print('zip_validation=ok')
+          PY
+      - name: Suite and whitespace checks
+        run: |
+          python -m unittest discover -s tests -q
+          git diff --check
+      - name: SHA-256 and artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libras-ai-first-prebuilt-py311
+          path: output/libras-backend-ai-first-prebuilt-py311.zip
+          if-no-files-found: error
