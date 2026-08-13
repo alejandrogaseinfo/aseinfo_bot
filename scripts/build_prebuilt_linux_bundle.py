@@ -39,7 +39,8 @@ def build(source: Path, site_packages: Path, output: Path) -> str:
         members = sorted(p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file())
         if not REQUIRED <= set(members):
             raise ValueError(f"Faltan archivos obligatorios: {sorted(REQUIRED - set(members))}")
-        if any(any(part in FORBIDDEN_PARTS or part.endswith(('.env', '.log')) for part in Path(m).parts) for m in members):
+        application_members = [m for m in members if not m.startswith(".python_packages/")]
+        if any(any(part in FORBIDDEN_PARTS or part.endswith(('.env', '.log')) for part in Path(m).parts) for m in application_members):
             raise ValueError("El bundle contiene archivos prohibidos")
         output.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
