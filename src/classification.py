@@ -132,6 +132,9 @@ DOWNLOAD_FAILURE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DOWNLOAD_DIAGNOSTIC_EVIDENCE_PATTERN = re.compile(
+    r"\b(?:falla|error|problema|revis\w*|verif\w*|valid\w*)\b.{0,120}"
+    r"\b(?:descarg\w*|baj\w*)\b|"
+    r"\b(?:descarg\w*|baj\w*)\b.{0,120}"
     r"\b(?:falla|error|problema|revis\w*|verif\w*|valid\w*)\b",
     re.IGNORECASE,
 )

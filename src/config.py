@@ -115,10 +115,10 @@ class Config:
         self.use_llm_grounded_response = env.get(
             "USE_LLM_GROUNDED_RESPONSE", "false"
         ).lower() == "true"
-        # Experimental AI-first path: broad Azure candidates -> LLM judge ->
-        # local contract/version validator -> optional grounded redactor. It
-        # is disabled by default and must never alter the legacy production
-        # route unless explicitly enabled for an evaluation window.
+        # Experimental AI-first path: broad Azure candidates -> one bounded
+        # LLM response with opaque source IDs -> local contract/version
+        # validator. It is disabled by default and must never alter the legacy
+        # production route unless explicitly enabled for an evaluation window.
         self.use_ai_first_experimental = env.get(
             "USE_AI_FIRST_EXPERIMENTAL", "false"
         ).lower() == "true"
@@ -131,6 +131,10 @@ class Config:
         self.ai_first_candidate_limit = int(
             env.get("AI_FIRST_CANDIDATE_LIMIT", "12")
         )
+        # Recall anchors remain local to the opt-in experimental path.  They
+        # are Azure evidence only; this does not enable local fallback.
+        self.ai_first_legacy_anchors = env.get("AI_FIRST_LEGACY_ANCHORS", "true").lower() == "true"
+        self.ai_first_anchor_only = env.get("AI_FIRST_ANCHOR_ONLY", "true").lower() == "true"
         self.grounded_response_model_name = env.get(
             "GROUNDED_RESPONSE_MODEL", self.openai_model_name
         ).strip()

@@ -12,14 +12,15 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from ai_first import judge_ai_first_candidates, mark_confirmed_versions, retrieve_ai_first_candidates
+from ai_first import answer_ai_first_candidates, mark_confirmed_versions, retrieve_ai_first_candidates
 from azure_search import retrieve_azure_search_evidence
 from classification import classify_case_by_rules, has_explicit_version_request
 from config import Config, load_project_environment
 from formatting import format_user_response
 from grounded_response import generate_grounded_response
-from handler import _ambiguous_release_version_response
+from handler import _ambiguous_release_version_response, is_release_guidance_question
 from intent import classify_intent
+from models import BotDecision
 
 
 DEFAULT_CASES = Path(__file__).resolve().parents[1] / "output" / "revision-humana-redactor-20260812-postfix6.json"
@@ -104,9 +105,19 @@ def _run_legacy(question: str, config: Config, client: OpenAI, grounded: bool, c
     return result
 
 
-def _run_ai_first(question: str, config: Config, client: OpenAI, grounded: bool, case: dict) -> dict:
+def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> dict:
     started = time.perf_counter()
     result = _result_base(case, started)
+    if is_release_guidance_question(question) and not has_explicit_version_request(question):
+        result.update(
+            {
+                "response": _ambiguous_release_version_response(),
+                "requires_version_context": True,
+                "decision_state": "solicita_contexto",
+            }
+        )
+        result["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
+        return result
     try:
         intent = classify_intent(
             question,
@@ -122,13 +133,13 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, grounded: bool,
         client=client,
         limit=config.ai_first_candidate_limit,
     )
-    judge = judge_ai_first_candidates(
+    direct = answer_ai_first_candidates(
         question,
         retrieval,
         client=client,
         model=config.ai_first_judge_model_name,
     )
-    sources = mark_confirmed_versions(judge)
+    sources = mark_confirmed_versions(direct)
     result["judge_selected_sources"] = _source_titles(sources)
     result["selected_evidence_count"] = len(sources)
     result.update(
@@ -136,30 +147,25 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, grounded: bool,
             "candidate_count": retrieval.raw_candidate_count,
             "sanitized_candidate_count": len(retrieval.candidates),
             "retrieval_rejected": retrieval.rejected_reasons,
-            "judge_abstained": judge.abstained,
-            "validator_rejections": judge.validator_rejections,
+            "judge_abstained": direct.abstained,
+            "validator_rejections": direct.validator_rejections,
         }
     )
-    decision = classify_case_by_rules(question, sources)
-    if grounded and sources:
-        draft = generate_grounded_response(
-            question,
-            sources,
-            client=client,
-            model=config.grounded_response_model_name,
+    if direct.decision == "answer" and sources:
+        decision = BotDecision("resuelto", "alta", direct.answer, sources)
+        result["grounded_used"] = True
+    elif direct.decision == "request_context":
+        decision = BotDecision(
+            "solicita_contexto",
+            "media",
+            "Indica la versión o el dato específico que deseas consultar para ubicar la evidencia correcta.",
         )
-        if draft and draft.response:
-            decision.resumen = draft.response
-            decision.fuentes = draft.sources
-            decision.estado = "resuelto"
-            result["grounded_used"] = True
-            sources = draft.sources
-        elif draft and not draft.sources:
-            decision.fuentes = []
-            decision.estado = "sin_evidencia"
-            result["fallback"] = True
-        else:
-            result["fallback"] = True
+    else:
+        decision = BotDecision(
+            "sin_evidencia",
+            "baja",
+            "No encontré evidencia documental suficiente para responder con seguridad.",
+        )
     response = format_user_response(decision, config=config)
     result.update(
         {
@@ -187,6 +193,8 @@ def _config_for_variant(grounded: bool, ai_first: bool) -> Config:
     config.allow_local_document_fallback = False
     config.retrieval_strategy = "legacy"
     config.use_llm_evidence_verifier = False
+    config.ai_first_legacy_anchors = True
+    config.ai_first_anchor_only = True
     return config
 
 
@@ -194,8 +202,7 @@ def evaluate(cases: list[dict], config: Config, client: OpenAI) -> dict:
     variants = {
         "legacy_redactor_off": (False, False),
         "legacy_redactor_on": (True, False),
-        "ai_first_redactor_off": (False, True),
-        "ai_first_redactor_on": (True, True),
+        "ai_first_direct": (False, True),
     }
     reports: dict[str, list[dict]] = {}
     for name, (grounded, ai_first) in variants.items():
@@ -203,7 +210,7 @@ def evaluate(cases: list[dict], config: Config, client: OpenAI) -> dict:
         reports[name] = []
         for case in cases:
             if ai_first:
-                reports[name].append(_run_ai_first(case["question"], variant_config, client, grounded, case))
+                reports[name].append(_run_ai_first(case["question"], variant_config, client, case))
             else:
                 reports[name].append(_run_legacy(case["question"], variant_config, client, grounded, case))
 
@@ -237,19 +244,14 @@ def evaluate(cases: list[dict], config: Config, client: OpenAI) -> dict:
         "summary": {name: summary(items) for name, items in reports.items()},
         "comparison": {
             "legacy_vs_ai_first_off_avg_delta_ms": round(
-                summary(reports["ai_first_redactor_off"])["latency_ms_avg"]
+                summary(reports["ai_first_direct"])["latency_ms_avg"]
                 - summary(reports["legacy_redactor_off"])["latency_ms_avg"],
-                2,
-            ),
-            "legacy_vs_ai_first_on_avg_delta_ms": round(
-                summary(reports["ai_first_redactor_on"])["latency_ms_avg"]
-                - summary(reports["legacy_redactor_on"])["latency_ms_avg"],
                 2,
             ),
         },
         "notes": [
             "AI-first usa candidatos sanitizados recuperados exclusivamente de Azure AI Search; no usa fallback local.",
-            "El juez y el redactor se ejecutaron localmente contra el índice productivo en modo de solo lectura.",
+            "AI-first usa un único modelo para responder y seleccionar fuentes contra el índice productivo en modo de solo lectura.",
             "La bandera experimental no se activó en producción ni se desplegó este cambio.",
         ],
         "results": {

@@ -26,7 +26,7 @@ from models import BotDecision, EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
 from azure_search import is_release_guidance_question
 from ai_first import (
-    judge_ai_first_candidates,
+    answer_ai_first_candidates,
     mark_confirmed_versions,
     retrieve_ai_first_candidates,
 )
@@ -1027,6 +1027,16 @@ async def _process_ai_first_experimental(
     started_at: float,
 ) -> str:
     """Run the opt-in broad-search/judge/redactor experiment."""
+    ai_first_hash = correlation_hash(retrieval_message)
+    ai_first_host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
+    ai_first_retrieval_started = perf_counter()
+    logger.info(
+        "ai_first_retrieval_stage_start request_hash=%s model=azure-ai-search-sdk "
+        "endpoint_host=%s timeout_s=%.1f sdk_retries=per_query",
+        ai_first_hash,
+        ai_first_host,
+        config.retrieval_timeout_seconds,
+    )
     try:
         retrieval = await _run_blocking_with_timeout(
             retrieve_ai_first_candidates,
@@ -1040,6 +1050,27 @@ async def _process_ai_first_experimental(
     except Exception:
         logger.exception("Falló la recuperación AI-first.")
         retrieval = None
+        logger.warning(
+            "ai_first_retrieval_stage_end request_hash=%s outcome=error duration_ms=%s "
+            "error=provider_error model=azure-ai-search-sdk endpoint_host=%s "
+            "timeout_s=%.1f sdk_retries=per_query",
+            ai_first_hash,
+            round((perf_counter() - ai_first_retrieval_started) * 1000, 2),
+            ai_first_host,
+            config.retrieval_timeout_seconds,
+        )
+    else:
+        logger.info(
+            "ai_first_retrieval_stage_end request_hash=%s outcome=success duration_ms=%s "
+            "error=none model=azure-ai-search-sdk endpoint_host=%s timeout_s=%.1f "
+            "sdk_retries=per_query raw_candidates=%s sanitized_candidates=%s",
+            ai_first_hash,
+            round((perf_counter() - ai_first_retrieval_started) * 1000, 2),
+            ai_first_host,
+            config.retrieval_timeout_seconds,
+            retrieval.raw_candidate_count if retrieval is not None else 0,
+            len(retrieval.candidates) if retrieval is not None else 0,
+        )
 
     if retrieval is None:
         decision = BotDecision(
@@ -1053,78 +1084,71 @@ async def _process_ai_first_experimental(
         return format_user_response(decision, config=config)
 
     try:
-        judge = await _run_blocking_with_timeout(
-            judge_ai_first_candidates,
+        direct_response = await _run_observed_model_stage(
+            "ai_first_direct_response",
+            answer_ai_first_candidates,
             retrieval_message,
             retrieval,
             client=client,
             model=getattr(config, "ai_first_judge_model_name", config.openai_intent_model_name),
+            endpoint=getattr(config, "resolved_openai_base_url", ""),
             timeout_seconds=getattr(config, "ai_first_judge_timeout_seconds", 8),
         )
     except Exception:
-        logger.exception("Falló el juez AI-first.")
-        judge = None
+        logger.exception("Falló la respuesta directa AI-first.")
+        direct_response = None
 
-    if judge is None:
+    if direct_response is None:
         decision = BotDecision(
             estado="sin_evidencia",
             confianza="baja",
-            resumen="El juez no pudo validar las evidencias recuperadas.",
+            resumen="El modelo no pudo validar las evidencias recuperadas.",
             fuentes=[],
             siguiente_accion="Revisa la consulta con el equipo responsable.",
             requiere_escalamiento=True,
         )
         return format_user_response(decision, config=config)
 
-    sources = mark_confirmed_versions(judge)
-    fallback_decision = classify_case_by_rules(retrieval_message, sources)
-    decision = fallback_decision
-    grounded_used = False
-    if sources and getattr(config, "use_llm_grounded_response", False) and getattr(
-        config, "model_endpoint_configured", True
-    ):
-        try:
-            draft = await _run_blocking_with_timeout(
-                generate_grounded_response,
-                retrieval_message,
-                sources,
-                client=client,
-                model=getattr(config, "grounded_response_model_name", config.openai_model_name),
-                timeout_seconds=getattr(config, "grounded_response_timeout_seconds", 5),
-            )
-            if draft and draft.response:
-                grounded_used = True
-                decision = BotDecision(
-                    estado="resuelto",
-                    confianza="alta",
-                    resumen=draft.response,
-                    fuentes=draft.sources,
-                    siguiente_accion="",
-                    requiere_escalamiento=False,
-                )
-            elif draft and not draft.sources:
-                decision = BotDecision(
-                    estado="sin_evidencia",
-                    confianza="baja",
-                    resumen="La evidencia seleccionada no fue suficiente para redactar una respuesta segura.",
-                    fuentes=[],
-                    siguiente_accion="Indica la versión y el procedimiento exactos para continuar.",
-                    requiere_escalamiento=True,
-                )
-        except Exception:
-            logger.exception("Falló el redactor AI-first; se conserva la salida local.")
+    sources = mark_confirmed_versions(direct_response)
+    if direct_response.decision == "answer" and sources:
+        decision = BotDecision(
+            estado="resuelto",
+            confianza="alta",
+            resumen=direct_response.answer,
+            fuentes=sources,
+            siguiente_accion="",
+            requiere_escalamiento=False,
+        )
+    elif direct_response.decision == "request_context":
+        decision = BotDecision(
+            estado="solicita_contexto",
+            confianza="media",
+            resumen="Indica la versión o el dato específico que deseas consultar para ubicar la evidencia correcta.",
+            fuentes=[],
+            siguiente_accion="",
+            requiere_escalamiento=False,
+        )
+    else:
+        decision = BotDecision(
+            estado="sin_evidencia",
+            confianza="baja",
+            resumen="No encontré evidencia documental suficiente para responder con seguridad.",
+            fuentes=[],
+            siguiente_accion="Indica la versión y el procedimiento exactos para continuar.",
+            requiere_escalamiento=True,
+        )
 
     logger.info(
         "ai_first_completed duration_ms=%s raw_candidates=%s candidates=%s selected=%s "
-        "judge_abstained=%s validator_rejections=%s grounded_used=%s fallback=%s",
+        "direct_abstained=%s validator_rejections=%s direct_used=%s decision_state=%s",
         round((perf_counter() - started_at) * 1000),
         retrieval.raw_candidate_count,
         len(retrieval.candidates),
         len(sources),
-        judge.abstained,
-        ",".join(f"{key}:{value}" for key, value in sorted(judge.validator_rejections.items())) or "none",
-        grounded_used,
-        decision is fallback_decision,
+        direct_response.abstained,
+        ",".join(f"{key}:{value}" for key, value in sorted(direct_response.validator_rejections.items())) or "none",
+        True,
+        decision.estado,
     )
     return format_user_response(decision, config=config)
 
@@ -1229,7 +1253,6 @@ async def process_user_message(
     if (
         is_release_guidance_question(retrieval_message)
         and not has_explicit_version_request(retrieval_message)
-        and not getattr(config, "use_ai_first_experimental", False)
     ):
         logger.info(
             "query_completed duration_ms=%s evidence_count=0 "

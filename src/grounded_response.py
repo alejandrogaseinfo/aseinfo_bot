@@ -60,18 +60,26 @@ def _claims_are_supported(
         if identifier.casefold() not in source_folded:
             return False
 
-    # For open version lookups, a Readme title must match the release version
-    # asserted by the answer. A later Readme may repeat an older change, but it
-    # is not the right citation for that release-level claim.
+    # For open *release* lookups, a Readme title must match the release version
+    # asserted by the answer. Do not apply this to questions about a component
+    # version (for example jQuery): the document release and the component
+    # version are intentionally different numbers.
     question_tokens = set(tokenize(user_message))
-    if question_tokens.intersection({"version", "versiones"}) and not _VERSION_PATTERN.search(user_message):
-        answer_versions = set(_VERSION_PATTERN.findall(answer))
+    answer_versions = set(_VERSION_PATTERN.findall(answer))
+    asserted_release = {
+        version for version in answer_versions if version.count(".") >= 3
+    }
+    if (
+        question_tokens.intersection({"version", "versiones"})
+        and not _VERSION_PATTERN.search(user_message)
+        and asserted_release
+    ):
         titled_versions = {
             version
             for source in selected_sources
             for version in _VERSION_PATTERN.findall(source.titulo)
         }
-        if titled_versions and answer_versions and not answer_versions.intersection(titled_versions):
+        if titled_versions and not asserted_release.intersection(titled_versions):
             return False
     return True
 
