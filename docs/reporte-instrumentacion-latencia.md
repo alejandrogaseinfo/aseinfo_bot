@@ -66,6 +66,34 @@ activar AI-first ni `USE_LLM_EVIDENCE_VERIFIER`. La expansión de audiencia qued
 bloqueada hasta que el p95 y el máximo cumplan el límite operativo acordado y
 se mantengan cero falsos positivos, falsos negativos y timeouts normales.
 
+## Primera medición con la instrumentación
+
+Se ejecutaron 32 solicitudes contra Azure real con `legacy`, AI-first apagado,
+verificador apagado, fallback local desactivado y Azure Search obligatorio.
+Hubo 20 preguntas normales, 3 ambiguas, 3 de inyección, 3 de secretos y 3
+fuera de alcance.
+
+| Etapa | n | Promedio | p95 | p99 | Máximo |
+|---|---:|---:|---:|---:|---:|
+| ContextGuard | 27 | 885.52 ms | 1,990.56 ms | 2,094.29 ms | 2,094.29 ms |
+| Intención | 12 | 833.68 ms | 1,024.56 ms | 1,024.56 ms | 1,024.56 ms |
+| Azure Search/recuperación | 20 | 3,064.11 ms | 3,510.49 ms | 4,384.79 ms | 4,384.79 ms |
+| Ranking determinista | 20 | 68.99 ms | 124.21 ms | 163.28 ms | 163.28 ms |
+| Deduplicación de fuentes | 19 | 4.07 ms | 13.27 ms | 13.27 ms | 13.27 ms |
+| Redactor grounded | 18 | 866.31 ms | 1,337.46 ms | 1,337.46 ms | 1,337.46 ms |
+
+Azure Search realizó 44 llamadas del SDK; todas terminaron correctamente, con
+**0 reintentos** observados en `PipelineResponse.context.history`. La matriz
+completa obtuvo promedio 3,621.12 ms, p95 6,397.80 ms, p99/máximo 8,116.14 ms,
+0 falsos positivos, 0 falsos negativos, 0 timeouts normales y 0 errores del
+proveedor. En preguntas normales: promedio 5,072.96 ms, p95 6,397.80 ms,
+p99/máximo 8,116.14 ms.
+
+La decisión de intención es observable: en la ruta legacy solo aparece cuando
+la consulta no satisface la detección general de pregunta documental; la ruta
+AI-first no se ejecutó. Estas cifras todavía no justifican ampliar audiencia:
+el máximo normal sigue por encima del límite operativo pendiente de acordar.
+
 ## Optimizaciones generales propuestas
 
 1. Eliminar llamadas redundantes de intención solo mediante la clasificación
