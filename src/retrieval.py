@@ -1,6 +1,9 @@
+from time import perf_counter
+
 from azure_search import is_release_guidance_question, retrieve_azure_search_evidence
 from classification import has_explicit_version_request
 from document_index import retrieve_document_evidence
+from latency_observability import endpoint_host, request_hash
 from logging_utils import get_logger
 from models import EvidenceSource, RetrievalTrace
 
@@ -8,7 +11,23 @@ from models import EvidenceSource, RetrievalTrace
 logger = get_logger()
 
 
-def _dedupe_evidence(sources: list[EvidenceSource], limit: int = 4) -> list[EvidenceSource]:
+def _dedupe_evidence(
+    sources: list[EvidenceSource],
+    limit: int = 4,
+    *,
+    user_message: str = "",
+    config=None,
+) -> list[EvidenceSource]:
+    started_at = perf_counter()
+    correlation_id = request_hash(user_message)
+    host = endpoint_host(getattr(config, "azure_search_endpoint", "")) if config else "unconfigured"
+    logger.info(
+        "retrieval_merge_dedup_start request_hash=%s model=deterministic-deduplicator "
+        "endpoint_host=%s timeout_s=0.0 sdk_retries=0 before=%s",
+        correlation_id,
+        host,
+        len(sources),
+    )
     unique_sources: list[EvidenceSource] = []
     seen_keys: set[tuple[str, str]] = set()
 
@@ -25,6 +44,15 @@ def _dedupe_evidence(sources: list[EvidenceSource], limit: int = 4) -> list[Evid
         if len(unique_sources) >= limit:
             break
 
+    logger.info(
+        "retrieval_merge_dedup_end request_hash=%s outcome=success duration_ms=%s "
+        "error=none model=deterministic-deduplicator endpoint_host=%s "
+        "timeout_s=0.0 sdk_retries=0 after=%s",
+        correlation_id,
+        round((perf_counter() - started_at) * 1000, 2),
+        host,
+        len(unique_sources),
+    )
     return unique_sources
 
 
@@ -51,7 +79,12 @@ def retrieve_evidence(
                 len(evidence),
             )
             if evidence:
-                deduped = _dedupe_evidence(evidence, limit=4)
+                deduped = _dedupe_evidence(
+                    evidence,
+                    limit=4,
+                    user_message=user_message,
+                    config=config,
+                )
                 if isinstance(result, RetrievalTrace):
                     result.sources = deduped
                     return result
@@ -84,5 +117,10 @@ def retrieve_evidence(
         return RetrievalTrace() if return_trace else []
 
     document_evidence = retrieve_document_evidence(user_message)
-    deduped = _dedupe_evidence(document_evidence, limit=4)
+    deduped = _dedupe_evidence(
+        document_evidence,
+        limit=4,
+        user_message=user_message,
+        config=config,
+    )
     return RetrievalTrace(sources=deduped, direct_evidence_count=len(deduped)) if return_trace else deduped

@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+from time import perf_counter
 from urllib.parse import unquote, urlparse
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -42,6 +43,7 @@ from pypdf import PdfReader
 
 from document_index import has_requested_action_coverage, tokenize
 from evidence_verifier import verify_semantic_evidence
+from latency_observability import endpoint_host, error_code, request_hash
 from logging_utils import get_logger
 from models import EvidenceSource, RetrievalTrace
 from query_plan import (
@@ -350,6 +352,107 @@ def _credential(config):
     if getattr(config, "azure_search_api_key", ""):
         return AzureKeyCredential(config.azure_search_api_key)
     raise RuntimeError("Falta AZURE_SEARCH_API_KEY o AZURE_SEARCH_USE_ENTRA_ID=true.")
+
+
+def _search_query_kind(kwargs: dict) -> str:
+    """Classify a Search SDK call without logging its query text."""
+    body = kwargs.get("body")
+    vector_queries = getattr(body, "vector_queries", None)
+    if vector_queries is None and isinstance(body, dict):
+        vector_queries = body.get("vectorQueries") or body.get("vector_queries")
+    if vector_queries:
+        return "vector"
+    query_type = getattr(body, "query_type", None)
+    if query_type is None and isinstance(body, dict):
+        query_type = body.get("queryType") or body.get("query_type")
+    if str(query_type or "").casefold() == "semantic":
+        return "semantic"
+    return "lexical"
+
+
+def _pipeline_retry_count(pipeline_response) -> int:
+    context = getattr(pipeline_response, "context", None)
+    history = context.get("history", ()) if context is not None else ()
+    return len(history or ())
+
+
+def _install_search_observer(search_client, user_message: str, config):
+    """Observe Azure Search SDK calls while preserving the client contract.
+
+    The SDK exposes retry history on ``PipelineResponse.context`` only when a
+    custom ``cls`` callback is supplied. The callback below records the count
+    and returns the same deserialized model, so retrieval behavior is unchanged.
+    Test doubles without ``_search_post`` are deliberately left untouched.
+    """
+    original = getattr(search_client, "_search_post", None)
+    if not callable(original) or getattr(search_client, "_libras_latency_observed", False):
+        return search_client
+
+    correlation_id = request_hash(user_message)
+    host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
+    model = "azure-ai-search-sdk"
+    state = {"call_index": 0}
+
+    def observed_search_post(*args, **kwargs):
+        state["call_index"] += 1
+        call_index = state["call_index"]
+        query_kind = _search_query_kind(kwargs)
+        started_at = perf_counter()
+        retry_count = {"value": 0}
+        logger.info(
+            "azure_search_query_start request_hash=%s query_index=%s query_kind=%s "
+            "model=%s endpoint_host=%s timeout_s=%.1f",
+            correlation_id,
+            call_index,
+            query_kind,
+            model,
+            host,
+            SEARCH_TIMEOUT_SECONDS,
+        )
+        original_cls = kwargs.get("cls")
+
+        def capture_response(pipeline_response, deserialized, headers):
+            retry_count["value"] += _pipeline_retry_count(pipeline_response)
+            if original_cls is not None:
+                return original_cls(pipeline_response, deserialized, headers)
+            return deserialized
+
+        kwargs["cls"] = capture_response
+        try:
+            response = original(*args, **kwargs)
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            retry_count["value"] += _pipeline_retry_count(response)
+            logger.warning(
+                "azure_search_query_end request_hash=%s query_index=%s outcome=error "
+                "duration_ms=%s retries=%s error=%s model=%s endpoint_host=%s "
+                "timeout_s=%.1f",
+                correlation_id,
+                call_index,
+                round((perf_counter() - started_at) * 1000, 2),
+                retry_count["value"],
+                error_code(exc),
+                model,
+                host,
+                SEARCH_TIMEOUT_SECONDS,
+            )
+            raise
+        logger.info(
+            "azure_search_query_end request_hash=%s query_index=%s outcome=success "
+            "duration_ms=%s retries=%s model=%s endpoint_host=%s timeout_s=%.1f",
+            correlation_id,
+            call_index,
+            round((perf_counter() - started_at) * 1000, 2),
+            retry_count["value"],
+            model,
+            host,
+            SEARCH_TIMEOUT_SECONDS,
+        )
+        return response
+
+    search_client._search_post = observed_search_post
+    search_client._libras_latency_observed = True
+    return search_client
 
 
 def _embedding_client(config) -> OpenAI:
@@ -1763,6 +1866,7 @@ def _retrieve_legacy_azure_search_evidence(
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
+    search_client = _install_search_observer(search_client, user_message, config)
     search_args = {
         "top": CANDIDATE_POOL_SIZE,
         "select": SEARCH_SELECT_FIELDS,
@@ -2340,7 +2444,26 @@ def _retrieve_legacy_azure_search_evidence(
         diagnostics["stage_counts"]["rerank_pool"] = len(rerank_records)
         if len(rerank_records) < len(candidate_records):
             rejected_reasons["rerank_pool_limit"] = len(candidate_records) - len(rerank_records)
+    ranking_started_at = perf_counter()
+    ranking_request_hash = request_hash(user_message)
+    ranking_host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
+    logger.info(
+        "retrieval_ranking_start request_hash=%s model=deterministic-ranker "
+        "endpoint_host=%s timeout_s=0.0 sdk_retries=0 candidates=%s",
+        ranking_request_hash,
+        ranking_host,
+        len(rerank_records),
+    )
     ranked_records = _rerank_records(rerank_records, user_message)
+    logger.info(
+        "retrieval_ranking_end request_hash=%s outcome=success duration_ms=%s "
+        "error=none model=deterministic-ranker endpoint_host=%s timeout_s=0.0 "
+        "sdk_retries=0 ranked=%s",
+        ranking_request_hash,
+        round((perf_counter() - ranking_started_at) * 1000, 2),
+        ranking_host,
+        len(ranked_records),
+    )
     if not ranked_records:
         if diagnostics is not None and candidate_records:
             rejected_reasons["relevance"] = len(candidate_records)
@@ -2432,7 +2555,26 @@ def _retrieve_legacy_azure_search_evidence(
                 ),
             )
         )
-    return _deduplicate_equivalent_sources(sources, user_message)
+    dedup_started_at = perf_counter()
+    logger.info(
+        "retrieval_dedup_start request_hash=%s model=deterministic-deduplicator "
+        "endpoint_host=%s timeout_s=0.0 sdk_retries=0 before=%s",
+        ranking_request_hash,
+        ranking_host,
+        len(sources),
+    )
+    deduped_sources = _deduplicate_equivalent_sources(sources, user_message)
+    logger.info(
+        "retrieval_dedup_end request_hash=%s outcome=success duration_ms=%s "
+        "error=none model=deterministic-deduplicator endpoint_host=%s "
+        "timeout_s=0.0 sdk_retries=0 before=%s after=%s",
+        ranking_request_hash,
+        round((perf_counter() - dedup_started_at) * 1000, 2),
+        ranking_host,
+        len(sources),
+        len(deduped_sources),
+    )
+    return deduped_sources
 
 
 def _v2_add_results(
@@ -2461,6 +2603,7 @@ def _v2_search_candidates(
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
+    search_client = _install_search_observer(search_client, plan.raw_message, config)
     search_args = {
         "top": CANDIDATE_POOL_SIZE,
         "select": V2_SEARCH_SELECT_FIELDS,
@@ -2872,26 +3015,70 @@ def retrieve_azure_search_evidence(
     user_message: str, config, client=None, return_trace: bool = False
 ) -> list[EvidenceSource] | RetrievalTrace:
     """Select the reversible retrieval strategy configured for this environment."""
-    if getattr(config, "retrieval_strategy", "legacy") == "v2":
-        trace = _retrieve_v2_azure_search_evidence(user_message, config, client=client)
-        return trace if return_trace else trace.sources
-    diagnostics: dict = {}
-    sources = _retrieve_legacy_azure_search_evidence(
-        user_message,
-        config,
-        client=client,
-        diagnostics=diagnostics if return_trace else None,
+    correlation_id = request_hash(user_message)
+    host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
+    model = "azure-ai-search-sdk"
+    started_at = perf_counter()
+    outcome = "success"
+    failure_code = ""
+    result: list[EvidenceSource] | RetrievalTrace = []
+    logger.info(
+        "azure_retrieval_start request_hash=%s model=%s endpoint_host=%s "
+        "timeout_s=%.1f sdk_retries=per_query strategy=%s",
+        correlation_id,
+        model,
+        host,
+        SEARCH_TIMEOUT_SECONDS,
+        getattr(config, "retrieval_strategy", "legacy"),
     )
-    if return_trace:
-        return RetrievalTrace(
-            sources=sources,
-            candidate_count=int(diagnostics.get("candidate_count", 0)),
-            direct_evidence_count=len(sources),
-            rejected_reasons=dict(diagnostics.get("rejected_reasons", {})),
-            stage_counts=dict(diagnostics.get("stage_counts", {})),
-            requires_version_context=bool(diagnostics.get("requires_version_context", False)),
+    try:
+        if getattr(config, "retrieval_strategy", "legacy") == "v2":
+            trace = _retrieve_v2_azure_search_evidence(user_message, config, client=client)
+            result = trace if return_trace else trace.sources
+            return result
+        diagnostics: dict = {}
+        sources = _retrieve_legacy_azure_search_evidence(
+            user_message,
+            config,
+            client=client,
+            diagnostics=diagnostics if return_trace else None,
         )
-    return sources
+        if return_trace:
+            result = RetrievalTrace(
+                sources=sources,
+                candidate_count=int(diagnostics.get("candidate_count", 0)),
+                direct_evidence_count=len(sources),
+                rejected_reasons=dict(diagnostics.get("rejected_reasons", {})),
+                stage_counts=dict(diagnostics.get("stage_counts", {})),
+                requires_version_context=bool(diagnostics.get("requires_version_context", False)),
+            )
+            return result
+        result = sources
+        return result
+    except TimeoutError as exc:
+        outcome = "timeout"
+        failure_code = error_code(exc)
+        raise
+    except Exception as exc:
+        outcome = "error"
+        failure_code = error_code(exc)
+        raise
+    finally:
+        evidence_count = len(result.sources) if isinstance(result, RetrievalTrace) else len(result or [])
+        logger.info(
+            "azure_retrieval_end request_hash=%s outcome=%s duration_ms=%s "
+            "evidence_count=%s error=%s model=%s endpoint_host=%s timeout_s=%.1f "
+            "sdk_retries=per_query strategy=%s",
+            correlation_id,
+            outcome,
+            round((perf_counter() - started_at) * 1000, 2),
+            evidence_count,
+            failure_code or "none",
+            model,
+            host,
+            SEARCH_TIMEOUT_SECONDS,
+            getattr(config, "retrieval_strategy", "legacy"),
+        )
 
 
 def _document_pages(document_path: Path) -> list[tuple[int | None, str]]:

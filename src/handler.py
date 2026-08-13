@@ -1,10 +1,8 @@
 import asyncio
-import hashlib
 import re
 import unicodedata
 from collections.abc import Callable
 from time import perf_counter
-from urllib.parse import urlparse
 
 from classification import (
     classify_case,
@@ -22,6 +20,7 @@ from document_index import tokenize
 from formatting import format_user_response
 from grounded_response import generate_grounded_response
 from intent import IntentResult, classify_intent
+from latency_observability import endpoint_host, error_code, request_hash as correlation_hash
 from logging_utils import get_logger
 from models import BotDecision, EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
@@ -37,7 +36,7 @@ logger = get_logger()
 
 def _context_guard_call_metadata(user_message: str, config) -> tuple[str, str, str]:
     """Return non-sensitive observability fields for one guard request."""
-    request_hash = hashlib.sha256(user_message.encode("utf-8")).hexdigest()[:16]
+    correlation_id = correlation_hash(user_message)
     model = str(
         getattr(config, "context_guard_model_name", "unknown") or "unknown"
     )
@@ -45,8 +44,145 @@ def _context_guard_call_metadata(user_message: str, config) -> tuple[str, str, s
         endpoint = str(config.resolved_openai_base_url)
     except (AttributeError, TypeError):
         endpoint = ""
-    endpoint_host = urlparse(endpoint).hostname or "unconfigured"
-    return request_hash, model, endpoint_host
+    return correlation_id, model, endpoint_host(endpoint)
+
+
+async def _run_observed_model_stage(
+    stage: str,
+    operation: Callable,
+    *args,
+    client,
+    model: str,
+    endpoint: str,
+    timeout_seconds: float,
+    **kwargs,
+):
+    """Run one provider-backed stage with non-sensitive timing telemetry."""
+    correlation_id = correlation_hash(str(args[0]) if args else "")
+    host = endpoint_host(endpoint)
+    started_at = perf_counter()
+    logger.info(
+        "%s_start request_hash=%s model=%s endpoint_host=%s timeout_s=%.1f "
+        "sdk_retries=unobserved",
+        stage,
+        correlation_id,
+        model,
+        host,
+        timeout_seconds,
+    )
+    try:
+        result = await _run_blocking_with_timeout(
+            operation,
+            *args,
+            client=client,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            **kwargs,
+        )
+    except TimeoutError:
+        logger.warning(
+            "%s_end request_hash=%s outcome=timeout duration_ms=%s "
+            "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=unobserved",
+            stage,
+            correlation_id,
+            round((perf_counter() - started_at) * 1000, 2),
+            model,
+            host,
+            timeout_seconds,
+        )
+        raise
+    except Exception as exc:
+        logger.warning(
+            "%s_end request_hash=%s outcome=error duration_ms=%s error=%s "
+            "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=unobserved",
+            stage,
+            correlation_id,
+            round((perf_counter() - started_at) * 1000, 2),
+            error_code(exc),
+            model,
+            host,
+            timeout_seconds,
+        )
+        raise
+    logger.info(
+        "%s_end request_hash=%s outcome=success duration_ms=%s "
+        "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=unobserved",
+        stage,
+        correlation_id,
+        round((perf_counter() - started_at) * 1000, 2),
+        model,
+        host,
+        timeout_seconds,
+    )
+    return result
+
+
+async def _run_observed_retrieval_stage(
+    user_message: str,
+    *,
+    client,
+    config,
+    timeout_seconds: float,
+    grace_seconds: float = 0,
+):
+    """Run retrieval with an aggregate timer; Search logs each SDK query."""
+    correlation_id = correlation_hash(user_message)
+    host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
+    model = "azure-ai-search-sdk"
+    started_at = perf_counter()
+    logger.info(
+        "retrieval_start request_hash=%s model=%s endpoint_host=%s timeout_s=%.1f "
+        "sdk_retries=per_query",
+        correlation_id,
+        model,
+        host,
+        timeout_seconds,
+    )
+    try:
+        result = await _run_blocking_with_timeout(
+            retrieve_evidence,
+            user_message,
+            client=client,
+            config=config,
+            return_trace=True,
+            timeout_seconds=timeout_seconds,
+            grace_seconds=grace_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "retrieval_end request_hash=%s outcome=timeout duration_ms=%s "
+            "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=per_query",
+            correlation_id,
+            round((perf_counter() - started_at) * 1000, 2),
+            model,
+            host,
+            timeout_seconds,
+        )
+        raise
+    except Exception as exc:
+        logger.warning(
+            "retrieval_end request_hash=%s outcome=error duration_ms=%s error=%s "
+            "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=per_query",
+            correlation_id,
+            round((perf_counter() - started_at) * 1000, 2),
+            error_code(exc),
+            model,
+            host,
+            timeout_seconds,
+        )
+        raise
+    evidence_count = len(result.sources) if isinstance(result, RetrievalTrace) else len(result or [])
+    logger.info(
+        "retrieval_end request_hash=%s outcome=success duration_ms=%s evidence_count=%s "
+        "model=%s endpoint_host=%s timeout_s=%.1f sdk_retries=per_query",
+        correlation_id,
+        round((perf_counter() - started_at) * 1000, 2),
+        evidence_count,
+        model,
+        host,
+        timeout_seconds,
+    )
+    return result
 
 
 HELP_COMMANDS = {
@@ -1192,11 +1328,13 @@ async def process_user_message(
         # The experimental path owns its intent -> retrieval -> judge ->
         # redaction sequence. Legacy remains untouched when the flag is false.
         try:
-            intent = await _run_blocking_with_timeout(
+            intent = await _run_observed_model_stage(
+                "intent",
                 classify_intent,
                 retrieval_message,
                 client=client,
                 model=config.openai_intent_model_name,
+                endpoint=getattr(config, "resolved_openai_base_url", ""),
                 timeout_seconds=config.intent_timeout_seconds,
             )
         except Exception:
@@ -1233,11 +1371,13 @@ async def process_user_message(
         and not documentary_question
     ):
         try:
-            intent = await _run_blocking_with_timeout(
+            intent = await _run_observed_model_stage(
+                "intent",
                 classify_intent,
                 retrieval_message,
                 client=client,
                 model=config.openai_intent_model_name,
+                endpoint=getattr(config, "resolved_openai_base_url", ""),
                 timeout_seconds=config.intent_timeout_seconds,
             )
             if intent and intent.name == "fuera_alcance" and _is_authorized_technical_procedure_request(
@@ -1304,12 +1444,10 @@ async def process_user_message(
         return fallback_conversational_response
 
     try:
-        evidence = await _run_blocking_with_timeout(
-            retrieve_evidence,
+        evidence = await _run_observed_retrieval_stage(
             retrieval_message,
             client=client,
             config=config,
-            return_trace=True,
             timeout_seconds=config.retrieval_timeout_seconds,
             grace_seconds=getattr(config, "retrieval_grace_seconds", 0),
         )
@@ -1359,12 +1497,14 @@ async def process_user_message(
         and getattr(config, "model_endpoint_configured", True)
     ):
         try:
-            draft = await _run_blocking_with_timeout(
+            draft = await _run_observed_model_stage(
+                "grounded_response",
                 generate_grounded_response,
                 retrieval_message,
                 fallback_decision.fuentes,
                 client=client,
                 model=getattr(config, "grounded_response_model_name", config.openai_model_name),
+                endpoint=getattr(config, "resolved_openai_base_url", ""),
                 timeout_seconds=getattr(config, "grounded_response_timeout_seconds", 5),
             )
             if draft:
