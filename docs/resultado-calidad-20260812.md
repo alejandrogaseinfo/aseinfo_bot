@@ -7,6 +7,32 @@
   una actualización de release.
 - El evaluador acepta explícitamente la categoría `conceptual`.
 
+## Experimento AI-first — 2026-08-12
+
+Se implementó la variante experimental detrás de `USE_AI_FIRST_EXPERIMENTAL`:
+intención LLM, búsqueda amplia en Azure AI Search, sanitización mínima,
+juez LLM, validador local y redactor grounded opcional. El juez recibe solo
+IDs opacos y fragmentos sanitizados; la validación rechaza JSON inválido, IDs o
+requisitos no permitidos, confianza menor de 0.80 y fuentes incompatibles con
+una versión explícita. No se usa fallback local.
+
+La evaluación de 12 preguntas se ejecutó contra `srch-libras-prod/libras-docs`
+en `legacy`, sin modificar ni desplegar producción:
+
+| Variante | Promedio | p95 | Abstenciones del juez | Fallback |
+|---|---:|---:|---:|---:|
+| Legacy sin redactor | 3.07 s | 3.46 s | — | 0 |
+| Legacy con redactor | 4.25 s | 6.46 s | — | 1 |
+| AI-first sin redactor | 4.83 s | 5.67 s | 5/12 | 0 |
+| AI-first con redactor | 5.13 s | 5.98 s | 6/12 | 1 |
+
+El reporte completo, con respuestas y fuentes elegidas, es
+`output/revision-humana-ai-first-20260812.json`. Las abstenciones del juez y
+las incompatibilidades de versión se conservaron como resultados del
+experimento; no se activó `USE_LLM_EVIDENCE_VERIFIER`, no se cambió a `v2` y
+la bandera AI-first no se desplegó. El redactor grounded queda activo solo en
+la ventana controlada vigente.
+
 ## Repetición A/B instrumentada — 2026-08-12
 
 La repetición posterior a la corrección general del router evitó que una

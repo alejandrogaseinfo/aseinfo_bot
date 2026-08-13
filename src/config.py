@@ -115,6 +115,22 @@ class Config:
         self.use_llm_grounded_response = env.get(
             "USE_LLM_GROUNDED_RESPONSE", "false"
         ).lower() == "true"
+        # Experimental AI-first path: broad Azure candidates -> LLM judge ->
+        # local contract/version validator -> optional grounded redactor. It
+        # is disabled by default and must never alter the legacy production
+        # route unless explicitly enabled for an evaluation window.
+        self.use_ai_first_experimental = env.get(
+            "USE_AI_FIRST_EXPERIMENTAL", "false"
+        ).lower() == "true"
+        self.ai_first_judge_model_name = env.get(
+            "AI_FIRST_JUDGE_MODEL", self.openai_intent_model_name
+        ).strip()
+        self.ai_first_judge_timeout_seconds = float(
+            env.get("AI_FIRST_JUDGE_TIMEOUT_SECONDS", "8")
+        )
+        self.ai_first_candidate_limit = int(
+            env.get("AI_FIRST_CANDIDATE_LIMIT", "12")
+        )
         self.grounded_response_model_name = env.get(
             "GROUNDED_RESPONSE_MODEL", self.openai_model_name
         ).strip()

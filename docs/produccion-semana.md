@@ -2,19 +2,23 @@
 
 ## Estado vigente — 2026-08-12
 
-Producción permanece en `RETRIEVAL_STRATEGY=legacy` y el verificador sigue
-apagado. La suite local vigente es **327/327**. La prueba A/B instrumentada
-ejecutó **12/12 preguntas** contra `srch-libras-prod/libras-docs`, sin fallback
-local: promedio/p95 de 4.10/6.67 s sin redactor y 4.55/7.93 s con redactor.
-El commit `40f4a4e` fue desplegado y validado con `/healthz` y `/readyz` en
-HTTP 200. El redactor grounded está activo únicamente durante la ventana
-controlada del piloto; `USE_LLM_EVIDENCE_VERIFIER=false` se mantiene.
+Producción permanece en `RETRIEVAL_STRATEGY=legacy`, con
+`USE_LLM_EVIDENCE_VERIFIER=false`. `USE_LLM_GROUNDED_RESPONSE=true` está
+activo únicamente en la ventana controlada vigente. La suite local vigente es
+**331/331**. No se desplegó la variante AI-first.
+
+La evaluación AI-first de solo lectura contra `srch-libras-prod/libras-docs`
+se ejecutó sin fallback local. Legacy obtuvo 3.07/3.46 s (promedio/p95) sin
+redactor y 4.25/6.46 s con redactor. AI-first obtuvo 4.83/5.67 s sin redactor
+y 5.13/5.98 s con redactor; el juez se abstuvo en 5/12 y 6/12 casos,
+respectivamente.
 
 La ventana aún no tiene consultas reales de Teams registradas, por lo que la
 tasa de fallback y la latencia de usuarios reales quedan pendientes de medir
 con las mismas 12 preguntas operativas.
 
-Reporte vigente: `output/revision-humana-redactor-20260812-postfix6.json`.
+Reportes vigentes: `output/revision-humana-ai-first-20260812.json` y
+`output/revision-humana-redactor-20260812-postfix6.json`.
 
 Consulta el detalle en [resultado-calidad-20260812.md](resultado-calidad-20260812.md)
 y la muestra revisable en

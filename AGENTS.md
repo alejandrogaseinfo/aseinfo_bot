@@ -12,7 +12,7 @@ Configuración productiva vigente:
 ```text
 RETRIEVAL_STRATEGY=legacy
 USE_LLM_EVIDENCE_VERIFIER=false
-USE_LLM_GROUNDED_RESPONSE=false
+USE_LLM_GROUNDED_RESPONSE=true (solo durante la ventana controlada; fuera de ella, false)
 ```
 
 El índice productivo de referencia es `libras-docs` en el servicio Azure AI

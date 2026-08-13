@@ -9,9 +9,9 @@ el backend que se ejecuta en Azure App Service y atiende mensajes de Teams.
 
 ## Estado y alcance
 
-Libras mantiene producción en `RETRIEVAL_STRATEGY=legacy`. El evaluador LLM y
-el redactor grounded permanecen desactivados mientras termina la revisión
-humana para un piloto controlado. El índice de referencia es `libras-docs` en
+Libras mantiene producción en `RETRIEVAL_STRATEGY=legacy`. El evaluador LLM
+permanece desactivado y el redactor grounded está activo únicamente durante
+la ventana controlada vigente; fuera de ella debe permanecer apagado. El índice de referencia es `libras-docs` en
 `srch-libras-prod`; la fuente es SharePoint autorizado en el sitio
 `Soportealcliente`. El estado vigente está en
 [docs/contexto-actual.md](docs/contexto-actual.md) y el plan activo en

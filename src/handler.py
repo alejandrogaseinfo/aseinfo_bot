@@ -24,6 +24,11 @@ from logging_utils import get_logger
 from models import BotDecision, EvidenceSource, RetrievalTrace
 from retrieval import retrieve_evidence
 from azure_search import is_release_guidance_question
+from ai_first import (
+    judge_ai_first_candidates,
+    mark_confirmed_versions,
+    retrieve_ai_first_candidates,
+)
 
 logger = get_logger()
 
@@ -862,6 +867,116 @@ def _grounded_draft_preserves_procedure(
     return True
 
 
+async def _process_ai_first_experimental(
+    retrieval_message: str,
+    user_message: str,
+    client,
+    config,
+    started_at: float,
+) -> str:
+    """Run the opt-in broad-search/judge/redactor experiment."""
+    try:
+        retrieval = await _run_blocking_with_timeout(
+            retrieve_ai_first_candidates,
+            retrieval_message,
+            config=config,
+            client=client,
+            limit=getattr(config, "ai_first_candidate_limit", 12),
+            timeout_seconds=config.retrieval_timeout_seconds,
+            grace_seconds=getattr(config, "retrieval_grace_seconds", 0),
+        )
+    except Exception:
+        logger.exception("Falló la recuperación AI-first.")
+        retrieval = None
+
+    if retrieval is None:
+        decision = BotDecision(
+            estado="sin_evidencia",
+            confianza="baja",
+            resumen="No se pudo recuperar evidencia documental de Azure AI Search.",
+            fuentes=[],
+            siguiente_accion="Intenta nuevamente o escala la consulta para revisión manual.",
+            requiere_escalamiento=True,
+        )
+        return format_user_response(decision, config=config)
+
+    try:
+        judge = await _run_blocking_with_timeout(
+            judge_ai_first_candidates,
+            retrieval_message,
+            retrieval,
+            client=client,
+            model=getattr(config, "ai_first_judge_model_name", config.openai_intent_model_name),
+            timeout_seconds=getattr(config, "ai_first_judge_timeout_seconds", 8),
+        )
+    except Exception:
+        logger.exception("Falló el juez AI-first.")
+        judge = None
+
+    if judge is None:
+        decision = BotDecision(
+            estado="sin_evidencia",
+            confianza="baja",
+            resumen="El juez no pudo validar las evidencias recuperadas.",
+            fuentes=[],
+            siguiente_accion="Revisa la consulta con el equipo responsable.",
+            requiere_escalamiento=True,
+        )
+        return format_user_response(decision, config=config)
+
+    sources = mark_confirmed_versions(judge)
+    fallback_decision = classify_case_by_rules(retrieval_message, sources)
+    decision = fallback_decision
+    grounded_used = False
+    if sources and getattr(config, "use_llm_grounded_response", False) and getattr(
+        config, "model_endpoint_configured", True
+    ):
+        try:
+            draft = await _run_blocking_with_timeout(
+                generate_grounded_response,
+                retrieval_message,
+                sources,
+                client=client,
+                model=getattr(config, "grounded_response_model_name", config.openai_model_name),
+                timeout_seconds=getattr(config, "grounded_response_timeout_seconds", 5),
+            )
+            if draft and draft.response:
+                grounded_used = True
+                decision = BotDecision(
+                    estado="resuelto",
+                    confianza="alta",
+                    resumen=draft.response,
+                    fuentes=draft.sources,
+                    siguiente_accion="",
+                    requiere_escalamiento=False,
+                )
+            elif draft and not draft.sources:
+                decision = BotDecision(
+                    estado="sin_evidencia",
+                    confianza="baja",
+                    resumen="La evidencia seleccionada no fue suficiente para redactar una respuesta segura.",
+                    fuentes=[],
+                    siguiente_accion="Indica la versión y el procedimiento exactos para continuar.",
+                    requiere_escalamiento=True,
+                )
+        except Exception:
+            logger.exception("Falló el redactor AI-first; se conserva la salida local.")
+
+    logger.info(
+        "ai_first_completed duration_ms=%s raw_candidates=%s candidates=%s selected=%s "
+        "judge_abstained=%s validator_rejections=%s grounded_used=%s fallback=%s",
+        round((perf_counter() - started_at) * 1000),
+        retrieval.raw_candidate_count,
+        len(retrieval.candidates),
+        len(sources),
+        judge.abstained,
+        ",".join(f"{key}:{value}" for key, value in sorted(judge.validator_rejections.items())) or "none",
+        grounded_used,
+        decision is fallback_decision,
+    )
+    return format_user_response(decision, config=config)
+
+
 async def process_user_message(
     user_message: str,
     client,
@@ -962,6 +1077,7 @@ async def process_user_message(
     if (
         is_release_guidance_question(retrieval_message)
         and not has_explicit_version_request(retrieval_message)
+        and not getattr(config, "use_ai_first_experimental", False)
     ):
         logger.info(
             "query_completed duration_ms=%s evidence_count=0 "
@@ -1014,6 +1130,39 @@ async def process_user_message(
             if guard_mode == "enforce" and failure_policy == "block":
                 mark_trace(blocked=True)
                 return _context_guard_response()
+
+    if getattr(config, "use_ai_first_experimental", False):
+        # The experimental path owns its intent -> retrieval -> judge ->
+        # redaction sequence. Legacy remains untouched when the flag is false.
+        try:
+            intent = await _run_blocking_with_timeout(
+                classify_intent,
+                retrieval_message,
+                client=client,
+                model=config.openai_intent_model_name,
+                timeout_seconds=config.intent_timeout_seconds,
+            )
+        except Exception:
+            intent = None
+        if intent:
+            if intent.name == "fuera_alcance" and _is_authorized_technical_procedure_request(
+                retrieval_message
+            ):
+                intent = None
+        if intent:
+            intent_response = _intent_response(intent, config, retrieval_message)
+            if intent_response and (
+                intent.conversation_purpose in {"capacidad", "alcance"}
+                or intent.name in {"saludo", "ayuda", "fuera_alcance"}
+            ) and not _looks_like_documentary_question(retrieval_message):
+                return intent_response
+        return await _process_ai_first_experimental(
+            retrieval_message,
+            user_message,
+            client,
+            config,
+            started_at,
+        )
 
     intent = None
     # A concrete documentary question already has a bounded retrieval path.

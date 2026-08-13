@@ -122,6 +122,7 @@ Key Vault o identidades administradas.
 | Identidad de búsqueda | `AZURE_SEARCH_USE_ENTRA_ID` | `true`; la aplicación usa RBAC |
 | Modelo | `OPENAI_MODEL`, `OPENAI_INTENT_MODEL` | OpenAI oficial mediante Key Vault |
 | Recuperación | `RETRIEVAL_STRATEGY` | actualmente `legacy` hasta promover v2 |
+| Experimento AI-first | `USE_AI_FIRST_EXPERIMENTAL`, `AI_FIRST_JUDGE_MODEL` | apagado; solo evaluación local contra Azure |
 | Contexto | `USE_EPHEMERAL_THREAD_CONTEXT` | `true`, acotado al chat |
 | Conversations API | `USE_OPENAI_CONVERSATIONS` | `false` |
 

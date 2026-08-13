@@ -3,16 +3,18 @@
 ## Estado vigente — 2026-08-12
 
 La validación posterior de calidad se ejecutó contra `srch-libras-prod/libras-docs`
-con **315/315 pruebas locales aprobadas** y una comparación A/B de 12 preguntas
-operativas sin fallback local. El redactor grounded mejoró claridad en varios
-procedimientos, pero sigue apagado en producción hasta completar la revisión
-humana y autorizar un piloto.
+con **331/331 pruebas locales aprobadas** y una comparación A/B de 12 preguntas
+operativas sin fallback local. La variante experimental AI-first quedó detrás
+de `USE_AI_FIRST_EXPERIMENTAL` y no se desplegó. El redactor grounded está
+activo únicamente durante la ventana controlada vigente; fuera de ella debe
+permanecer apagado.
 
 Las correcciones vigentes incluyen deduplicación y validación de citas de
 Readme, priorización de `Manual de Relacion DB V1.2` para consultas IRA con
 versión no confirmada y permiso acotado para `Ofuscación de datos.sql`. La
 estrategia productiva sigue siendo `legacy` y
-`USE_LLM_EVIDENCE_VERIFIER=false`.
+`USE_LLM_EVIDENCE_VERIFIER=false`; `USE_LLM_GROUNDED_RESPONSE=true` solo en la
+ventana controlada vigente.
 
 El detalle reproducible está en
 [docs/resultado-calidad-20260812.md](resultado-calidad-20260812.md) y la
