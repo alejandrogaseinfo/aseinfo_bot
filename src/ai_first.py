@@ -423,25 +423,34 @@ def _query_plan_artifact_identity_queries(plan: QueryPlan) -> tuple[str, str]:
     technical: list[str] = []
     for requirement in plan.requirements:
         profile = _requirement_profile(requirement)
+        if requirement.text.casefold().startswith("el calificador"):
+            # Qualifier scaffolding is not the artifact identity.  Its useful
+            # concept may still participate in the technical fallback below.
+            technical.extend(profile["auxiliary"])
+            continue
         raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+        concept_tokens = set(requirement.concepts)
         for raw in raw_tokens:
             token = raw.strip(".,;:!?¿¡()[]'")
             concept = concept_key(token)
-            if not token or concept in action_terms:
+            if not token or concept in action_terms or concept not in concept_tokens:
                 continue
-            if concept in generic:
+            if concept in generic or concept in {"dato", "datos", "sql", "script"}:
                 continue
             if len(token) >= 4 or token.isupper() or any(ch.isdigit() for ch in token):
                 nominal.append(token)
-        for anchor in (*profile["strong"], *profile["auxiliary"]):
-            if anchor and anchor not in generic and anchor not in action_terms:
+        for anchor in (*profile["strong"], *profile["auxiliary"], *requirement.concepts):
+            if anchor and anchor not in generic and anchor not in action_terms and anchor not in {"dato", "datos", "sql", "script"}:
                 technical.append(anchor)
     # Preserve the artifact role only as a fallback discriminator; it is not
     # a file name or a case-specific alias.
     if not nominal:
-        nominal.extend(token for token in technical if token)
+        # For artifact questions whose only non-generic noun is encoded as an
+        # action (e.g. ofuscación), retain that single identity stem as the
+        # nominal fallback; do not append auxiliary verbs or media terms.
+        nominal.extend(action_terms)
     nominal_query = " ".join(dict.fromkeys(nominal))
-    technical_query = " ".join(dict.fromkeys(technical or nominal))
+    technical_query = " ".join(dict.fromkeys((*technical, *action_terms) or tuple(nominal)))
     return nominal_query, technical_query
 
 
