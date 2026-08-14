@@ -1271,8 +1271,11 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                     for row in rows[:20]
                 ],
             })
+            if not new_result_ids or not new_facets:
+                break
         except Exception as exc:
             calls.append({"kind": "document_expand", "query": "*", "filter_field": field, "filter_value": "<redacted>", "duration_ms": round((perf_counter() - started) * 1000, 2), "result_count": 0, "new_result_ids": [], "contributed": False, "error": error_code(exc)})
+            break
 
     # Vector retrieval is a bounded recall aid only when lexical retrieval is
     # sparse; it can never override local version/provenance validation.
