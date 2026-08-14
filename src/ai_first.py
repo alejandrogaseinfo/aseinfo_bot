@@ -38,7 +38,7 @@ from grounded_response import _claims_are_supported
 from latency_observability import endpoint_host, error_code, request_hash
 from logging_utils import get_logger
 from models import EvidenceSource
-from query_plan import QueryPlan, build_query_plan, concept_keys
+from query_plan import QueryPlan, build_query_plan, concept_key, concept_keys
 
 
 MAX_AI_FIRST_CANDIDATES = 12
@@ -101,6 +101,11 @@ evidencia no basta, devuelve {"selections":[]}. La confianza debe estar entre
 0 y 1; no selecciones candidatos con confianza menor que 0.80. La versión
 explícita solicitada por el usuario debe coincidir con la identidad del
 documento, no solo aparecer mencionada dentro del fragmento.
+La matriz coverage.facets distingue identidad, propósito, acción,
+relaciones/campos y versión; coverage.group_facets muestra la cobertura
+combinada del documento. Selecciona el conjunto mínimo de IDs que cubra las
+facetas necesarias. Si un documento cubre todas las facetas, prefíérelo frente
+a una combinación incidental de documentos.
 """.strip()
 
 
@@ -124,6 +129,9 @@ Reglas:
   candidatos vacías. Puedes incluir los requirement_id que evaluaste como
   metadato diagnóstico; no inventes IDs.
 - Usa exclusivamente candidate_id y requirement_id recibidos.
+- La matriz local de facetas indica qué cubre cada fragmento y qué cubre el
+  grupo documental; selecciona todos los IDs complementarios necesarios, pero
+  el conjunto mínimo suficiente.
 - Si el usuario indicó una versión exacta, selecciona solamente documentos cuya
   identidad corresponda a esa versión.
 - Si la identidad de versión no puede confirmarse, devuelve "abstain"; no
@@ -261,6 +269,7 @@ def _candidate_selection_details(
 ) -> dict[str, object]:
     """Return auditable, generic ranking components for an eligible record."""
     coverage = _record_coverage(record, plan, aggregate_text)
+    facets = _facet_matrix(record, plan, aggregate_text)
     text = aggregate_text or " ".join(
         str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)
     )
@@ -302,6 +311,7 @@ def _candidate_selection_details(
             "generic_penalty": -generic_penalty,
         },
         "action_hits": action_hits,
+        "facets": facets,
         "document_group": _document_key(record),
         "discard_reason": "incidental" if selection_class == "incidental" else "",
     }
@@ -339,10 +349,36 @@ def _query_plan_recall_queries(plan: QueryPlan) -> tuple[str, str]:
     """
     artifact_terms: list[str] = []
     structural_terms: list[str] = []
+    qualifier_concepts = {
+        concept for requirement in plan.requirements
+        if requirement.text.casefold().startswith("el calificador")
+        for concept in requirement.concepts
+    }
     for requirement in plan.requirements:
         profile = _requirement_profile(requirement)
+        if requirement.text.casefold().startswith("el calificador"):
+            # The original requirement retains the full qualifier wording;
+            # avoid adding only its normalized stem to the lexical query.
+            continue
         if plan.artifact_role and not requirement.text.casefold().startswith("el calificador"):
-            artifact_terms.extend(re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE))
+            action_terms = set(profile["action"])
+            for raw in re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE):
+                cleaned = raw.strip(".,;:!?¿¡()[]")
+                concept = concept_key(cleaned)
+                if not cleaned or concept in action_terms:
+                    continue
+                if concept in _GENERIC_AUXILIARY_CONCEPTS | _GENERIC_REQUIREMENT_CONCEPTS | _GENERIC_RANKING_TOKENS:
+                    if concept not in qualifier_concepts:
+                        continue
+                if len(cleaned) >= 4 or cleaned.isupper():
+                    artifact_terms.append(cleaned)
+            # Keep the action as a complete lexical term, but never reduce it
+            # to a stem-only query.
+            artifact_terms.extend(
+                raw.strip(".,;:!?¿¡()[]")
+                for raw in re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+                if concept_key(raw) in action_terms
+            )
         structural_terms.extend(
             re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", requirement.text)
         )
@@ -728,6 +764,74 @@ def _select_diverse_judge_records(
     return selected
 
 
+_RELATION_FACET_CONCEPTS = frozenset({
+    "campo", "relacion", "relaciona", "relacionan", "vincul", "unir", "une",
+})
+
+
+def _requirement_facets(requirement, plan: QueryPlan) -> dict[str, tuple[str, ...]]:
+    """Derive generic evidence facets from a requirement, without aliases."""
+    profile = _requirement_profile(requirement)
+    raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+    structural = tuple(dict.fromkeys(
+        concept for raw in raw_tokens
+        if "_" in raw or "." in raw or any(char.isdigit() for char in raw)
+        for concept in concept_keys(raw)
+        if concept and concept != "version"
+    ))
+    identity = tuple(dict.fromkeys((*profile["strong"], *structural)))
+    relation_terms = [
+        concept for concept in (*profile["auxiliary"], *profile["topic"], *profile["strong"])
+        if concept in _RELATION_FACET_CONCEPTS or "_" in concept or "." in concept
+    ]
+    purpose = tuple(dict.fromkeys(
+        concept for concept in profile["topic"]
+        if concept not in profile["action"] and concept not in relation_terms
+    ))
+    if not purpose and profile["action"]:
+        purpose = profile["action"]
+    version = (plan.version,) if plan.version else ()
+    return {
+        "identity": identity,
+        "purpose": purpose,
+        "action": profile["action"],
+        "relations": tuple(dict.fromkeys(relation_terms)),
+        "version": version,
+    }
+
+
+def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = None) -> dict[str, object]:
+    """Return required/covered/missing facets for one fragment or group."""
+    text = aggregate_text or " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    concepts = set(concept_keys(text))
+    targets = {facet: tuple(dict.fromkeys(
+        target
+        for requirement in plan.requirements
+        for target in _requirement_facets(requirement, plan)[facet]
+    )) for facet in ("identity", "purpose", "action", "relations", "version")}
+    covered: dict[str, bool | str] = {}
+    for facet, facet_targets in targets.items():
+        if facet == "version":
+            covered[facet] = "not_required" if not facet_targets else bool(_candidate_version_compatible(record, plan))
+        else:
+            covered[facet] = bool(facet_targets) and any(
+                _topic_signal_present(target, concepts) if facet in {"purpose", "action", "relations"}
+                else _concept_present(target, concepts)
+                for target in facet_targets
+            )
+    required = {facet: bool(facet_targets) for facet, facet_targets in targets.items()}
+    missing = [facet for facet in targets if required[facet] and covered[facet] is not True]
+    return {"required": required, "targets": targets, "covered": covered, "missing": missing}
+
+
+def _group_facet_matrix(records: list[dict], plan: QueryPlan) -> dict[str, object]:
+    combined = " ".join(
+        " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+        for record in records
+    )
+    return _facet_matrix(records[0] if records else {}, plan, combined)
+
+
 def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=None):
     """Run a bounded lexical/vector union directly through SearchClient."""
     search_client = SearchClient(
@@ -782,7 +886,21 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 calls.append({"kind": "lexical", "query": "<redacted>", "duration_ms": 0.0, "result_count": 0, "error": error_code(exc)})
                 continue
             query_kind, query, search_mode = query_kind_value
-            calls.append({"kind": f"lexical_{query_kind}", "query": query, "search_mode": search_mode, "duration_ms": duration_ms, "result_count": len(rows)})
+            calls.append({
+                "kind": f"lexical_{query_kind}",
+                "query": query,
+                "search_mode": search_mode,
+                "duration_ms": duration_ms,
+                "result_count": len(rows),
+                "top_results": [
+                    {
+                        "title": _bounded_text(row.get("title"), 300),
+                        "page": (re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE).group(1)
+                                 if re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE) else ""),
+                    }
+                    for row in rows[:20]
+                ],
+            })
             for rank, result in enumerate(rows, start=1):
                 record = dict(result)
                 record_id = str(record.get("id") or "")
@@ -803,7 +921,15 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 fields=CONTENT_VECTOR_FIELD,
             )
             rows = list(search_client.search(search_text=None, vector_queries=[vector_query], **search_args))
-            calls.append({"kind": "vector", "query": "<embedding:user_message>", "duration_ms": round((perf_counter() - started) * 1000, 2), "result_count": len(rows)})
+            calls.append({
+                "kind": "vector",
+                "query": "<embedding:user_message>",
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "result_count": len(rows),
+                "top_results": [
+                    {"title": _bounded_text(row.get("title"), 300)} for row in rows[:20]
+                ],
+            })
             for rank, result in enumerate(rows, start=1):
                 record = dict(result)
                 record_id = str(record.get("id") or "")
@@ -928,6 +1054,8 @@ def retrieve_ai_first_candidates(
                     "detected_anchors": details["detected_anchors"],
                     "covered_requirements": details["covered_requirements"],
                     "missing_requirements": details["missing_requirements"],
+                    "facets": _facet_matrix(record, plan),
+                    "group_facets": details.get("facets", {}),
                 },
                 "azure_rank": index,
             }))
@@ -1138,6 +1266,8 @@ def retrieve_ai_first_candidates(
                 "detected_anchors": details.get("detected_anchors") if isinstance(details, dict) else [],
                 "covered_requirements": details.get("covered_requirements") if isinstance(details, dict) else [],
                 "missing_requirements": details.get("missing_requirements") if isinstance(details, dict) else [],
+                "facets": _facet_matrix(record, plan),
+                "group_facets": details.get("facets", {}) if isinstance(details, dict) else {},
             },
         }
         candidates.append(
@@ -1232,7 +1362,8 @@ def judge_ai_first_candidates(
                                 if plan.version else ""
                             ),
                             "requirements": [
-                                {"requirement_id": req.identifier, "text": req.text}
+                                {"requirement_id": req.identifier, "text": req.text,
+                                 "facets": _requirement_facets(req, plan)}
                                 for req in plan.requirements
                             ],
                             "candidates": [candidate.payload for candidate in retrieval.candidates],
@@ -1378,7 +1509,8 @@ def answer_ai_first_candidates(
                                 if plan.version else ""
                             ),
                             "requirements": [
-                                {"requirement_id": req.identifier, "text": req.text}
+                                {"requirement_id": req.identifier, "text": req.text,
+                                 "facets": _requirement_facets(req, plan)}
                                 for req in plan.requirements
                             ],
                             "candidates": [candidate.payload for candidate in retrieval.candidates],

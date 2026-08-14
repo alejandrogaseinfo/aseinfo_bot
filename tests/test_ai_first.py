@@ -478,6 +478,39 @@ class AIFirstTests(unittest.TestCase):
             retrieval = retrieve_ai_first_candidates("¿Qué documentos se pueden gestionar?", config)
         self.assertEqual("thematic", retrieval.candidates[0].payload["coverage"]["selection_class"])
         self.assertIn("selection_score", retrieval.candidates[0].payload["coverage"])
+        self.assertIn("facets", retrieval.candidates[0].payload["coverage"])
+        self.assertIn("group_facets", retrieval.candidates[0].payload["coverage"])
+
+    def test_facet_matrix_distinguishes_fragment_and_document_coverage(self):
+        plan = ai_first.build_query_plan(
+            "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        )
+        identity = _record(
+            "p1", "Manual IRA — Página 1",
+            "La tabla ira_instancias_rutas_aut guarda los flujos existentes.",
+            document_id="ira-doc",
+        )
+        relations = _record(
+            "p2", "Manual IRA — Página 2",
+            "Campos con los que se puede relacionar: ira_codrau e ira_codigo_entidad.",
+            document_id="ira-doc",
+        )
+        first = ai_first._facet_matrix(identity, plan)
+        combined = ai_first._group_facet_matrix([identity, relations], plan)
+        self.assertTrue(first["covered"]["identity"])
+        self.assertTrue(first["covered"]["action"])
+        self.assertIn("relations", first["missing"])
+        self.assertTrue(combined["covered"]["identity"])
+        self.assertTrue(combined["covered"]["relations"])
+
+    def test_artifact_identity_query_preserves_substantive_terms(self):
+        plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
+        artifact_action, _ = ai_first._query_plan_recall_queries(plan)
+        self.assertIn("datos", artifact_action)
+        self.assertIn("sensibles", artifact_action)
+        self.assertIn("SQL", artifact_action)
+        self.assertIn("ofuscan", artifact_action)
+        self.assertNotEqual("ofusc dato sql", artifact_action)
 
     def test_direct_response_redacts_sql_implementation_from_user_summary(self):
         _FakeSearchClient.records = [_record(
