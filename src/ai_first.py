@@ -109,6 +109,9 @@ Reglas:
 - Como excepción, si solo existe un documento técnico sin identidad de versión,
   puedes responder desde él únicamente si indicas literalmente que la fuente no
   confirma la correspondencia con la versión solicitada.
+- Si esa excepción aplica y el candidato cubre la pregunta, elige "answer" con
+  la advertencia; no devuelvas "abstain" únicamente porque falta la identidad
+  de versión.
 - Si pregunta en qué versión ocurrió un cambio, indica la versión exacta que
   aparece en el candidato seleccionado. No uses un candidato cuyo título de
   versión contradiga el fragmento.
