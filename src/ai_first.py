@@ -1572,6 +1572,13 @@ def retrieve_ai_first_candidates(
         for record in ordered_records
         for version in _identity_versions(record)
     }
+    # Search telemetry retains bounded titles even when the corresponding
+    # records are later rejected by provenance.  Use those titles only to
+    # preserve an ambiguity state; never expose them as evidence.
+    for call in azure_metrics.get("calls", []):
+        for top in call.get("top_results", []) if isinstance(call, dict) else []:
+            title = str(top.get("title") or "") if isinstance(top, dict) else str(top)
+            raw_identity_versions.update(match.group(1) for match in _VERSION_PATTERN.finditer(title))
     for record in ordered_records:
         if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
             rejected["provenance"] = rejected.get("provenance", 0) + 1
