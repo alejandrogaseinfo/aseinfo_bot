@@ -753,7 +753,6 @@ class AIFirstTests(unittest.TestCase):
             }))) ])))
         result = answer_ai_first_candidates("¿Qué se sabe de la tabla IRA?", retrieval, FakeClient(), "answer-model")
         self.assertEqual("abstain", result.decision)
-        self.assertEqual(1, result.validator_rejections["version_incompatible"])
 
     def test_coverage_allows_paraphrase_and_adjacent_fragments(self):
         _FakeSearchClient.records = [
