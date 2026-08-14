@@ -49,6 +49,9 @@ MAX_AI_FIRST_FRAGMENT_CHARS = 1_200
 MAX_AI_FIRST_CONTEXT_CHARS = 400
 MIN_JUDGE_CONFIDENCE = 0.80
 _VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
+_UNCONFIRMED_COMPATIBILITY_CLAIM = re.compile(
+    r"(?i)\b(?:compatible|compatibilidad|aplica|corresponde|pertenece)\b"
+)
 _GENERIC_RANKING_TOKENS = {"evolution", "libras", "documento", "documentos", "manual", "readme"}
 _GENERIC_REQUIREMENT_CONCEPTS = {
     "cambio", "cambia", "incluye", "indica", "inform", "saber", "dice",
@@ -2275,7 +2278,15 @@ def answer_ai_first_candidates(
     if not _evidence_covers_requested_facet(user_message, selected_sources):
         result.validator_rejections["facet_sin_evidencia_directa"] = 1
         return result
-    if not _claims_are_supported(user_message, normalized_answer, selected_sources):
+    claims_answer = normalized_answer
+    if plan.version and any(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
+        # The requested version may occur only inside the explicit caveat. It
+        # must not be treated as a factual version claim about the source.
+        claims_answer = claims_answer.replace(result.version_warning or "", "")
+        if _UNCONFIRMED_COMPATIBILITY_CLAIM.search(claims_answer):
+            result.validator_rejections["version_no_confirmada_claim"] = 1
+            return result
+    if not _claims_are_supported(user_message, claims_answer, selected_sources):
         result.validator_rejections["afirmacion_no_sustentada"] = 1
         return result
 

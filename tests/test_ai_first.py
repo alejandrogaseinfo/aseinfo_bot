@@ -1033,6 +1033,38 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual("abstain", result.decision)
         self.assertIn("cobertura_insuficiente", result.validator_rejections)
 
+    def test_unconfirmed_source_rejects_compatibility_claim(self):
+        retrieval = self._direct_version_candidate("Manual IRA", "La tabla IRA almacena los flujos existentes.")
+        warning = "La fuente no confirma compatibilidad con la versión consultada."
+        payload = {
+            "decision": "answer",
+            "answer": "La tabla IRA es compatible con la versión 1.24.1.3. " + warning,
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": warning,
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("version_no_confirmada_claim", result.validator_rejections)
+
+    def test_unconfirmed_source_rejects_technical_claim_outside_fragment(self):
+        retrieval = self._direct_version_candidate("Manual IRA", "La tabla IRA almacena los flujos existentes.")
+        warning = "La fuente no confirma compatibilidad con la versión consultada."
+        payload = {
+            "decision": "answer",
+            "answer": "La tabla IRA almacena los flujos existentes y tiene el campo secreto_x. " + warning,
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": warning,
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("afirmacion_no_sustentada", result.validator_rejections)
+
 
 if __name__ == "__main__":
     unittest.main()
