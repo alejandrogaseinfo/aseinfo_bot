@@ -408,14 +408,21 @@ class AIFirstTests(unittest.TestCase):
     def test_anchor_retrieval_keeps_complementary_procedure_pages(self):
         sources = [
             EvidenceSource("sharepoint", "Manual DTC Verificacion.pdf — Página 4", "https://contoso/dtc.pdf#page=4",
-                            "Verifique que el firewall permita la comunicación DTC entre ambos servidores.", document_id="dtc-doc"),
+                            "Validar que el firewall permita la comunicación DTC entre ambos servidores.", document_id="dtc-doc"),
             EvidenceSource("sharepoint", "Manual DTC Verificacion.pdf — Página 5", "https://contoso/dtc.pdf#page=5",
                             "Confirme las reglas DTC y en Component Services valide LOCAL DTC en ambos servidores.", document_id="dtc-doc"),
         ]
         config = _config()
+        config.sharepoint_sources = (("SOLUCIONES", "drive-manuales"),)
         config.ai_first_legacy_anchors = True
         config.ai_first_anchor_only = True
-        with patch("ai_first.retrieve_azure_search_evidence", return_value=sources):
+        records = [{"id": "dtc-4", "title": sources[0].titulo, "source_url": sources[0].ubicacion,
+                    "document_id": "dtc-doc", "source_system": "sharepoint", "folder_path": "SOLUCIONES",
+                    "drive_id": "drive-manuales", "content": sources[0].fragmento, "document_context": ""},
+                   {"id": "dtc-5", "title": sources[1].titulo, "source_url": sources[1].ubicacion,
+                    "document_id": "dtc-doc", "source_system": "sharepoint", "folder_path": "SOLUCIONES",
+                    "drive_id": "drive-manuales", "content": sources[1].fragmento, "document_context": ""}]
+        with patch("ai_first._retrieve_hybrid_records", return_value=(records, {}, [])):
             retrieval = retrieve_ai_first_candidates("Después de reinstalar MSDTC, ¿qué validamos en ambos servidores?", config)
         self.assertEqual(2, len(retrieval.candidates))
         self.assertTrue(all(item["accepted"] for item in retrieval.candidate_observations))

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -562,6 +563,76 @@ def _select_diverse_judge_records(
     return selected
 
 
+def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=None):
+    """Run a bounded lexical/vector union directly through SearchClient."""
+    search_client = SearchClient(
+        endpoint=config.azure_search_endpoint,
+        index_name=config.azure_search_index_name,
+        credential=_credential(config),
+    )
+    queries = list(dict.fromkeys(plan.retrieval_queries[:2]))
+    search_args = {
+        "top": min(CANDIDATE_POOL_SIZE, 20),
+        "select": SEARCH_SELECT_FIELDS,
+        "connection_timeout": 10,
+        "read_timeout": 10,
+        "search_mode": "any",
+    }
+    records_by_id: dict[str, dict] = {}
+    rank_by_id: dict[str, int] = {}
+    calls: list[dict[str, object]] = []
+
+    def lexical(query_rank_query):
+        query_rank, query = query_rank_query
+        started = perf_counter()
+        rows = list(search_client.search(
+            search_text=query,
+            search_fields=["title", CONTENT_FIELD, "content_tokens"],
+            **search_args,
+        ))
+        return query_rank, query, rows, round((perf_counter() - started) * 1000, 2)
+
+    with ThreadPoolExecutor(max_workers=max(1, len(queries))) as pool:
+        futures = [pool.submit(lexical, item) for item in enumerate(queries)]
+        for future in as_completed(futures):
+            try:
+                query_rank, query, rows, duration_ms = future.result()
+            except Exception:
+                continue
+            calls.append({"kind": "lexical", "query": query, "duration_ms": duration_ms, "result_count": len(rows)})
+            for rank, result in enumerate(rows, start=1):
+                record = dict(result)
+                record_id = str(record.get("id") or "")
+                if not record_id:
+                    continue
+                records_by_id.setdefault(record_id, {}).update(record)
+                rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), rank + query_rank * 100)
+
+    # Vector retrieval is a bounded recall aid only when lexical retrieval is
+    # sparse; it can never override local version/provenance validation.
+    if len(records_by_id) < 4:
+        try:
+            started = perf_counter()
+            embedding = _embed_texts([user_message], config, client=client)[0]
+            vector_query = VectorizedQuery(
+                vector=embedding,
+                k_nearest_neighbors=min(CANDIDATE_POOL_SIZE, 20),
+                fields=CONTENT_VECTOR_FIELD,
+            )
+            rows = list(search_client.search(search_text=None, vector_queries=[vector_query], **search_args))
+            calls.append({"kind": "vector", "query": "<embedding:user_message>", "duration_ms": round((perf_counter() - started) * 1000, 2), "result_count": len(rows)})
+            for rank, result in enumerate(rows, start=1):
+                record = dict(result)
+                record_id = str(record.get("id") or "")
+                if record_id:
+                    records_by_id.setdefault(record_id, {}).update(record)
+                    rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), rank + 200)
+        except Exception:
+            calls.append({"kind": "vector", "query": "<embedding:user_message>", "duration_ms": 0.0, "result_count": 0, "error": "unavailable"})
+    ordered = sorted(records_by_id.values(), key=lambda record: rank_by_id.get(str(record.get("id") or ""), 10_000))
+    return ordered, rank_by_id, calls
+
+
 def retrieve_ai_first_candidates(
     user_message: str, config, client=None, limit: int = MAX_AI_FIRST_CANDIDATES
 ) -> AIFirstRetrieval:
@@ -577,37 +648,23 @@ def retrieve_ai_first_candidates(
     # suitable for Teams.
     anchors = []
     if getattr(config, "ai_first_legacy_anchors", False) and getattr(config, "ai_first_anchor_only", False):
-        # Run the bounded planner queries rather than only the conversational
-        # wording.  This recovers procedures whose technical identifier is in
-        # an introductory/background clause, while retaining the same Azure,
-        # provenance and version gates.
-        seen_anchor_keys: set[tuple[str, str, str]] = set()
-        for query in plan.retrieval_queries[:3]:
-            try:
-                retrieved = retrieve_azure_search_evidence(query, config, client=client)
-            except Exception:
-                retrieved = []
-            for source in retrieved:
-                key = (str(source.titulo), str(source.ubicacion), str(source.fragmento))
-                if key not in seen_anchor_keys:
-                    seen_anchor_keys.add(key)
-                    anchors.append(source)
+        records, _rank_by_id, azure_calls = _retrieve_hybrid_records(user_message, plan, config, client)
+        allowed_sources = getattr(config, "sharepoint_sources", None) or tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
+        allowed_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
+        safe_records = [
+            record for record in records
+            if _record_has_authorized_provenance(record, allowed_sources, allowed_labels)
+            and not _record_contains_document_injection(record)
+        ]
+        anchors = [(_source_from_record(record), record) for record in safe_records if _source_from_record(record).fragmento]
         if anchors:
             candidates = []
             anchor_observations = []
             bounded_anchors = anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
             anchor_records = []
-            for index, source in enumerate(bounded_anchors, start=1):
-                record = {
-                    "id": f"anchor:{source.document_id or source.titulo}:{index}",
-                    "title": source.titulo,
-                    "source_url": source.ubicacion,
-                    "document_id": source.document_id,
-                    "document_version": source.document_version,
-                    "folder_path": source.folder_path,
-                    CONTENT_FIELD: source.fragmento,
-                    CONTEXT_FIELD: source.descripcion,
-                }
+            for index, (source, raw_record) in enumerate(bounded_anchors, start=1):
+                record = dict(raw_record)
+                record["id"] = f"anchor:{source.document_id or source.titulo}:{index}"
                 anchor_records.append((source, record))
             by_document: dict[str, list[dict]] = {}
             for _source, record in anchor_records:
@@ -626,7 +683,7 @@ def retrieve_ai_first_candidates(
                     "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
                     "azure_rank": index,
                 }))
-            return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(anchors), candidate_observations=anchor_observations)
+            return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(records), candidate_observations=anchor_observations, azure_calls=azure_calls)
 
     search_client = SearchClient(
         endpoint=config.azure_search_endpoint,
