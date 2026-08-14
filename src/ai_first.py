@@ -1604,7 +1604,7 @@ def retrieve_ai_first_candidates(
         # Preserve ambiguity even when provenance filtering removed every
         # versioned record.  The safe outcome is to ask for the release,
         # never to relabel a known ambiguity as absent evidence.
-        if len(identity_versions) <= 1 and len(raw_identity_versions) > 1 and not sanitized_records:
+        if len(raw_identity_versions) > 1:
             rejected["ambiguous_version_identity"] = len(raw_identity_versions)
             observations.append({
                 "accepted": False,
@@ -1612,7 +1612,8 @@ def retrieve_ai_first_candidates(
                 "version_requested": "",
                 "version_detected": sorted(raw_identity_versions),
             })
-        if len(identity_versions) > 1:
+            sanitized_records = []
+        elif len(identity_versions) > 1:
             rejected["ambiguous_version_identity"] = len(sanitized_records)
             for record in sanitized_records:
                 observations.append({
