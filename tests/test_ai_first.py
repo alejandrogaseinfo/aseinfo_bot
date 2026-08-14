@@ -16,6 +16,7 @@ from ai_first import (
     judge_ai_first_candidates,
     retrieve_ai_first_candidates,
 )
+import ai_first
 from models import EvidenceSource
 
 
@@ -426,6 +427,28 @@ class AIFirstTests(unittest.TestCase):
             retrieval = retrieve_ai_first_candidates("Después de reinstalar MSDTC, ¿qué validamos en ambos servidores?", config)
         self.assertEqual(2, len(retrieval.candidates))
         self.assertTrue(all(item["accepted"] for item in retrieval.candidate_observations))
+
+    def test_generic_ranking_prefers_direct_document_over_incidental(self):
+        question = "¿Qué documentos se pueden gestionar? Dame algunos ejemplos."
+        plan = ai_first.build_query_plan(question)
+        direct = _record(
+            "direct", "Gestion de documentos.pdf — Página 4",
+            "Se pueden gestionar Formularios, Manuales, Procedimientos e Instructivos.",
+            document_id="direct-doc",
+        )
+        incidental = _record(
+            "incidental", "Manual de infraestructura.pdf — Página 1",
+            "El sistema documenta parámetros generales del servidor.",
+            document_id="incidental-doc",
+        )
+        selected = ai_first._select_diverse_judge_records(
+            [incidental, direct], {"direct": 2, "incidental": 1}, question, 2, plan
+        )
+        self.assertEqual("direct", selected[0]["id"])
+        self.assertGreater(
+            ai_first._candidate_selection_details(direct, plan, question)["selection_score"],
+            ai_first._candidate_selection_details(incidental, plan, question)["selection_score"],
+        )
 
     def test_direct_response_redacts_sql_implementation_from_user_summary(self):
         _FakeSearchClient.records = [_record(

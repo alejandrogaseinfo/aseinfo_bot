@@ -242,6 +242,57 @@ def _candidate_coverage_score(record: dict, query_tokens: set[str]) -> int:
     return score
 
 
+def _candidate_selection_details(
+    record: dict, plan: QueryPlan, user_message: str, aggregate_text: str | None = None
+) -> dict[str, object]:
+    """Return auditable, generic ranking components for an eligible record."""
+    coverage = _record_coverage(record, plan, aggregate_text)
+    text = aggregate_text or " ".join(
+        str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)
+    )
+    concepts = set(concept_keys(text))
+    action_hits = sum(
+        _concept_present(action, concepts)
+        for requirement in plan.requirements
+        for action in _requirement_profile(requirement)["action"]
+    )
+    content_score = _candidate_coverage_score(record, set(tokenize(user_message)))
+    version_score = 20 if coverage["version_compatible"] else -100
+    strong_score = int(coverage["strong_hits"] or 0) * 100
+    action_score = action_hits * 30
+    topic_score = int(coverage["topic_hits"] or 0) * 20
+    content_component = min(content_score, 20)
+    generic_penalty = 0
+    if not coverage["strong_hits"]:
+        generic_penalty += 18
+    if not coverage["topic_hits"]:
+        generic_penalty += 25
+    if _identity_contradicts_fragment_version(record):
+        generic_penalty += 60
+    total = strong_score + action_score + topic_score + content_component + version_score - generic_penalty
+    selection_class = (
+        "strong_anchor" if coverage["strong_hits"]
+        else "thematic" if coverage["topic_hits"]
+        else "incidental"
+    )
+    return {
+        **coverage,
+        "selection_class": selection_class,
+        "selection_score": total,
+        "score_components": {
+            "strong_anchor": strong_score,
+            "action": action_score,
+            "topic": topic_score,
+            "content": content_component,
+            "version": version_score,
+            "generic_penalty": -generic_penalty,
+        },
+        "action_hits": action_hits,
+        "document_group": _document_key(record),
+        "discard_reason": "incidental" if selection_class == "incidental" else "",
+    }
+
+
 def _concept_present(concept: str, concepts: set[str]) -> bool:
     return concept in concepts or any(
         len(concept) >= 5 and len(candidate) >= 5
@@ -504,17 +555,12 @@ def _select_diverse_judge_records(
 
     def rank_key(record: dict) -> tuple[int, int, int, int, int, str]:
         record_id = str(record.get("id") or "")
-        anchor_score = 0
-        topic_score = 0
-        if plan is not None:
-            coverage = _record_coverage(record, plan)
-            anchor_score = int(coverage.get("strong_hits") or 0)
-            topic_score = int(coverage.get("topic_hits") or 0)
+        details = _candidate_selection_details(record, plan, user_message) if plan is not None else {}
         return (
             int(_identity_contradicts_fragment_version(record)),
-            -anchor_score,
-            -topic_score,
-            -_candidate_coverage_score(record, query_tokens),
+            -int(details.get("selection_score", 0)),
+            -int(details.get("strong_hits", 0)),
+            -int(details.get("topic_hits", 0)),
             rank_by_id.get(record_id, 10_000),
             record_id,
         )
@@ -657,9 +703,27 @@ def retrieve_ai_first_candidates(
             if _record_has_authorized_provenance(record, allowed_sources, allowed_labels)
             and not _record_contains_document_injection(record)
         ]
-        anchors = [(_source_from_record(record), record) for record in safe_records if _source_from_record(record).fragmento]
+        safe_by_document: dict[str, list[dict]] = {}
+        for record in safe_records:
+            safe_by_document.setdefault(_document_key(record), []).append(record)
+        selection_observations: list[dict[str, object]] = []
+        pool_records: list[dict] = []
+        for record in safe_records:
+            aggregate_text = " ".join(
+                " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+                for item in safe_by_document[_document_key(record)]
+            )
+            details = _candidate_selection_details(record, plan, user_message, aggregate_text)
+            details["candidate_id"] = str(record.get("id") or "")
+            selection_observations.append(details)
+            if details["selection_class"] in {"strong_anchor", "thematic"}:
+                pool_records.append(record)
+        selected_records = _select_diverse_judge_records(
+            pool_records, _rank_by_id, user_message, limit, plan
+        )
+        anchors = [(_source_from_record(record), record) for record in selected_records if _source_from_record(record).fragmento]
         candidates = []
-        anchor_observations = []
+        anchor_observations = selection_observations
         bounded_anchors = anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
         anchor_records = []
         for index, (source, raw_record) in enumerate(bounded_anchors, start=1):
