@@ -931,29 +931,9 @@ def _select_diverse_judge_records(
     if (best_complete and (first_complete or len(selected) >= 2) and not preserve_version_diversity) or len(selected) >= bounded_limit:
         return selected[:bounded_limit]
 
-    # If the best group is incomplete, retain only a small number of genuinely
-    # competitive alternatives.  This prevents many Readme/Oracle variants
-    # with generic token overlap from crowding out complementary evidence.
-    best_score = int(_candidate_selection_details(best_group[2][0], plan, user_message).get("selection_score", 0)) if best_group and plan else 0
-    alternative_groups = []
-    for group in ranked_groups[1:]:
-        group_score = int(_candidate_selection_details(group[2][0], plan, user_message).get("selection_score", 0)) if plan else 0
-        if group_score >= max(0, best_score - 160):
-            alternative_groups.append(group)
-        if len(alternative_groups) >= 2:
-            break
-    selected_groups = [best_group] if best_group else []
-    selected_groups.extend(alternative_groups)
-    for _group_rank, _document_key_value, fragments in selected_groups[1:]:
-        for record in fragments:
-            if record not in selected:
-                selected.append(record)
-                if len(selected) >= bounded_limit:
-                    return selected
-
-    # Deliberately stop after the bounded alternatives.  Remaining groups are
-    # diagnostic-only; filling every free slot would reintroduce the generic
-    # Readme/Oracle contamination this ranking is designed to prevent.
+    # An incomplete best group remains the only LLM candidate set.  Other
+    # groups are diagnostic-only: presenting them as equivalent evidence would
+    # let an incidental Oracle/Readme fragment mask the safe abstention.
     return selected
 
 

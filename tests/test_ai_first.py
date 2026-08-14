@@ -620,7 +620,7 @@ class AIFirstTests(unittest.TestCase):
         selected = ai_first._select_diverse_judge_records(
             [incomplete, incidental], {"incomplete": 1, "oracle": 2}, question, 2, plan
         )
-        self.assertEqual("incomplete", selected[0]["id"])
+        self.assertEqual(["incomplete"], [record["id"] for record in selected])
         self.assertFalse(ai_first._group_facet_matrix(selected[:1], plan)["missing"] == [])
 
     def test_artifact_identity_query_preserves_substantive_terms(self):
