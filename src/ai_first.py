@@ -597,7 +597,8 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
         for future in as_completed(futures):
             try:
                 query_rank, query, rows, duration_ms = future.result()
-            except Exception:
+            except Exception as exc:
+                calls.append({"kind": "lexical", "query": "<redacted>", "duration_ms": 0.0, "result_count": 0, "error": error_code(exc)})
                 continue
             calls.append({"kind": "lexical", "query": query, "duration_ms": duration_ms, "result_count": len(rows)})
             for rank, result in enumerate(rows, start=1):
@@ -657,33 +658,34 @@ def retrieve_ai_first_candidates(
             and not _record_contains_document_injection(record)
         ]
         anchors = [(_source_from_record(record), record) for record in safe_records if _source_from_record(record).fragmento]
-        if anchors:
-            candidates = []
-            anchor_observations = []
-            bounded_anchors = anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
-            anchor_records = []
-            for index, (source, raw_record) in enumerate(bounded_anchors, start=1):
-                record = dict(raw_record)
-                record["id"] = f"anchor:{source.document_id or source.titulo}:{index}"
-                anchor_records.append((source, record))
-            by_document: dict[str, list[dict]] = {}
-            for _source, record in anchor_records:
-                by_document.setdefault(_document_key(record), []).append(record)
-            for index, (source, record) in enumerate(anchor_records, start=1):
-                aggregate_text = " ".join(
-                    " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
-                    for item in by_document[_document_key(record)]
-                )
-                coverage = _record_coverage(record, plan, aggregate_text)
-                anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
-                if not coverage["accepted"]:
-                    continue
-                candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
-                    "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
-                    "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
-                    "azure_rank": index,
-                }))
-            return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(records), candidate_observations=anchor_observations, azure_calls=azure_calls)
+        candidates = []
+        anchor_observations = []
+        bounded_anchors = anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
+        anchor_records = []
+        for index, (source, raw_record) in enumerate(bounded_anchors, start=1):
+            record = dict(raw_record)
+            record["id"] = f"anchor:{source.document_id or source.titulo}:{index}"
+            anchor_records.append((source, record))
+        by_document: dict[str, list[dict]] = {}
+        for _source, record in anchor_records:
+            by_document.setdefault(_document_key(record), []).append(record)
+        for index, (source, record) in enumerate(anchor_records, start=1):
+            aggregate_text = " ".join(
+                " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+                for item in by_document[_document_key(record)]
+            )
+            coverage = _record_coverage(record, plan, aggregate_text)
+            anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
+            if not coverage["accepted"]:
+                continue
+            candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
+                "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
+                "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
+                "azure_rank": index,
+            }))
+        if not candidates and not anchors:
+            anchor_observations.append({"accepted": False, "reason": "sin_evidencia_hibrida"})
+        return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(records), candidate_observations=anchor_observations, azure_calls=azure_calls)
 
     search_client = SearchClient(
         endpoint=config.azure_search_endpoint,
