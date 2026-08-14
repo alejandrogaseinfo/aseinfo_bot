@@ -36,7 +36,7 @@ from grounded_response import _claims_are_supported
 from latency_observability import endpoint_host, error_code, request_hash
 from logging_utils import get_logger
 from models import EvidenceSource
-from query_plan import QueryPlan, build_query_plan
+from query_plan import QueryPlan, build_query_plan, concept_keys
 
 
 MAX_AI_FIRST_CANDIDATES = 12
@@ -46,6 +46,11 @@ MAX_AI_FIRST_CONTEXT_CHARS = 400
 MIN_JUDGE_CONFIDENCE = 0.80
 _VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
 _GENERIC_RANKING_TOKENS = {"evolution", "libras", "documento", "documentos", "manual", "readme"}
+_GENERIC_REQUIREMENT_CONCEPTS = {
+    "cambio", "cambia", "incluye", "indica", "inform", "saber", "dice",
+    "present", "tiene", "usar", "puede", "pued", "hacer",
+    "precauc", "instal", "actualiz", "respaldo", "prepar", "resolver", "cas", "tomo", "sabe",
+}
 logger = get_logger()
 
 
@@ -216,6 +221,73 @@ def _candidate_coverage_score(record: dict, query_tokens: set[str]) -> int:
     return score
 
 
+def _concept_present(concept: str, concepts: set[str]) -> bool:
+    return concept in concepts or any(
+        len(concept) >= 5 and len(candidate) >= 5
+        and (
+            candidate.startswith(concept[:5])
+            or concept.startswith(candidate[:5])
+            or candidate.endswith(concept)
+            or concept.endswith(candidate)
+        )
+        for candidate in concepts
+    )
+
+
+def _candidate_covers_plan(record: dict, plan: QueryPlan) -> bool:
+    """Require substantive question coverage before exposing a record to the LLM."""
+    text = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)
+    )
+    record_concepts = set(concept_keys(text))
+    return any(_record_covers_requirement_concepts(record_concepts, requirement) for requirement in plan.requirements)
+
+
+def _record_covers_requirement_concepts(record_concepts: set[str], requirement) -> bool:
+    """Require substantive concept overlap, ignoring generic question verbs."""
+    required = tuple(
+        concept for concept in requirement.concepts
+        if concept not in _GENERIC_REQUIREMENT_CONCEPTS
+        and concept not in _GENERIC_RANKING_TOKENS
+    )
+    if not required:
+        # A genuinely generic question has no substantive entity to gate; keep
+        # the broad pool and let the local facet/claim validators decide.
+        return True
+    covered = sum(_concept_present(concept, record_concepts) for concept in required)
+    return bool(covered == len(required))
+
+
+def _record_covers_requirements(record: dict, plan: QueryPlan, requirement_ids) -> bool:
+    """Check every requirement claimed for a candidate against its own fragment."""
+    text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    concepts = set(concept_keys(text))
+    requested = set(requirement_ids)
+    requirements = [req for req in plan.requirements if req.identifier in requested]
+    return bool(requirements) and all(_record_covers_requirement_concepts(concepts, req) for req in requirements)
+
+
+def _selected_versions_compatible(selected: list[AIFirstCandidate], plan: QueryPlan) -> bool:
+    """Never combine explicit document versions when the question is unversioned."""
+    if plan.version:
+        return all(_candidate_version_compatible(candidate.record, plan) for candidate in selected)
+    versions: set[str] = set()
+    for candidate in selected:
+        identity = " ".join(str(candidate.record.get(field) or "") for field in ("title", "version", "document_version", "product_version", "release_version"))
+        versions.update(_VERSION_PATTERN.findall(identity))
+    return len(versions) <= 1
+
+
+def _candidate_version_compatible(record: dict, plan: QueryPlan) -> bool:
+    """Allow unknown identity for a caveated answer, but reject contradictions."""
+    if not plan.version:
+        return True
+    if _record_version_matches(record, plan.version):
+        return True
+    return not _record_has_version_identity(record)
+
+
 def _identity_contradicts_fragment_version(record: dict) -> bool:
     """Deprioritize copied changelog text published under another release."""
     title_versions = set(_VERSION_PATTERN.findall(str(record.get("title") or "")))
@@ -381,6 +453,7 @@ def retrieve_ai_first_candidates(
     user_message: str, config, client=None, limit: int = MAX_AI_FIRST_CANDIDATES
 ) -> AIFirstRetrieval:
     """Retrieve broad Azure candidates with only pre-judge safety controls."""
+    plan = build_query_plan(user_message)
     if not getattr(config, "azure_search_enabled", False):
         return AIFirstRetrieval(rejected_reasons={"azure_unavailable": 1})
 
@@ -408,6 +481,8 @@ def retrieve_ai_first_candidates(
                     CONTENT_FIELD: source.fragmento,
                     CONTEXT_FIELD: source.descripcion,
                 }
+                if not _candidate_covers_plan(record, plan) or not _candidate_version_compatible(record, plan):
+                    continue
                 candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
                     "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
                     "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
@@ -499,6 +574,12 @@ def retrieve_ai_first_candidates(
         if _record_contains_document_injection(record):
             rejected["document_injection"] = rejected.get("document_injection", 0) + 1
             continue
+        if not _candidate_covers_plan(record, plan):
+            rejected["cobertura_insuficiente"] = rejected.get("cobertura_insuficiente", 0) + 1
+            continue
+        if not _candidate_version_compatible(record, plan):
+            rejected["version_incompatible"] = rejected.get("version_incompatible", 0) + 1
+            continue
         source = _source_from_record(record)
         if not source.fragmento:
             rejected["empty_fragment"] = rejected.get("empty_fragment", 0) + 1
@@ -534,6 +615,18 @@ def retrieve_ai_first_candidates(
         }
         for index, source in enumerate(anchors)
         if source.fragmento and source.ubicacion
+        and _candidate_covers_plan({
+            "title": source.titulo,
+            CONTENT_FIELD: source.fragmento,
+            CONTEXT_FIELD: source.descripcion,
+            "document_version": source.document_version,
+        }, plan)
+        and _candidate_version_compatible({
+            "title": source.titulo,
+            CONTENT_FIELD: source.fragmento,
+            CONTEXT_FIELD: source.descripcion,
+            "document_version": source.document_version,
+        }, plan)
     ]
     seen_titles = {str(record.get("title") or "") for record in anchor_records}
     candidate_records = anchor_records + [
@@ -718,15 +811,37 @@ def judge_ai_first_candidates(
             log_validator(outcome="error", error="confianza_insuficiente", started_at=validator_started_at)
             return result
         candidate = allowed_candidates[candidate_id]
-        if requested_version and not _record_version_matches(candidate.record, requested_version):
-            result.validator_rejections["version_incompatible"] = result.validator_rejections.get("version_incompatible", 0) + 1
-            seen_ids.add(candidate_id)
-            continue
         normalized_requirements = tuple(dict.fromkeys(str(item) for item in requirements))
+        if not _record_covers_requirements(candidate.record, plan, normalized_requirements):
+            result.abstained = True
+            result.validator_rejections["cobertura_insuficiente"] = 1
+            result.selected.clear()
+            log_validator(outcome="error", error="cobertura_insuficiente", started_at=validator_started_at)
+            return result
+        if requested_version and not _candidate_version_compatible(candidate.record, plan):
+            result.abstained = True
+            result.validator_rejections["version_incompatible"] = 1
+            result.selected.clear()
+            log_validator(outcome="error", error="version_incompatible", started_at=validator_started_at)
+            return result
         result.selected.append(candidate)
         result.selected_requirements[candidate_id] = normalized_requirements
         seen_ids.add(candidate_id)
 
+    if result.selected and not all(
+        any(
+            _record_covers_requirement_concepts(
+                set(concept_keys(" ".join(str(candidate.record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)))),
+                requirement,
+            )
+            for candidate in result.selected
+        )
+        for requirement in plan.requirements
+    ):
+        result.selected.clear()
+        result.selected_requirements.clear()
+        result.abstained = True
+        result.validator_rejections["cobertura_insuficiente"] = 1
     if not result.selected:
         result.abstained = True
     log_validator(started_at=validator_started_at)
@@ -863,6 +978,12 @@ def answer_ai_first_candidates(
         return result
 
     selected = [allowed_candidates[candidate_id] for candidate_id in normalized_ids]
+    if not all(_record_covers_requirements(candidate.record, plan, normalized_requirements) for candidate in selected):
+        result.validator_rejections["cobertura_insuficiente"] = 1
+        return result
+    if not _selected_versions_compatible(selected, plan):
+        result.validator_rejections["version_incompatible"] = 1
+        return result
     if plan.version and any(not _record_version_matches(candidate.record, plan.version) for candidate in selected):
         unversioned_fallback = all(not _record_has_version_identity(candidate.record) for candidate in selected)
         if not (unversioned_fallback and "no confirma" in normalized_answer.casefold()):
