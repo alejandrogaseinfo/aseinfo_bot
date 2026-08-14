@@ -321,6 +321,21 @@ def _candidate_selection_details(
     }
 
 
+def _version_status(record: dict, plan: QueryPlan) -> str:
+    """Classify requested-version evidence without collapsing unknown to mismatch."""
+    if not plan.version:
+        return "compatible"
+    metadata = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", "version", "document_version", "product_version", "release_version", "metadata_version")
+    )
+    versions = {match.group(1).casefold() for match in _VERSION_PATTERN.finditer(metadata)}
+    requested = plan.version.casefold()
+    if requested in versions:
+        return "compatible"
+    return "incompatible" if versions else "no_confirmada"
+
+
 def _visible_fragment_for_plan(record: dict, plan: QueryPlan) -> str:
     """Bound a fragment without cutting away a complete structural identity."""
     raw = str(record.get(CONTENT_FIELD) or record.get(CONTEXT_FIELD) or "")
@@ -573,7 +588,8 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
     topic_hits = 0
     action_hits_total = 0
     strong_required = False
-    version_ok = _candidate_version_compatible(record, plan)
+    version_status = _version_status(record, plan)
+    version_ok = version_status != "incompatible"
     for requirement in plan.requirements:
         profile = _requirement_profile(requirement)
         req_hits = 0
@@ -652,6 +668,7 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
         "action_hits": action_hits_total,
         "version_requested": plan.version or "",
         "version_compatible": version_ok,
+        "version_status": version_status,
         "accepted": accepted,
         "reason": reason,
     }
@@ -692,7 +709,7 @@ def _candidate_version_compatible(record: dict, plan: QueryPlan) -> bool:
     """
     if not plan.version:
         return True
-    return _record_version_matches(record, plan.version)
+    return _version_status(record, plan) != "incompatible"
 
 
 def _identity_contradicts_fragment_version(record: dict) -> bool:
@@ -1124,6 +1141,25 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
         # carries the complete identifier; avoid spending a Search call on it.
         if kind == "structural" and structural_query and structural_query.casefold() in strong_query.casefold():
             continue
+        # A title-only technical query adds no recall when every one of its
+        # normalized terms is already present in the nominal title query.
+        # Keep the conversational and nominal queries; avoid a redundant
+        # zero-result call such as a stem-only technical variant.
+        if kind == "artifact_technical" and artifact_nominal_query:
+            technical_tokens = set(tokenize(query))
+            nominal_tokens = set(tokenize(artifact_nominal_query))
+            # Treat inflected forms as equivalent for redundancy detection,
+            # while retaining the full nominal query for recall.
+            covered_by_nominal = all(
+                any(
+                    token == nominal
+                    or (len(token) >= 4 and len(nominal) >= 4 and (token.startswith(nominal) or nominal.startswith(token)))
+                    for nominal in nominal_tokens
+                )
+                for token in technical_tokens
+            )
+            if technical_tokens and covered_by_nominal:
+                continue
         if query and signature not in seen_query_signatures:
             seen_query_signatures.add(signature)
             queries.append((kind, query, fields))
@@ -1432,6 +1468,7 @@ def retrieve_ai_first_candidates(
                 "document_group": details.get("document_group", ""),
                 "version_requested": plan.version or "",
                 "version_detected": sorted(_identity_versions(record)),
+                "version_status": _version_status(record, plan),
                 "discard_reason": details.get("discard_reason", ""),
                 "coverage": {
                     "selection_class": details["selection_class"],
@@ -1653,6 +1690,7 @@ def retrieve_ai_first_candidates(
             "document_group": details.get("document_group", ""),
             "version_requested": plan.version or "",
             "version_detected": sorted(_identity_versions(record)),
+            "version_status": _version_status(record, plan),
             "discard_reason": details.get("discard_reason", ""),
             "coverage": {
                 "selection_class": details.get("selection_class") if isinstance(details, dict) else "",
@@ -1881,6 +1919,11 @@ def answer_ai_first_candidates(
     plan = build_query_plan(user_message)
     result = AIFirstDirectResponse(plan=plan)
     if not retrieval.candidates or client is None:
+        if retrieval.rejected_reasons.get("ambiguous_version_identity"):
+            result.decision = "request_context"
+            result.answer = "Indica la versión exacta que deseas consultar para revisar la evidencia correcta."
+            result.llm_payload = {"decision": "request_context", "reason": "ambiguous_version_identity"}
+            return result
         result.validator_rejections["sin_candidatos"] = 1
         return result
     try:
@@ -2005,10 +2048,13 @@ def answer_ai_first_candidates(
     if not _selected_versions_compatible(selected, plan):
         result.validator_rejections["version_incompatible"] = 1
         return result
-    if plan.version and any(not _record_version_matches(candidate.record, plan.version) for candidate in selected):
-        unversioned_fallback = all(not _record_has_version_identity(candidate.record) for candidate in selected)
-        if not (unversioned_fallback and "no confirma" in normalized_answer.casefold()):
+    if plan.version and any(_version_status(candidate.record, plan) == "incompatible" for candidate in selected):
+        if not all(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
             result.validator_rejections["version_incompatible"] = 1
+            return result
+    if plan.version and any(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
+        if "no confirma" not in normalized_answer.casefold() and "no confirm" not in normalized_answer.casefold():
+            result.validator_rejections["version_no_confirmada_sin_advertencia"] = 1
             return result
     selected_sources = [candidate.source for candidate in selected]
     normalized_answer = _presentation_safe_answer(

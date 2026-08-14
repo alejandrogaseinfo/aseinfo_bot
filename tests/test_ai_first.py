@@ -623,6 +623,30 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual(["incomplete"], [record["id"] for record in selected])
         self.assertFalse(ai_first._group_facet_matrix(selected[:1], plan)["missing"] == [])
 
+    def test_ambiguous_version_becomes_request_context_not_no_candidates(self):
+        retrieval = AIFirstRetrieval(rejected_reasons={"ambiguous_version_identity": 3})
+        result = answer_ai_first_candidates("¿Qué cambio hubo en jQuery?", retrieval, object(), "test")
+        self.assertEqual("request_context", result.decision)
+        self.assertNotIn("sin_candidatos", result.validator_rejections)
+
+    def test_unconfirmed_version_requires_warning_but_incompatible_is_rejected(self):
+        plan = ai_first.build_query_plan("¿Qué se sabe en la versión 1.24.1.3?")
+        unconfirmed = _record("unknown", "Manual IRA", "La tabla IRA contiene relaciones.")
+        incompatible = _record("wrong", "Readme 1.24.1.5", "Cambios documentados.")
+        self.assertEqual("no_confirmada", ai_first._version_status(unconfirmed, plan))
+        self.assertEqual("incompatible", ai_first._version_status(incompatible, plan))
+
+    def test_redundant_artifact_technical_query_is_omitted(self):
+        _FakeSearchClient.records = [_record("artifact", "Ofuscación de datos SQL", "Ofuscan datos sensibles.")]
+        plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
+        _nominal, technical = ai_first._query_plan_artifact_identity_queries(plan)
+        self.assertTrue(technical)
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            _records, _ranks, calls = ai_first._retrieve_hybrid_records(
+                "¿Cómo se ofuscan datos sensibles en SQL?", plan, _config()
+            )
+        self.assertFalse(any(call.get("kind") == "artifact_technical" for call in calls))
+
     def test_hybrid_retrieval_skips_complete_authorized_document_group(self):
         _FakeSearchClient.records = [
             _record("p1", "Manual DB — Página 1", "ira_instancias_rutas_aut guarda flujos.", document_id="manual-doc"),
