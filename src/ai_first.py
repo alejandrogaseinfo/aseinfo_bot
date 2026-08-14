@@ -829,7 +829,7 @@ def _select_diverse_judge_records(
         while remaining and len(selected) < MAX_AI_FIRST_FRAGMENTS_PER_DOCUMENT:
             before = _group_facet_matrix(selected, plan) if plan else {"covered": {}}
             before_covered = before.get("covered", {})
-            def gain(record: dict) -> tuple[int, int, int, str]:
+            def gain(record: dict) -> tuple[int, int, int, int, str]:
                 after = _group_facet_matrix(selected + [record], plan) if plan else {"covered": {}}
                 after_covered = after.get("covered", {})
                 new_facets = sum(
@@ -837,7 +837,13 @@ def _select_diverse_judge_records(
                     for facet in ("identity", "purpose", "action", "relations", "version")
                 )
                 details = _candidate_selection_details(record, plan, user_message) if plan else {}
-                return (new_facets, int(details.get("selection_score", 0)), -rank_by_id.get(str(record.get("id") or ""), 10_000), str(record.get("id") or ""))
+                # Set-cover starts with the fragment that proves the complete
+                # identity.  This prevents a high-scoring topical/cover page
+                # from consuming the first slot and leaving identity outside
+                # the exact payload sent to the LLM.
+                identity = after_covered.get("identity") is True
+                identity_bonus = 1 if not selected and identity else 0
+                return (identity_bonus, new_facets, int(details.get("selection_score", 0)), -rank_by_id.get(str(record.get("id") or ""), 10_000), str(record.get("id") or ""))
             chosen = max(remaining, key=gain)
             selected.append(chosen)
             remaining.remove(chosen)
@@ -848,11 +854,7 @@ def _select_diverse_judge_records(
                 not required.get(facet) or covered.get(facet) is True
                 for facet in ("identity", "purpose", "action", "relations", "version")
             )
-            # A procedure/document group with multiple distinct pages keeps a
-            # second complementary page even when the coarse facet extractor
-            # already marks the first requirement as covered.
-            minimum_group_fragments = 2 if len(best_group[2]) > 1 and bounded_limit > 1 else 1
-            if complete and len(selected) >= minimum_group_fragments:
+            if complete:
                 break
 
     best_matrix = _group_facet_matrix(selected, plan) if plan else {"covered": {}}

@@ -420,7 +420,7 @@ class AIFirstTests(unittest.TestCase):
                     "document_id": "dtc-doc", "source_system": "sharepoint", "folder_path": "SOLUCIONES",
                     "drive_id": "drive-manuales", "content": sources[1].fragmento, "document_context": ""}]
         with patch("ai_first._retrieve_hybrid_records", return_value=(records, {}, [])):
-            retrieval = retrieve_ai_first_candidates("Después de reinstalar MSDTC, ¿qué validamos en ambos servidores?", config)
+            retrieval = retrieve_ai_first_candidates("¿Qué firewall y LOCAL DTC debemos validar en ambos servidores?", config)
         self.assertEqual(2, len(retrieval.candidates))
         self.assertTrue(all(item["accepted"] for item in retrieval.candidate_observations))
 
@@ -567,6 +567,61 @@ class AIFirstTests(unittest.TestCase):
         self.assertIn("relations", first["missing"])
         self.assertTrue(combined["covered"]["identity"])
         self.assertTrue(combined["covered"]["relations"])
+
+    def test_set_cover_starts_with_identity_then_adds_relations(self):
+        question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        plan = ai_first.build_query_plan(question)
+        identity = _record(
+            "identity", "Manual DB — Página 1",
+            "La tabla ira_instancias_rutas_aut guarda los flujos de autorización.",
+            document_id="manual",
+        )
+        relations = _record(
+            "relations", "Manual DB — Página 2",
+            "Sus campos de relación son ira_codrau e ira_codigo_entidad.",
+            document_id="manual",
+        )
+        incidental = _record(
+            "incidental", "Readme Oracle — Página 1",
+            "Oracle documenta solicitudes y rutas de manera general.",
+            document_id="oracle",
+        )
+        selected = ai_first._select_diverse_judge_records(
+            [relations, incidental, identity],
+            {"identity": 3, "relations": 1, "incidental": 2},
+            question,
+            3,
+            plan,
+        )
+        self.assertEqual(["identity", "relations"], [record["id"] for record in selected])
+        self.assertTrue(ai_first._group_facet_matrix(selected, plan)["covered"]["identity"])
+        self.assertTrue(ai_first._group_facet_matrix(selected, plan)["covered"]["relations"])
+
+    def test_set_cover_respects_two_or_three_fragment_limit(self):
+        question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        plan = ai_first.build_query_plan(question)
+        pages = [
+            _record("p1", "Manual DB — Página 1", "ira_instancias_rutas_aut guarda flujos.", document_id="manual"),
+            _record("p2", "Manual DB — Página 2", "Se relaciona con ira_codrau e ira_codigo_entidad.", document_id="manual"),
+            _record("p3", "Manual DB — Página 3", "Notas adicionales del procedimiento.", document_id="manual"),
+            _record("p4", "Manual DB — Página 4", "Otra nota incidental.", document_id="manual"),
+        ]
+        selected = ai_first._select_diverse_judge_records(
+            pages, {record["id"]: index for index, record in enumerate(pages)}, question, 3, plan
+        )
+        self.assertLessEqual(len(selected), 3)
+        self.assertEqual({"p1", "p2"}, {record["id"] for record in selected[:2]})
+
+    def test_incomplete_group_does_not_claim_complete_or_replace_with_incidental(self):
+        question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        plan = ai_first.build_query_plan(question)
+        incomplete = _record("incomplete", "Manual DB", "ira_instancias_rutas_aut guarda flujos.", document_id="manual")
+        incidental = _record("oracle", "Oracle", "Rutas generales de solicitudes.", document_id="oracle")
+        selected = ai_first._select_diverse_judge_records(
+            [incomplete, incidental], {"incomplete": 1, "oracle": 2}, question, 2, plan
+        )
+        self.assertEqual("incomplete", selected[0]["id"])
+        self.assertFalse(ai_first._group_facet_matrix(selected[:1], plan)["missing"] == [])
 
     def test_artifact_identity_query_preserves_substantive_terms(self):
         plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
