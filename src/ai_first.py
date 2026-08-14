@@ -349,7 +349,20 @@ def _visible_fragment_for_plan(record: dict, plan: QueryPlan) -> str:
     raw = str(record.get(CONTENT_FIELD) or record.get(CONTEXT_FIELD) or "")
     if len(raw) <= MAX_AI_FIRST_FRAGMENT_CHARS:
         return raw
-    for _raw_identifier, identifier in _structural_identifiers(plan):
+    identifiers = list(_structural_identifiers(plan))
+    # A nominal acronym/entity can be expanded into the concrete technical
+    # identifier already present in the retrieved document.  This is generic
+    # (no document aliases) and keeps the exact identity physically visible
+    # in the bounded payload when QueryPlan only carried the family name.
+    for entity in _uppercase_nominal_entities(plan):
+        match = re.search(
+            rf"\b(?:[A-Za-z][\w]*\.)?[A-Za-z][A-Za-z0-9]*_{re.escape(entity)}[A-Za-z0-9_]*\b",
+            raw,
+            re.IGNORECASE,
+        )
+        if match:
+            identifiers.append((match.group(0), match.group(0).casefold()))
+    for _raw_identifier, identifier in identifiers:
         position = raw.casefold().find(identifier.casefold())
         if position >= 0:
             start = max(0, position - MAX_AI_FIRST_FRAGMENT_CHARS // 3)
