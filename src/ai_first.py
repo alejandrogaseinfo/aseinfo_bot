@@ -1567,6 +1567,11 @@ def retrieve_ai_first_candidates(
     observations: list[dict[str, object]] = []
     sanitized_records: list[dict] = []
     ordered_records = sorted(records_by_id.values(), key=lambda item: rank_by_id.get(str(item.get("id") or ""), 10_000))
+    raw_identity_versions = {
+        version
+        for record in ordered_records
+        for version in _identity_versions(record)
+    }
     for record in ordered_records:
         if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
             rejected["provenance"] = rejected.get("provenance", 0) + 1
@@ -1589,6 +1594,17 @@ def retrieve_ai_first_candidates(
             for record in sanitized_records
             for version in _identity_versions(record)
         }
+        # Preserve ambiguity even when provenance filtering removed every
+        # versioned record.  The safe outcome is to ask for the release,
+        # never to relabel a known ambiguity as absent evidence.
+        if len(identity_versions) <= 1 and len(raw_identity_versions) > 1 and not sanitized_records:
+            rejected["ambiguous_version_identity"] = len(raw_identity_versions)
+            observations.append({
+                "accepted": False,
+                "reason": "ambiguous_version_identity",
+                "version_requested": "",
+                "version_detected": sorted(raw_identity_versions),
+            })
         if len(identity_versions) > 1:
             rejected["ambiguous_version_identity"] = len(sanitized_records)
             for record in sanitized_records:
