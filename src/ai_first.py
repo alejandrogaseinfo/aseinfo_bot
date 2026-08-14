@@ -292,7 +292,8 @@ def _candidate_selection_details(
         generic_penalty += 25
     if _identity_contradicts_fragment_version(record):
         generic_penalty += 60
-    total = strong_score + action_score + topic_score + content_component + version_score - generic_penalty
+    facet_penalty = 80 if facets["required"].get("identity") and not facets["covered"].get("identity") else 0
+    total = strong_score + action_score + topic_score + content_component + version_score - generic_penalty - facet_penalty
     selection_class = (
         "strong_anchor" if coverage["strong_hits"]
         else "thematic" if coverage["topic_hits"]
@@ -309,6 +310,7 @@ def _candidate_selection_details(
             "content": content_component,
             "version": version_score,
             "generic_penalty": -generic_penalty,
+            "facet_identity_penalty": -facet_penalty,
         },
         "action_hits": action_hits,
         "facets": facets,
@@ -813,6 +815,13 @@ def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = No
     for facet, facet_targets in targets.items():
         if facet == "version":
             covered[facet] = "not_required" if not facet_targets else bool(_candidate_version_compatible(record, plan))
+        elif facet == "identity":
+            identity_hits = sum(_concept_present(target, concepts) for target in facet_targets)
+            # Complete technical identifiers may be tokenized into several
+            # stems. Require a bounded strong-anchor quorum, not a literal
+            # all-words match, so incidental pages cannot look direct.
+            minimum = min(3, len(facet_targets))
+            covered[facet] = bool(facet_targets) and identity_hits >= minimum
         else:
             covered[facet] = bool(facet_targets) and any(
                 _topic_signal_present(target, concepts) if facet in {"purpose", "action", "relations"}
