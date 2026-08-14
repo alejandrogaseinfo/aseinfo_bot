@@ -274,6 +274,7 @@ def _candidate_selection_details(
     text = aggregate_text or " ".join(
         str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)
     )
+
     concepts = set(concept_keys(text))
     action_hits = sum(
         _topic_signal_present(action, concepts)
@@ -318,6 +319,19 @@ def _candidate_selection_details(
         "document_group": _document_key(record),
         "discard_reason": "incidental" if selection_class == "incidental" else "",
     }
+
+
+def _visible_fragment_for_plan(record: dict, plan: QueryPlan) -> str:
+    """Bound a fragment without cutting away a complete structural identity."""
+    raw = str(record.get(CONTENT_FIELD) or record.get(CONTEXT_FIELD) or "")
+    if len(raw) <= MAX_AI_FIRST_FRAGMENT_CHARS:
+        return raw
+    for _raw_identifier, identifier in _structural_identifiers(plan):
+        position = raw.casefold().find(identifier.casefold())
+        if position >= 0:
+            start = max(0, position - MAX_AI_FIRST_FRAGMENT_CHARS // 3)
+            return raw[start:start + MAX_AI_FIRST_FRAGMENT_CHARS]
+    return _bounded_text(raw, MAX_AI_FIRST_FRAGMENT_CHARS)
 
 
 def _query_plan_lexical_queries(plan: QueryPlan) -> tuple[str, str]:
@@ -1360,6 +1374,7 @@ def retrieve_ai_first_candidates(
         for index, (source, raw_record) in enumerate(bounded_anchors, start=1):
             record = dict(raw_record)
             record["id"] = f"anchor:{source.document_id or source.titulo}:{index}"
+            source.fragmento = _visible_fragment_for_plan(record, plan)
             anchor_records.append((source, record))
         by_document: dict[str, list[dict]] = {}
         for _source, record in anchor_records:
