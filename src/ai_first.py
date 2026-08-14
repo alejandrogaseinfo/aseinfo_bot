@@ -939,12 +939,15 @@ def _select_diverse_judge_records(
         version_alternatives: list[dict] = list(selected)
         for _rank, _document_key_value, fragments in ranked_groups[1:]:
             group_matrix = _group_facet_matrix(fragments, plan) if plan else {"covered": {}}
+            identity_ok = group_matrix.get("covered", {}).get("identity") is True
+            if plan and _structural_identifiers(plan):
+                identity_ok = any(_structural_identifier_covered(fragment, plan) for fragment in fragments)
             # Version-diversity diagnostics are limited to groups that share
             # the requested technical identity; incidental Oracle/Readme
             # documents must not become competing evidence.
             if (
                 fragments
-                and group_matrix.get("covered", {}).get("identity") is True
+                and identity_ok
                 and fragments[0] not in version_alternatives
             ):
                 version_alternatives.append(fragments[0])
