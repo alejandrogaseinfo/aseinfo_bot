@@ -931,9 +931,18 @@ def _select_diverse_judge_records(
     if (best_complete and (first_complete or len(selected) >= 2) and not preserve_version_diversity) or len(selected) >= bounded_limit:
         return selected[:bounded_limit]
 
-    # An incomplete best group remains the only LLM candidate set.  Other
-    # groups are diagnostic-only: presenting them as equivalent evidence would
-    # let an incidental Oracle/Readme fragment mask the safe abstention.
+    # An incomplete best group remains the only LLM candidate set.  The one
+    # exception is an unversioned question with genuinely different document
+    # versions: retain one fragment per version so the validator can reject a
+    # mixed selection explicitly rather than hiding the ambiguity.
+    if preserve_version_diversity:
+        version_alternatives: list[dict] = list(selected)
+        for _rank, _document_key_value, fragments in ranked_groups[1:]:
+            if fragments and fragments[0] not in version_alternatives:
+                version_alternatives.append(fragments[0])
+            if len(version_alternatives) >= bounded_limit:
+                break
+        return version_alternatives[:bounded_limit]
     return selected
 
 
