@@ -941,7 +941,7 @@ def _select_diverse_judge_records(
             group_matrix = _group_facet_matrix(fragments, plan) if plan else {"covered": {}}
             identity_ok = group_matrix.get("covered", {}).get("identity") is True
             if plan and _structural_identifiers(plan):
-                identity_ok = any(_structural_identifier_covered(fragment, plan) for fragment in fragments)
+                identity_ok = any(_structural_identifier_exact_covered(fragment, plan) for fragment in fragments)
             # Version-diversity diagnostics are limited to groups that share
             # the requested technical identity; incidental Oracle/Readme
             # documents must not become competing evidence.
@@ -1023,6 +1023,17 @@ def _structural_identifier_covered(record: dict, plan: QueryPlan) -> bool:
     return any(identifier in normalized for _raw, identifier in identifiers)
 
 
+def _structural_identifier_exact_covered(record: dict, plan: QueryPlan) -> bool:
+    """Require the complete structural identifier in the exact fragment."""
+    identifiers = _structural_identifiers(plan)
+    if not identifiers:
+        return True
+    text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    normalized = unicodedata.normalize("NFKD", text).casefold()
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return any(re.search(rf"(?<![a-z0-9_]){re.escape(identifier)}(?![a-z0-9_])", normalized) for _raw, identifier in identifiers)
+
+
 def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = None) -> dict[str, object]:
     """Return required/covered/missing facets for one fragment or group."""
     text = aggregate_text or " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
@@ -1039,7 +1050,7 @@ def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = No
         elif facet == "identity":
             structural_required = bool(_structural_identifiers(plan))
             if structural_required:
-                covered[facet] = _structural_identifier_covered(record, plan)
+                covered[facet] = _structural_identifier_exact_covered(record, plan)
                 continue
             identity_hits = sum(_concept_present(target, concepts) for target in facet_targets)
             # Complete technical identifiers may be tokenized into several
@@ -1065,7 +1076,7 @@ def _group_facet_matrix(records: list[dict], plan: QueryPlan) -> dict[str, objec
     )
     matrix = _facet_matrix(records[0] if records else {}, plan, combined)
     if _structural_identifiers(plan):
-        matrix["covered"]["identity"] = any(_structural_identifier_covered(record, plan) for record in records)
+        matrix["covered"]["identity"] = any(_structural_identifier_exact_covered(record, plan) for record in records)
         matrix["missing"] = [
             facet for facet, required in matrix["required"].items()
             if required and matrix["covered"].get(facet) is not True
