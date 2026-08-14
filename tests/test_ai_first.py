@@ -70,7 +70,7 @@ class AIFirstTests(unittest.TestCase):
             retrieval = retrieve_ai_first_candidates("¿Cómo resolver el caso?", _config())
 
         self.assertEqual([], retrieval.candidates)
-        self.assertEqual(1, retrieval.rejected_reasons["cobertura_insuficiente"])
+        self.assertEqual(1, retrieval.rejected_reasons["cobertura_temática_insuficiente"])
 
     def test_prejudge_controls_remove_injection_and_unauthorized_sources(self):
         _FakeSearchClient.records = [
@@ -447,7 +447,7 @@ class AIFirstTests(unittest.TestCase):
         with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
             retrieval = retrieve_ai_first_candidates("¿Qué cambio de jQuery incluye Evolution 1.24.1.2?", _config())
         self.assertFalse(retrieval.candidates)
-        self.assertEqual(1, retrieval.rejected_reasons["cobertura_insuficiente"])
+        self.assertEqual(1, retrieval.rejected_reasons["version_incompatible"])
 
     def test_unversioned_question_does_not_mix_incompatible_document_versions(self):
         _FakeSearchClient.records = [
@@ -463,6 +463,27 @@ class AIFirstTests(unittest.TestCase):
         result = answer_ai_first_candidates("¿Qué se sabe de la tabla IRA?", retrieval, FakeClient(), "answer-model")
         self.assertEqual("abstain", result.decision)
         self.assertEqual(1, result.validator_rejections["version_incompatible"])
+
+    def test_coverage_allows_paraphrase_and_adjacent_fragments(self):
+        _FakeSearchClient.records = [
+            _record("ira-1", "Manual IRA — Página 1", "La tabla ira_instancias_rutas_aut almacena los flujos existentes.", document_id="ira-doc"),
+            _record("ira-2", "Manual IRA — Página 2", "Las relaciones se establecen mediante ira_codrau e ira_codigo_entidad.", document_id="ira-doc"),
+        ]
+        question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates(question, _config())
+        self.assertEqual(2, len(retrieval.candidates))
+        self.assertTrue(all(item["accepted"] for item in retrieval.candidate_observations))
+        self.assertTrue(all("r1" in item["covered_requirements"] for item in retrieval.candidate_observations))
+
+    def test_observability_records_rejected_reason_and_missing_requirements(self):
+        _FakeSearchClient.records = [_record("incidental", "Manual general", "El documento describe procesos administrativos.")]
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates("¿Qué cambio de jQuery incluye Evolution 1.24.1.2?", _config())
+        rejected = next(item for item in retrieval.candidate_observations if item["candidate_id"] == "incidental")
+        self.assertFalse(rejected["accepted"])
+        self.assertIn(rejected["reason"], {"sin_anclaje_fuerte", "cobertura_temática_insuficiente", "version_incompatible"})
+        self.assertTrue(rejected["missing_requirements"])
 
 
 if __name__ == "__main__":
