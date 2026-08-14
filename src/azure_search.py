@@ -1603,6 +1603,117 @@ def _legacy_url_has_authorized_source(
     return any(marker in normalized_url for marker in allowed_markers)
 
 
+def normalize_record_provenance(
+    record: dict, allowed_sources: tuple = (), allowed_source_labels: tuple = ()
+) -> tuple[dict | None, dict[str, object]]:
+    """Normalize incomplete SharePoint provenance without widening the scope.
+
+    Indexed records sometimes have a drive and URL but no ``folder_path``.
+    Such a record is accepted only when the URL identifies one (and only one)
+    configured library.  The returned copy carries bounded diagnostics so
+    callers can explain whether provenance was explicit, derived, or rejected.
+    """
+    original = str(record.get("folder_path") or "").strip("/")
+    base = {
+        "folder_path_original": original,
+        "folder_path_derived": "",
+        "provenance_signal": "",
+        "provenance_status": "rechazada",
+    }
+    url = str(record.get("source_url") or "").strip()
+    if record.get("source_system") != "sharepoint" or not url.startswith("https://"):
+        base["provenance_signal"] = "source_system_or_https_url"
+        base["provenance_reason"] = "non_corporate_sharepoint_record"
+        return None, base
+    if not allowed_sources:
+        base.update(provenance_status="explícita" if original else "rechazada", provenance_signal="unscoped_explicit_path")
+        if original:
+            normalized = dict(record)
+            normalized.update(folder_path=original, **base)
+            return normalized, base
+        base["provenance_reason"] = "missing_configured_allowlist"
+        return None, base
+    pairs = [s for s in allowed_sources if isinstance(s, (tuple, list)) and len(s) == 2]
+    if not pairs:
+        allowed_paths = {str(s or "").strip("/").casefold() for s in allowed_sources}
+        if original.casefold() in allowed_paths:
+            normalized = dict(record)
+            normalized.update(folder_path=original, provenance_status="explícita", folder_path_original=original,
+                              provenance_signal="folder_path")
+            base.update(provenance_status="explícita", provenance_signal="folder_path")
+            return normalized, base
+        base["provenance_reason"] = "folder_not_allowlisted"
+        return None, base
+
+    drive = str(record.get("drive_id") or "").strip()
+    labels = tuple(str(label).strip() for label in (allowed_source_labels or ()))
+    matching_pairs = [(str(folder or "").strip("/"), str(drive_id or "").strip()) for folder, drive_id in pairs]
+    if original:
+        if any(original.casefold() == folder.casefold() and drive == drive_id for folder, drive_id in matching_pairs):
+            normalized = dict(record)
+            normalized.update(folder_path=original, provenance_status="explícita", folder_path_original=original,
+                              provenance_signal="folder_path+drive_id")
+            base.update(provenance_status="explícita", provenance_signal="folder_path+drive_id")
+            return normalized, base
+        base.update(provenance_signal="folder_path+drive_id", provenance_reason="path_drive_not_allowlisted")
+        return None, base
+    if not drive or drive not in {drive_id for _folder, drive_id in matching_pairs}:
+        base.update(provenance_signal="drive_id", provenance_reason="missing_or_unauthorized_drive_id")
+        return None, base
+
+    # Test/local configurations predating library labels may provide only a
+    # single authorized drive. Keep that explicit scope usable; production
+    # configurations include labels and therefore take the strict URL-route
+    # branch below.
+    if not labels and any(folder == "" and drive_id == drive for folder, drive_id in matching_pairs):
+        normalized = dict(record)
+        normalized.update(folder_path="", provenance_status="derivada", folder_path_original="",
+                          folder_path_derived="", provenance_signal="drive_id")
+        base.update(provenance_status="derivada", provenance_signal="drive_id")
+        return normalized, base
+
+    # A derived path is trusted only on a SharePoint corporate host and when
+    # exactly one configured library marker matches the URL.
+    host = (urlparse(url).hostname or "").casefold()
+    decoded_url = unquote(url).casefold()
+    if not (host == "sharepoint.com" or host.endswith(".sharepoint.com")):
+        base.update(provenance_signal="corporate_sharepoint_host", provenance_reason="external_or_unrecognized_host")
+        return None, base
+    candidates: list[tuple[str, str]] = []
+    for folder, drive_id in matching_pairs:
+        if drive_id != drive:
+            continue
+        markers: set[str] = set()
+        if folder:
+            markers.add("/" + folder.casefold().strip("/") + "/")
+        for label in labels:
+            label_key = label.casefold()
+            mapped = _LEGACY_SHAREPOINT_URL_MARKERS.get(label_key)
+            if mapped and (not folder or folder.casefold() in label_key):
+                markers.add(mapped.casefold())
+            elif folder and folder.casefold() in label_key:
+                markers.add("/" + label_key.strip("/") + "/")
+            elif not folder and label_key:
+                markers.add("/" + label_key.strip("/") + "/")
+        for marker in markers:
+            if marker in decoded_url:
+                derived = folder or marker.strip("/").split("/")[-1]
+                candidates.append((derived.strip("/"), marker))
+    unique_paths = {path.casefold() for path, _marker in candidates}
+    if len(unique_paths) != 1:
+        base.update(provenance_signal="url_library_marker+drive_id", provenance_reason="missing_or_ambiguous_authorized_route")
+        return None, base
+    derived, marker = next((path, marker) for path, marker in candidates if path.casefold() in unique_paths)
+    # Preserve configured casing where possible.
+    derived = next((path for path, _marker in candidates if path.casefold() == derived), derived)
+    normalized = dict(record)
+    normalized.update(folder_path=derived, provenance_status="derivada", folder_path_original="",
+                      folder_path_derived=derived, provenance_signal=f"url:{marker}+drive_id")
+    base.update(provenance_status="derivada", folder_path_derived=derived,
+                provenance_signal=f"url:{marker}+drive_id")
+    return normalized, base
+
+
 def _record_has_authorized_provenance(
     record: dict, allowed_sources: tuple = (), allowed_source_labels: tuple = ()
 ) -> bool:
@@ -1614,30 +1725,12 @@ def _record_has_authorized_provenance(
     records without either metadata field are accepted only when their URL
     proves they belong to an explicitly labelled pilot library.
     """
-    has_sharepoint_provenance = (
-        record.get("source_system") == "sharepoint"
-        and str(record.get("source_url") or "").startswith("https://")
-    )
-    if not has_sharepoint_provenance:
-        return False
-    if not allowed_sources:
-        return True
-    record_folder_path = str(record.get("folder_path") or "").strip("/")
-    record_drive_id = str(record.get("drive_id") or "").strip()
-    if all(isinstance(source, (tuple, list)) and len(source) == 2 for source in allowed_sources):
-        if not record_folder_path and not record_drive_id:
-            return _legacy_url_has_authorized_source(
-                record.get("source_url") or "", allowed_source_labels
-            )
-        return any(
-            record_folder_path == str(folder_path or "").strip("/")
-            and record_drive_id == str(drive_id or "").strip()
-            for folder_path, drive_id in allowed_sources
-        )
-    # Legacy single-library configurations only had folder_path available.
-    return record_folder_path in {
-        str(path or "").strip("/") for path in allowed_sources if path is not None
-    }
+    normalized, _diagnostic = normalize_record_provenance(record, allowed_sources, allowed_source_labels)
+    # Preserve the historical URL-marker fallback only for callers that did
+    # not configure labels and supplied no library metadata at all.
+    if normalized is None and not allowed_sources and not str(record.get("folder_path") or "").strip("/"):
+        return bool(record.get("source_system") == "sharepoint" and str(record.get("source_url") or "").startswith("https://"))
+    return normalized is not None
 
 
 def _record_contains_document_injection(record: dict) -> bool:

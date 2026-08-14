@@ -165,7 +165,7 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> 
         }
     )
     if direct.decision == "answer" and sources:
-        decision = BotDecision("resuelto", "alta", direct.answer, sources)
+        decision = BotDecision("resuelto", "alta", direct.answer, sources, version_warning=direct.version_warning)
         result["grounded_used"] = True
     elif direct.decision == "request_context":
         decision = BotDecision(

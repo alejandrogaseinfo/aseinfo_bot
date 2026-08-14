@@ -118,6 +118,8 @@ def format_user_response(decision: BotDecision, config=None) -> str:
         f"{decision.resumen}\n\n"
         f"{source_label}: {' | '.join(source_titles)} — {_source_label(decision)}"
     )
+    if decision.version_warning and decision.version_warning.casefold() not in response.casefold():
+        response += f"\nAdvertencia: {decision.version_warning}"
     if any(source.version_confirmed is False for source in decision.fuentes):
         response += (
             "\nNota: La fuente encontrada documenta la estructura técnica, "

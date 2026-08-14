@@ -29,6 +29,7 @@ from azure_search import (
     _embed_texts,
     _record_contains_document_injection,
     _record_has_authorized_provenance,
+    normalize_record_provenance,
     _is_script_record,
     _install_search_observer,
     retrieve_azure_search_evidence,
@@ -1528,13 +1529,16 @@ def retrieve_ai_first_candidates(
         safe_records = []
         prefilter_observations: list[dict[str, object]] = []
         for record in records:
-            if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
+            normalized_record, provenance_diag = normalize_record_provenance(record, allowed_sources, allowed_labels)
+            if normalized_record is None:
                 prefilter_observations.append({
                     "candidate_id": str(record.get("id") or ""),
                     "retrieval_status": "discarded",
                     "discard_reason": "provenance",
+                    **provenance_diag,
                 })
                 continue
+            record = normalized_record
             if _record_contains_document_injection(record):
                 prefilter_observations.append({
                     "candidate_id": str(record.get("id") or ""),
@@ -1738,10 +1742,12 @@ def retrieve_ai_first_candidates(
             title = str(top.get("title") or "") if isinstance(top, dict) else str(top)
             raw_identity_versions.update(match.group(1) for match in _VERSION_PATTERN.finditer(title))
     for record in ordered_records:
-        if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
+        normalized_record, provenance_diag = normalize_record_provenance(record, allowed_sources, allowed_labels)
+        if normalized_record is None:
             rejected["provenance"] = rejected.get("provenance", 0) + 1
-            observations.append({"candidate_id": str(record.get("id") or ""), "accepted": False, "reason": "provenance"})
+            observations.append({"candidate_id": str(record.get("id") or ""), "accepted": False, "reason": "provenance", **provenance_diag})
             continue
+        record = normalized_record
         if _record_contains_document_injection(record):
             rejected["document_injection"] = rejected.get("document_injection", 0) + 1
             observations.append({"candidate_id": str(record.get("id") or ""), "accepted": False, "reason": "document_injection"})
@@ -1797,6 +1803,10 @@ def retrieve_ai_first_candidates(
             "candidate_id": str(record.get("id") or ""),
             **details,
             "version_detected": sorted(_identity_versions(record)),
+            "provenance_status": record.get("provenance_status"),
+            "folder_path_original": record.get("folder_path_original", ""),
+            "folder_path_derived": record.get("folder_path_derived", ""),
+            "provenance_signal": record.get("provenance_signal", ""),
         }
         observations.append(observation)
         if not coverage["accepted"]:
@@ -2263,8 +2273,11 @@ def answer_ai_first_candidates(
             result.validator_rejections["version_no_confirmada_sin_advertencia"] = 1
             return result
         if "no confirma" not in answer_lower or "versión" not in answer_lower:
-            result.validator_rejections["version_no_confirmada_sin_advertencia"] = 1
-            return result
+            # Carry the validated contract caveat into the answer that is
+            # passed to the remaining local validators and final formatter.
+            # The warning is mandatory; appending it here preserves the
+            # strict validator while preventing transport loss downstream.
+            normalized_answer = f"{normalized_answer} {warning}".strip()
         result.version_warning = warning
     elif plan.version:
         if version_warning is not None:

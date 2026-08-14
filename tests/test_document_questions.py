@@ -2239,6 +2239,7 @@ class DocumentQuestionTests(unittest.TestCase):
                 {
                     "source_system": "sharepoint",
                     "source_url": "https://contoso.sharepoint.com/sites/x/ReadME%20Hotfixes/Readme.pdf",
+                    "drive_id": "drive-readme",
                 },
                 approved_sources,
                 labels,

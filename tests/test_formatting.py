@@ -12,6 +12,22 @@ from models import BotDecision, EvidenceSource
 
 
 class FormattingTests(unittest.TestCase):
+    def test_version_warning_is_preserved_in_final_response(self):
+        warning = "La fuente no confirma compatibilidad con la versión consultada."
+        response = format_user_response(
+            BotDecision(
+                estado="resuelto",
+                confianza="alta",
+                resumen="La tabla documenta los flujos existentes.",
+                fuentes=[EvidenceSource(
+                    tipo="sharepoint", titulo="Manual IRA", ubicacion="https://contoso.example/ira.pdf",
+                    fragmento="La tabla documenta los flujos existentes.",
+                )],
+                version_warning=warning,
+            )
+        )
+        self.assertIn(warning, response)
+
     def test_page_and_document_suffixes_become_a_short_link_label(self):
         response = format_user_response(
             BotDecision(

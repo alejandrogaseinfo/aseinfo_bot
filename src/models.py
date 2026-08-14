@@ -35,6 +35,9 @@ class BotDecision:
     fuentes: list[EvidenceSource] = field(default_factory=list)
     siguiente_accion: str = ""
     requiere_escalamiento: bool = False
+    # Caveat propagated from the AI-first contract for an explicitly requested
+    # version that the cited source does not confirm.
+    version_warning: str | None = None
 
 
 @dataclass

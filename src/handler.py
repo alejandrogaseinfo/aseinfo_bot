@@ -1118,6 +1118,7 @@ async def _process_ai_first_experimental(
             fuentes=sources,
             siguiente_accion="",
             requiere_escalamiento=False,
+            version_warning=direct_response.version_warning,
         )
     elif direct_response.decision == "request_context":
         decision = BotDecision(
