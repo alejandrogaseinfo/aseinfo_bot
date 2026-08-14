@@ -130,7 +130,7 @@ inventes campos, pasos, versiones ni enlaces. No escribas citas ni URLs: el
 sistema agregará las fuentes validadas localmente.
 
 Devuelve solamente JSON con este contrato exacto:
-{"decision":"answer|request_context|abstain","answer":"...","selected_candidate_ids":["c01"],"requirements":["r1"],"confidence":0.0}
+{"decision":"answer|request_context|abstain","answer":"...","selected_candidate_ids":["c01"],"requirements":["r1"],"confidence":0.0,"version_warning":"string|null"}
 
 Reglas:
 - Para "answer", selecciona uno o más candidate_id y los requirement_id que
@@ -151,6 +151,13 @@ Reglas:
   la cobertura directa sea insuficiente; nunca conviertas una fuente sin
   versión en una coincidencia implícita. La ausencia de versión, por sí sola,
   no constituye cobertura insuficiente.
+- El campo version_warning es obligatorio en la salida: usa null para una
+  fuente compatible; para no_confirmada usa un texto no vacío y la respuesta
+  debe indicar que la fuente no confirma compatibilidad con la versión
+  consultada; una fuente incompatible no puede producir answer. Ejemplo
+  genérico: si el fragmento describe el procedimiento solicitado pero no
+  confirma la versión indicada, devuelve answer, version_warning con esa
+  advertencia explícita y no inventes la correspondencia.
 - Si pregunta en qué versión ocurrió un cambio, indica la versión exacta que
   aparece en el candidato seleccionado. No uses un candidato cuyo título de
   versión contradiga el fragmento.
@@ -199,6 +206,7 @@ class AIFirstDirectResponse:
     selected: list[AIFirstCandidate] = field(default_factory=list)
     selected_requirements: dict[str, tuple[str, ...]] = field(default_factory=dict)
     confidence: float = 0.0
+    version_warning: str | None = None
     validator_rejections: dict[str, int] = field(default_factory=dict)
     llm_payload: dict[str, object] = field(default_factory=dict)
 
@@ -2048,17 +2056,17 @@ def judge_ai_first_candidates(
             return result
         candidate = allowed_candidates[candidate_id]
         normalized_requirements = tuple(dict.fromkeys(str(item) for item in requirements))
-        if not _record_covers_requirements(candidate.record, plan, normalized_requirements):
-            result.abstained = True
-            result.validator_rejections["cobertura_insuficiente"] = 1
-            result.selected.clear()
-            log_validator(outcome="error", error="cobertura_insuficiente", started_at=validator_started_at)
-            return result
         if requested_version and not _candidate_version_compatible(candidate.record, plan):
             result.abstained = True
             result.validator_rejections["version_incompatible"] = 1
             result.selected.clear()
             log_validator(outcome="error", error="version_incompatible", started_at=validator_started_at)
+            return result
+        if not _record_covers_requirements(candidate.record, plan, normalized_requirements):
+            result.abstained = True
+            result.validator_rejections["cobertura_insuficiente"] = 1
+            result.selected.clear()
+            log_validator(outcome="error", error="cobertura_insuficiente", started_at=validator_started_at)
             return result
         result.selected.append(candidate)
         result.selected_requirements[candidate_id] = normalized_requirements
@@ -2123,7 +2131,9 @@ def answer_ai_first_candidates(
                                 + "no_confirmada + cobertura suficiente = answer con advertencia explícita "
                                 + "de que la fuente no confirma esa versión; incompatible = rechazar; "
                                 + "abstain solo si falta cobertura directa. La ausencia de versión, por sí sola, "
-                                + "no constituye cobertura insuficiente."
+                                + "no constituye cobertura insuficiente. version_warning debe ser null para "
+                                + "compatible y un texto no vacío para no_confirmada; la respuesta debe incluir "
+                                + "que la fuente no confirma compatibilidad con la versión consultada."
                                 if plan.version else ""
                             ),
                             "requirements": [
@@ -2147,12 +2157,13 @@ def answer_ai_first_candidates(
         # prompts, credentials, or full source fragments.
         result.llm_payload = {
             key: payload.get(key)
-            for key in ("decision", "answer", "selected_candidate_ids", "requirements", "confidence")
+            for key in ("decision", "answer", "selected_candidate_ids", "requirements", "confidence", "version_warning")
             if key in payload
         }
 
-    expected_keys = {"decision", "answer", "selected_candidate_ids", "requirements", "confidence"}
-    if not isinstance(payload, dict) or set(payload) != expected_keys:
+    expected_keys = {"decision", "answer", "selected_candidate_ids", "requirements", "confidence", "version_warning"}
+    legacy_keys = expected_keys - {"version_warning"}
+    if not isinstance(payload, dict) or set(payload) not in (expected_keys, legacy_keys):
         result.validator_rejections["contrato_invalido"] = 1
         return result
     decision = payload.get("decision")
@@ -2160,6 +2171,11 @@ def answer_ai_first_candidates(
     selected_ids = payload.get("selected_candidate_ids")
     requirements = payload.get("requirements")
     confidence = payload.get("confidence")
+    version_warning = payload.get("version_warning")
+    if version_warning is not None and not isinstance(version_warning, str):
+        result.validator_rejections["contrato_invalido"] = 1
+        return result
+    result.llm_payload["version_warning"] = version_warning
     if (
         decision not in {"answer", "request_context", "abstain"}
         or not isinstance(answer, str)
@@ -2185,6 +2201,7 @@ def answer_ai_first_candidates(
         # converted into a caveated, potentially misleading answer.
         result.decision = decision
         result.confidence = float(confidence)
+        result.version_warning = None
         return result
 
     allowed_candidates = {candidate.candidate_id: candidate for candidate in retrieval.candidates}
@@ -2215,6 +2232,12 @@ def answer_ai_first_candidates(
         str(candidate.record.get(CONTENT_FIELD) or candidate.record.get(CONTEXT_FIELD) or "")
         for candidate in selected
     )
+    if not _selected_versions_compatible(selected, plan):
+        result.validator_rejections["version_incompatible"] = 1
+        return result
+    if plan.version and any(_version_status(candidate.record, plan) == "incompatible" for candidate in selected):
+        result.validator_rejections["version_incompatible"] = 1
+        return result
     covered_by_selection = {
         requirement_id for requirement_id in normalized_requirements
         if any(
@@ -2225,17 +2248,22 @@ def answer_ai_first_candidates(
     if set(normalized_requirements) - covered_by_selection:
         result.validator_rejections["cobertura_insuficiente"] = 1
         return result
-    if not _selected_versions_compatible(selected, plan):
-        result.validator_rejections["version_incompatible"] = 1
-        return result
-    if plan.version and any(_version_status(candidate.record, plan) == "incompatible" for candidate in selected):
-        if not all(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
-            result.validator_rejections["version_incompatible"] = 1
-            return result
     if plan.version and any(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
-        if "no confirma" not in normalized_answer.casefold() and "no confirm" not in normalized_answer.casefold():
+        warning = " ".join((version_warning or "").split())
+        answer_lower = normalized_answer.casefold()
+        warning_lower = warning.casefold()
+        if not warning or "no confirma" not in warning_lower or "versión" not in warning_lower:
             result.validator_rejections["version_no_confirmada_sin_advertencia"] = 1
             return result
+        if "no confirma" not in answer_lower or "versión" not in answer_lower:
+            result.validator_rejections["version_no_confirmada_sin_advertencia"] = 1
+            return result
+        result.version_warning = warning
+    elif plan.version:
+        if version_warning is not None:
+            result.validator_rejections["version_warning_incoherente"] = 1
+            return result
+        result.version_warning = None
     selected_sources = [candidate.source for candidate in selected]
     normalized_answer = _presentation_safe_answer(
         user_message, normalized_answer, selected_sources

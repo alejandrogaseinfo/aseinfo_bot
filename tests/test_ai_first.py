@@ -935,6 +935,104 @@ class AIFirstTests(unittest.TestCase):
         self.assertFalse(related["accepted"])
         self.assertIn(related["reason"], {"sin_anclaje_fuerte", "cobertura_temática_insuficiente"})
 
+    def _direct_version_candidate(self, title, content):
+        record = _record("version-case", title, content)
+        source = EvidenceSource("SharePoint", title, record["source_url"], content)
+        candidate = AIFirstCandidate(
+            "c01", source, record,
+            {"candidate_id": "c01", "title": title, "fragment": content, "metadata": ""},
+        )
+        return AIFirstRetrieval(candidates=[candidate])
+
+    def _direct_payload_client(self, payload):
+        return SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **_kwargs: SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))])
+                )
+            )
+        )
+
+    def test_version_no_confirmada_with_warning_is_answer(self):
+        retrieval = self._direct_version_candidate(
+            "Manual IRA", "La tabla IRA almacena los flujos existentes."
+        )
+        payload = {
+            "decision": "answer", "answer": "La tabla IRA almacena los flujos existentes. "
+            "La fuente no confirma compatibilidad con la versión consultada.",
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": "La fuente no confirma compatibilidad con la versión consultada.",
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("answer", result.decision)
+        self.assertEqual(payload["version_warning"], result.version_warning)
+
+    def test_version_no_confirmada_without_warning_is_rejected(self):
+        retrieval = self._direct_version_candidate("Manual IRA", "La tabla IRA almacena los flujos existentes.")
+        payload = {
+            "decision": "answer", "answer": "La tabla IRA almacena los flujos existentes.",
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": None,
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("version_no_confirmada_sin_advertencia", result.validator_rejections)
+
+    def test_version_compatible_requires_null_warning(self):
+        retrieval = self._direct_version_candidate(
+            "Manual IRA Evolution 1.24.1.3", "La tabla IRA almacena los flujos existentes."
+        )
+        payload = {
+            "decision": "answer", "answer": "La tabla IRA almacena los flujos existentes.",
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": "Advertencia innecesaria",
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("version_warning_incoherente", result.validator_rejections)
+
+    def test_version_incompatible_cannot_answer(self):
+        retrieval = self._direct_version_candidate(
+            "Manual IRA Evolution 1.24.1.4",
+            "La tabla IRA almacena los flujos existentes. Versión 1.24.1.4.",
+        )
+        payload = {
+            "decision": "answer", "answer": "La tabla IRA almacena los flujos existentes.",
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": None,
+        }
+        result = answer_ai_first_candidates(
+            "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("version_incompatible", result.validator_rejections)
+
+    def test_insufficient_coverage_abstains_even_with_warning(self):
+        retrieval = self._direct_version_candidate("Manual IRA", "Información general del sistema.")
+        payload = {
+            "decision": "answer", "answer": "El sistema procesa la solicitud. "
+            "La fuente no confirma compatibilidad con la versión consultada.",
+            "selected_candidate_ids": ["c01"], "requirements": ["r1"], "confidence": 0.9,
+            "version_warning": "La fuente no confirma compatibilidad con la versión consultada.",
+        }
+        result = answer_ai_first_candidates(
+            "¿Qué reglas DTC se validan en ambos servidores?",
+            retrieval, self._direct_payload_client(payload), "answer-model"
+        )
+        self.assertEqual("abstain", result.decision)
+        self.assertIn("cobertura_insuficiente", result.validator_rejections)
+
 
 if __name__ == "__main__":
     unittest.main()
