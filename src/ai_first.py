@@ -107,6 +107,14 @@ relaciones/campos y versión; coverage.group_facets muestra la cobertura
 combinada del documento. Selecciona el conjunto mínimo de IDs que cubra las
 facetas necesarias. Si un documento cubre todas las facetas, prefíérelo frente
 a una combinación incidental de documentos.
+
+Aplica esta política ternaria de versión: compatible puede responderse
+normalmente; no_confirmada puede responderse únicamente si el candidato cubre
+el contenido solicitado y la respuesta incluye una advertencia explícita de
+que la fuente no confirma la versión indicada; incompatible debe rechazarse y
+nunca combinarse con otras versiones. Si falta identidad, propósito,
+acción, relaciones/campos o evidencia directa necesaria, devuelve abstención
+aunque la fuente sea temáticamente relacionada.
 """.strip()
 
 

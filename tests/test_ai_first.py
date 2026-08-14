@@ -636,6 +636,11 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual("no_confirmada", ai_first._version_status(unconfirmed, plan))
         self.assertEqual("incompatible", ai_first._version_status(incompatible, plan))
 
+    def test_judge_prompt_states_ternary_version_policy(self):
+        self.assertIn("no_confirmada puede responderse únicamente", ai_first.JUDGE_SYSTEM_PROMPT)
+        self.assertIn("incompatible debe rechazarse", ai_first.JUDGE_SYSTEM_PROMPT)
+        self.assertIn("devuelve abstención", ai_first.JUDGE_SYSTEM_PROMPT)
+
     def test_redundant_artifact_technical_query_is_omitted(self):
         _FakeSearchClient.records = [_record("artifact", "Ofuscación de datos SQL", "Ofuscan datos sensibles.")]
         plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
