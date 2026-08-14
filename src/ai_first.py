@@ -2119,9 +2119,11 @@ def answer_ai_first_candidates(
                             "question": user_message,
                             "version_policy": (
                                 "La pregunta solicita la versión " + plan.version
-                                + ". Si una fuente no tiene identidad de versión, solo puedes responder "
-                                "si indicas literalmente que la fuente no confirma la correspondencia "
-                                "con esa versión."
+                                + ". Política: compatible + cobertura suficiente = answer; "
+                                + "no_confirmada + cobertura suficiente = answer con advertencia explícita "
+                                + "de que la fuente no confirma esa versión; incompatible = rechazar; "
+                                + "abstain solo si falta cobertura directa. La ausencia de versión, por sí sola, "
+                                + "no constituye cobertura insuficiente."
                                 if plan.version else ""
                             ),
                             "requirements": [
