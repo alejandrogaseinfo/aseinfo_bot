@@ -584,7 +584,9 @@ def retrieve_ai_first_candidates(
         if anchors:
             candidates = []
             anchor_observations = []
-            for index, source in enumerate(anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))], start=1):
+            bounded_anchors = anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
+            anchor_records = []
+            for index, source in enumerate(bounded_anchors, start=1):
                 record = {
                     "id": f"anchor:{source.document_id or source.titulo}:{index}",
                     "title": source.titulo,
@@ -595,7 +597,16 @@ def retrieve_ai_first_candidates(
                     CONTENT_FIELD: source.fragmento,
                     CONTEXT_FIELD: source.descripcion,
                 }
-                coverage = _record_coverage(record, plan)
+                anchor_records.append((source, record))
+            by_document: dict[str, list[dict]] = {}
+            for _source, record in anchor_records:
+                by_document.setdefault(_document_key(record), []).append(record)
+            for index, (source, record) in enumerate(anchor_records, start=1):
+                aggregate_text = " ".join(
+                    " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+                    for item in by_document[_document_key(record)]
+                )
+                coverage = _record_coverage(record, plan, aggregate_text)
                 anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
                 if not coverage["accepted"]:
                     continue

@@ -202,19 +202,10 @@ def build_query_plan(user_message: str) -> QueryPlan:
                 )
             )
             requirement_number += 1
-    if background_anchors and requirements_list:
-        first = requirements_list[0]
-        merged_concepts = tuple(dict.fromkeys((*first.concepts, *background_anchors)))
-        requirements_list[0] = QueryRequirement(
-            identifier=first.identifier,
-            text=f"{first.text} ({' '.join(background_anchors)})",
-            concepts=merged_concepts,
-            actions=first.actions,
-        )
     requirements = tuple(requirements_list)
     all_concepts = tuple(dict.fromkeys(concept for requirement in requirements for concept in requirement.concepts))
     all_actions = tuple(dict.fromkeys(action for requirement in requirements for action in requirement.actions))
-    lexical_query = " ".join((*all_concepts, *all_actions))
+    lexical_query = " ".join((*all_concepts, *background_anchors, *all_actions))
     explicit_identifiers = re.findall(r"[A-Za-z][\w.-]*(?:\.[A-Za-z0-9]{2,5})?", raw_message)
     identifier_query = " ".join(
         identifier for identifier in explicit_identifiers if any(marker in identifier for marker in ("_", ".", "-"))

@@ -405,6 +405,21 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual(("r1",), result.selected_requirements["c01"])
         self.assertEqual((), result.selected_requirements["c02"])
 
+    def test_anchor_retrieval_keeps_complementary_procedure_pages(self):
+        sources = [
+            EvidenceSource("sharepoint", "Manual DTC Verificacion.pdf — Página 4", "https://contoso/dtc.pdf#page=4",
+                            "Verifique que el firewall permita la comunicación DTC entre ambos servidores.", document_id="dtc-doc"),
+            EvidenceSource("sharepoint", "Manual DTC Verificacion.pdf — Página 5", "https://contoso/dtc.pdf#page=5",
+                            "Confirme las reglas DTC y en Component Services valide LOCAL DTC en ambos servidores.", document_id="dtc-doc"),
+        ]
+        config = _config()
+        config.ai_first_legacy_anchors = True
+        config.ai_first_anchor_only = True
+        with patch("ai_first.retrieve_azure_search_evidence", return_value=sources):
+            retrieval = retrieve_ai_first_candidates("Después de reinstalar MSDTC, ¿qué validamos en ambos servidores?", config)
+        self.assertEqual(2, len(retrieval.candidates))
+        self.assertTrue(all(item["accepted"] for item in retrieval.candidate_observations))
+
     def test_direct_response_redacts_sql_implementation_from_user_summary(self):
         _FakeSearchClient.records = [_record(
             "obfuscation",
