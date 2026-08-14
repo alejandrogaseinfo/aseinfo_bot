@@ -10,10 +10,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from ai_first import (
+    AIFirstCandidate,
+    AIFirstRetrieval,
     answer_ai_first_candidates,
     judge_ai_first_candidates,
     retrieve_ai_first_candidates,
 )
+from models import EvidenceSource
 
 
 class _FakeSearchClient:
@@ -54,7 +57,7 @@ def _record(identifier, title, content, document_id=""):
 
 
 class AIFirstTests(unittest.TestCase):
-    def test_broad_candidates_are_not_filtered_by_literal_coverage(self):
+    def test_minimum_coverage_rejects_generic_incidental_document(self):
         record = _record(
             "internal-01",
             "Manual operativo.pdf — Página 2",
@@ -66,8 +69,8 @@ class AIFirstTests(unittest.TestCase):
         ):
             retrieval = retrieve_ai_first_candidates("¿Cómo resolver el caso?", _config())
 
-        self.assertEqual(1, len(retrieval.candidates))
-        self.assertEqual("c01", retrieval.candidates[0].candidate_id)
+        self.assertEqual([], retrieval.candidates)
+        self.assertEqual(1, retrieval.rejected_reasons["cobertura_insuficiente"])
 
     def test_prejudge_controls_remove_injection_and_unauthorized_sources(self):
         _FakeSearchClient.records = [
@@ -111,48 +114,8 @@ class AIFirstTests(unittest.TestCase):
                 _config(),
             )
 
-        class FakeClient:
-            def __init__(self):
-                self.content = None
-                self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
-
-            def create(self, **kwargs):
-                self.content = kwargs["messages"][1]["content"]
-                return SimpleNamespace(
-                    choices=[
-                        SimpleNamespace(
-                            message=SimpleNamespace(
-                                content=json.dumps(
-                                    {
-                                        "selections": [
-                                            {
-                                                "candidate_id": getattr(self, "payload_candidate_id", "c01"),
-                                                "requirements": ["r1"],
-                                                "confidence": 0.99,
-                                            }
-                                        ]
-                                    }
-                                )
-                            )
-                        )
-                    ]
-                )
-
-        client = FakeClient()
-        neighbor_candidate = next(
-            candidate for candidate in retrieval.candidates if "1.19.1.7" in candidate.source.titulo
-        )
-        client.payload_candidate_id = neighbor_candidate.candidate_id
-        result = judge_ai_first_candidates(
-            "¿Qué precauciones tomo antes de instalar una actualización 1.19.1.6?",
-            retrieval,
-            client,
-            "judge-model",
-        )
-
-        self.assertTrue(result.abstained)
-        self.assertEqual(1, result.validator_rejections["version_incompatible"])
-        self.assertNotIn("internal-next", client.content)
+        self.assertNotIn("Readme 1.19.1.7.pdf — Página 4", [candidate.source.titulo for candidate in retrieval.candidates])
+        self.assertEqual(1, retrieval.rejected_reasons["version_incompatible"])
 
     def test_judge_rejects_unknown_id_and_unpermitted_requirement(self):
         _FakeSearchClient.records = [_record("internal-01", "Manual.pdf", "Texto.")]
@@ -459,7 +422,47 @@ class AIFirstTests(unittest.TestCase):
 
         result = answer_ai_first_candidates(question, retrieval, FakeClient(), "answer-model")
         self.assertEqual("abstain", result.decision)
-        self.assertEqual(1, result.validator_rejections["facet_sin_evidencia_directa"])
+        self.assertEqual(1, sum(result.validator_rejections.get(key, 0) for key in ("sin_candidatos", "cobertura_insuficiente", "facet_sin_evidencia_directa")))
+
+    def test_llm_irrelevant_id_is_rejected_by_local_coverage_validator(self):
+        correct = _record("correct", "Readme Evolution 1.24.1.2", "El cambio de jQuery actualiza 3.7.2.")
+        incidental = _record("incidental", "Oracle Readme 1.24.1.2", "Cambios de base de datos sin librerías JS.")
+        candidates = []
+        for index, record in enumerate((correct, incidental), start=1):
+            source = EvidenceSource("SharePoint", record["title"], record["source_url"], record["content"])
+            candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {"candidate_id": f"c{index:02d}", "title": record["title"], "fragment": record["content"], "metadata": ""}))
+        retrieval = AIFirstRetrieval(candidates=candidates)
+
+        class FakeClient:
+            chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "answer", "answer": "Oracle", "selected_candidate_ids": ["c02"], "requirements": ["r1"], "confidence": 0.95,
+            }))) ])))
+
+        result = answer_ai_first_candidates("¿Qué cambio de jQuery incluye Evolution 1.24.1.2?", retrieval, FakeClient(), "answer-model")
+        self.assertEqual("abstain", result.decision)
+        self.assertEqual(1, result.validator_rejections["cobertura_insuficiente"])
+
+    def test_no_sufficient_candidate_abstains_without_substitution(self):
+        _FakeSearchClient.records = [_record("oracle", "Oracle Readme 1.24.1.5", "Cambios del motor Oracle.")]
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates("¿Qué cambio de jQuery incluye Evolution 1.24.1.2?", _config())
+        self.assertFalse(retrieval.candidates)
+        self.assertEqual(1, retrieval.rejected_reasons["cobertura_insuficiente"])
+
+    def test_unversioned_question_does_not_mix_incompatible_document_versions(self):
+        _FakeSearchClient.records = [
+            _record("v1", "Manual 1.2.3", "IRA tabla de relaciones.", document_id="v1"),
+            _record("v2", "Manual 2.3.4", "IRA tabla de relaciones.", document_id="v2"),
+        ]
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates("¿Qué se sabe de la tabla IRA?", _config())
+        class FakeClient:
+            chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "answer", "answer": "IRA tabla de relaciones.", "selected_candidate_ids": ["c01", "c02"], "requirements": ["r1"], "confidence": 0.95,
+            }))) ])))
+        result = answer_ai_first_candidates("¿Qué se sabe de la tabla IRA?", retrieval, FakeClient(), "answer-model")
+        self.assertEqual("abstain", result.decision)
+        self.assertEqual(1, result.validator_rejections["version_incompatible"])
 
 
 if __name__ == "__main__":
