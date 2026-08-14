@@ -78,7 +78,9 @@ respuesta.
 Devuelve solamente JSON con este contrato exacto:
 {"selections":[{"candidate_id":"c01","requirements":["r1"],"confidence":0.0}]}
 
-Usa exclusivamente los candidate_id y requirement_id recibidos. Si la
+Usa exclusivamente los candidate_id y requirement_id recibidos. Cuando la
+respuesta necesite evidencia distribuida, selecciona todos los fragmentos
+complementarios necesarios, incluso si pertenecen al mismo documento. Si la
 evidencia no basta, devuelve {"selections":[]}. La confianza debe estar entre
 0 y 1; no selecciones candidatos con confianza menor que 0.80. La versión
 explícita solicitada por el usuario debe coincidir con la identidad del
@@ -291,6 +293,25 @@ def _candidate_selection_details(
         "document_group": _document_key(record),
         "discard_reason": "incidental" if selection_class == "incidental" else "",
     }
+
+
+def _query_plan_lexical_queries(plan: QueryPlan) -> tuple[str, str]:
+    """Build generic strong-anchor and action/topic queries from QueryPlan."""
+    strong: list[str] = []
+    action_topic: list[str] = []
+    for requirement in plan.requirements:
+        profile = _requirement_profile(requirement)
+        strong.extend(profile["strong"])
+        action_topic.extend(profile["action"])
+        action_topic.extend(profile["topic"])
+        strong.extend(re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", requirement.text))
+    if plan.product:
+        strong.append(plan.product)
+    if plan.version:
+        strong.append(plan.version)
+    strong_query = " ".join(dict.fromkeys(str(token).strip() for token in strong if str(token).strip()))
+    action_query = " ".join(dict.fromkeys(str(token).strip() for token in action_topic if str(token).strip()))
+    return strong_query, action_query
 
 
 def _concept_present(concept: str, concepts: set[str]) -> bool:
@@ -616,7 +637,15 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
-    queries = list(dict.fromkeys(plan.retrieval_queries[:2]))
+    strong_query, action_query = _query_plan_lexical_queries(plan)
+    query_specs = [("original", user_message), ("anchor", strong_query), ("action", action_query)]
+    queries = []
+    seen_query_signatures: set[tuple[str, ...]] = set()
+    for kind, query in query_specs:
+        signature = tuple(tokenize(query))
+        if query and signature not in seen_query_signatures:
+            seen_query_signatures.add(signature)
+            queries.append((kind, query))
     search_args = {
         "top": min(CANDIDATE_POOL_SIZE, 20),
         "select": SEARCH_SELECT_FIELDS,
@@ -629,24 +658,25 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     calls: list[dict[str, object]] = []
 
     def lexical(query_rank_query):
-        query_rank, query = query_rank_query
+        query_rank, (kind, query) = query_rank_query
         started = perf_counter()
         rows = list(search_client.search(
             search_text=query,
             search_fields=["title", CONTENT_FIELD, "content_tokens"],
             **search_args,
         ))
-        return query_rank, query, rows, round((perf_counter() - started) * 1000, 2)
+        return query_rank, (kind, query), rows, round((perf_counter() - started) * 1000, 2)
 
     with ThreadPoolExecutor(max_workers=max(1, len(queries))) as pool:
         futures = [pool.submit(lexical, item) for item in enumerate(queries)]
         for future in as_completed(futures):
             try:
-                query_rank, query, rows, duration_ms = future.result()
+                query_rank, query_kind_value, rows, duration_ms = future.result()
             except Exception as exc:
                 calls.append({"kind": "lexical", "query": "<redacted>", "duration_ms": 0.0, "result_count": 0, "error": error_code(exc)})
                 continue
-            calls.append({"kind": "lexical", "query": query, "duration_ms": duration_ms, "result_count": len(rows)})
+            query_kind, query = query_kind_value
+            calls.append({"kind": f"lexical_{query_kind}", "query": query, "duration_ms": duration_ms, "result_count": len(rows)})
             for rank, result in enumerate(rows, start=1):
                 record = dict(result)
                 record_id = str(record.get("id") or "")
@@ -698,15 +728,28 @@ def retrieve_ai_first_candidates(
         records, _rank_by_id, azure_calls = _retrieve_hybrid_records(user_message, plan, config, client)
         allowed_sources = getattr(config, "sharepoint_sources", None) or tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
         allowed_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
-        safe_records = [
-            record for record in records
-            if _record_has_authorized_provenance(record, allowed_sources, allowed_labels)
-            and not _record_contains_document_injection(record)
-        ]
+        safe_records = []
+        prefilter_observations: list[dict[str, object]] = []
+        for record in records:
+            if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
+                prefilter_observations.append({
+                    "candidate_id": str(record.get("id") or ""),
+                    "retrieval_status": "discarded",
+                    "discard_reason": "provenance",
+                })
+                continue
+            if _record_contains_document_injection(record):
+                prefilter_observations.append({
+                    "candidate_id": str(record.get("id") or ""),
+                    "retrieval_status": "discarded",
+                    "discard_reason": "document_injection",
+                })
+                continue
+            safe_records.append(record)
         safe_by_document: dict[str, list[dict]] = {}
         for record in safe_records:
             safe_by_document.setdefault(_document_key(record), []).append(record)
-        selection_observations: list[dict[str, object]] = []
+        selection_observations: list[dict[str, object]] = prefilter_observations
         pool_records: list[dict] = []
         for record in safe_records:
             aggregate_text = " ".join(
@@ -715,6 +758,7 @@ def retrieve_ai_first_candidates(
             )
             details = _candidate_selection_details(record, plan, user_message, aggregate_text)
             details["candidate_id"] = str(record.get("id") or "")
+            details["retrieval_status"] = "eligible"
             selection_observations.append(details)
             if details["selection_class"] in {"strong_anchor", "thematic"}:
                 pool_records.append(record)
@@ -742,9 +786,18 @@ def retrieve_ai_first_candidates(
             anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
             if not coverage["accepted"]:
                 continue
+            details = _candidate_selection_details(record, plan, user_message, aggregate_text)
             candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
                 "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
                 "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
+                "coverage": {
+                    "selection_class": details["selection_class"],
+                    "selection_score": details["selection_score"],
+                    "score_components": details["score_components"],
+                    "detected_anchors": details["detected_anchors"],
+                    "covered_requirements": details["covered_requirements"],
+                    "missing_requirements": details["missing_requirements"],
+                },
                 "azure_rank": index,
             }))
         if not candidates and not anchors:
@@ -908,12 +961,21 @@ def retrieve_ai_first_candidates(
     for record in candidate_records:
         source = _source_from_record(record)
         candidate_id = f"c{len(candidates) + 1:02d}"
+        details = _candidate_selection_details(record, plan, user_message)
         payload = {
             "candidate_id": candidate_id,
             "title": _bounded_text(record.get("title"), 300),
             "fragment": source.fragmento,
             "metadata": _bounded_text(record.get(CONTEXT_FIELD), MAX_AI_FIRST_CONTEXT_CHARS),
             "azure_rank": rank_by_id.get(str(record.get("id") or ""), 10_000),
+            "coverage": {
+                "selection_class": details.get("selection_class") if isinstance(details, dict) else "",
+                "selection_score": details.get("selection_score") if isinstance(details, dict) else 0,
+                "score_components": details.get("score_components") if isinstance(details, dict) else {},
+                "detected_anchors": details.get("detected_anchors") if isinstance(details, dict) else [],
+                "covered_requirements": details.get("covered_requirements") if isinstance(details, dict) else [],
+                "missing_requirements": details.get("missing_requirements") if isinstance(details, dict) else [],
+            },
         }
         candidates.append(
             AIFirstCandidate(

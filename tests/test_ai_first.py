@@ -436,6 +436,7 @@ class AIFirstTests(unittest.TestCase):
             "Se pueden gestionar Formularios, Manuales, Procedimientos e Instructivos.",
             document_id="direct-doc",
         )
+        direct["folder_path"] = "SOLUCIONES"
         incidental = _record(
             "incidental", "Manual de infraestructura.pdf — Página 1",
             "El sistema documenta parámetros generales del servidor.",
@@ -449,6 +450,29 @@ class AIFirstTests(unittest.TestCase):
             ai_first._candidate_selection_details(direct, plan, question)["selection_score"],
             ai_first._candidate_selection_details(incidental, plan, question)["selection_score"],
         )
+
+    def test_query_planning_preserves_complete_structural_identifier(self):
+        plan = ai_first.build_query_plan(
+            "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        )
+        strong_query, action_query = ai_first._query_plan_lexical_queries(plan)
+        self.assertIn("ira_instancias_rutas_aut", strong_query)
+        self.assertTrue(action_query)
+
+    def test_candidate_payload_contains_local_coverage_metadata(self):
+        records = [_record(
+            "direct", "Gestion de documentos.pdf — Página 4",
+            "Se pueden gestionar Formularios y Manuales.", document_id="direct-doc"
+        )]
+        records[0]["folder_path"] = "SOLUCIONES"
+        config = _config()
+        config.sharepoint_sources = (("SOLUCIONES", "drive-manuales"),)
+        config.ai_first_legacy_anchors = True
+        config.ai_first_anchor_only = True
+        with patch("ai_first._retrieve_hybrid_records", return_value=(records, {"direct": 1}, [])):
+            retrieval = retrieve_ai_first_candidates("¿Qué documentos se pueden gestionar?", config)
+        self.assertEqual("thematic", retrieval.candidates[0].payload["coverage"]["selection_class"])
+        self.assertIn("selection_score", retrieval.candidates[0].payload["coverage"])
 
     def test_direct_response_redacts_sql_implementation_from_user_summary(self):
         _FakeSearchClient.records = [_record(
