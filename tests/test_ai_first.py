@@ -317,7 +317,7 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual("abstain", result.decision)
         self.assertEqual(1, result.validator_rejections["seleccion_invalida"])
 
-    def test_direct_response_preserves_unconfirmed_version_caveat(self):
+    def test_direct_response_abstains_when_version_identity_is_unknown(self):
         _FakeSearchClient.records = [_record(
             "ira-table",
             "Manual de Relacion DB V1.2.docx",
@@ -344,14 +344,11 @@ class AIFirstTests(unittest.TestCase):
             )
 
         result = answer_ai_first_candidates(question, retrieval, FakeClient(), "answer-model")
-        self.assertEqual("answer", result.decision)
-        self.assertIsNone(result.selected[0].source.version_confirmed)
-        self.assertIn("no confirma explícitamente", result.answer)
-        self.assertIn("ira_instancias_rutas_aut", result.answer)
-        self.assertIn("ira_codrau", result.answer)
-        self.assertNotIn("rau_rutas_autorizacion", result.answer)
+        self.assertEqual("abstain", result.decision)
+        self.assertEqual({}, result.selected_requirements)
+        self.assertTrue(result.abstained)
 
-    def test_version_warning_chooses_facet_supported_source_among_unversioned_candidates(self):
+    def test_version_scoped_question_rejects_unversioned_candidates(self):
         _FakeSearchClient.records = [
             _record("ira", "Manual de Relacion DB", "La tabla IRA almacena los flujos y sus campos de relación."),
             _record("incidental", "Script operativo", "El script registra cambios de auditoría sin describir tablas."),
@@ -366,9 +363,8 @@ class AIFirstTests(unittest.TestCase):
             }))) ])))
 
         result = answer_ai_first_candidates(question, retrieval, FakeClient(), "answer-model")
-        self.assertEqual("answer", result.decision)
-        self.assertEqual("ira", result.selected[0].record["id"])
-        self.assertIn("no confirma", result.answer)
+        self.assertEqual("abstain", result.decision)
+        self.assertEqual([], result.selected)
 
     def test_abstention_may_report_valid_requirement_metadata(self):
         _FakeSearchClient.records = [_record("generic", "Readme", "Información general de servidores.")]
@@ -608,6 +604,44 @@ class AIFirstTests(unittest.TestCase):
         self.assertFalse(rejected["accepted"])
         self.assertIn(rejected["reason"], {"sin_anclaje_fuerte", "cobertura_temática_insuficiente", "version_incompatible"})
         self.assertTrue(rejected["missing_requirements"])
+
+    def test_version_lookup_abstains_when_multiple_release_identities_compete(self):
+        _FakeSearchClient.records = [
+            _record("v12", "Readme 1.24.1.2.pdf — Página 5", "jQuery 3.7.2 reemplaza 1.12.4."),
+            _record("v14", "Readme 1.24.1.4.pdf — Página 5", "jQuery 3.7.2 reemplaza 1.12.4."),
+        ]
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch(
+            "ai_first._embed_texts", side_effect=RuntimeError("no vector")
+        ):
+            retrieval = retrieve_ai_first_candidates(
+                "¿En qué versión se actualizó jQuery y qué versión reemplazó?", _config()
+            )
+        self.assertEqual([], retrieval.candidates)
+        self.assertEqual(2, retrieval.rejected_reasons["ambiguous_version_identity"])
+
+    def test_script_subject_requires_direct_artifact_anchors(self):
+        _FakeSearchClient.records = [
+            _record(
+                "related",
+                "sp_anular_solicitud_vac.sql — Documento",
+                "El procedimiento anula una solicitud y ajusta el saldo de vacaciones.",
+            ),
+            _record(
+                "direct",
+                "acc.proc_arreglar_vac_negativos.sql — Documento",
+                "Documento de tipo script para arreglar vacaciones negativas y actualizar su saldo.",
+            ),
+        ]
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch(
+            "ai_first._embed_texts", side_effect=RuntimeError("no vector")
+        ):
+            retrieval = retrieve_ai_first_candidates(
+                "El script de vacaciones negativas, ¿qué hace exactamente?", _config()
+            )
+        self.assertEqual(["direct"], [candidate.record["id"] for candidate in retrieval.candidates])
+        related = next(item for item in retrieval.candidate_observations if item["candidate_id"] == "related")
+        self.assertFalse(related["accepted"])
+        self.assertIn(related["reason"], {"sin_anclaje_fuerte", "cobertura_temática_insuficiente"})
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ from azure_search import (
     _embed_texts,
     _record_contains_document_injection,
     _record_has_authorized_provenance,
+    _is_script_record,
     _install_search_observer,
     retrieve_azure_search_evidence,
 )
@@ -66,6 +67,20 @@ _SEMANTIC_TOPIC_GROUPS = (
     frozenset({"cambio", "actualiz", "modific", "reemplaz"}),
 )
 logger = get_logger()
+
+
+def _is_explicit_version_lookup(plan: QueryPlan) -> bool:
+    """Return true for questions asking which release a change belongs to."""
+    normalized = " ".join((plan.raw_message or "").casefold().split())
+    return bool(re.search(r"\b(?:en\s+qu[eé]|qu[eé])\s+versi[oó]n\b", normalized))
+
+
+def _identity_versions(record: dict) -> set[str]:
+    identity = " ".join(
+        str(record.get(field) or "")
+        for field in ("title", "version", "document_version", "product_version", "release_version", "metadata_version")
+    )
+    return {match.group(1) for match in _VERSION_PATTERN.finditer(identity)}
 
 
 JUDGE_SYSTEM_PROMPT = """
@@ -110,12 +125,8 @@ Reglas:
 - Usa exclusivamente candidate_id y requirement_id recibidos.
 - Si el usuario indicó una versión exacta, selecciona solamente documentos cuya
   identidad corresponda a esa versión.
-- Como excepción, si solo existe un documento técnico sin identidad de versión,
-  puedes responder desde él únicamente si indicas literalmente que la fuente no
-  confirma la correspondencia con la versión solicitada.
-- Si esa excepción aplica y el candidato cubre la pregunta, elige "answer" con
-  la advertencia; no devuelvas "abstain" únicamente porque falta la identidad
-  de versión.
+- Si la identidad de versión no puede confirmarse, devuelve "abstain"; no
+  conviertas una fuente sin versión en una coincidencia implícita.
 - Si pregunta en qué versión ocurrió un cambio, indica la versión exacta que
   aparece en el candidato seleccionado. No uses un candidato cuyo título de
   versión contradiga el fragmento.
@@ -390,6 +401,7 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
     strong_hits = 0
     topic_hits = 0
     strong_required = False
+    version_ok = _candidate_version_compatible(record, plan)
     for requirement in plan.requirements:
         profile = _requirement_profile(requirement)
         req_hits = 0
@@ -401,16 +413,48 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
         # A requirement is covered when its strong anchor is present (if one
         # exists) and at least one topical/action signal is present. If no
         # strong anchor exists, topical coverage alone is sufficient.
-        artifact_support = plan.artifact_role == "script" and req_strong_hits >= 1
+        # For a script/procedure question, a generic script that merely shares
+        # the subject is not direct evidence.  When the question supplies
+        # multiple structural/subject anchors, require at least two of them
+        # in the grouped evidence (for example artifact + subject).  A single
+        # anchor remains sufficient for genuinely identifier-only questions.
+        artifact_minimum = (
+            min(2, len(profile["strong"]))
+            if plan.artifact_role == "script" and len(profile["strong"]) > 1
+            else 1
+        )
+        if plan.artifact_role == "script" and profile["strong"]:
+            artifact_markers = {"script", "sql", "proced", "procedim", "exacta"}
+            subject_anchors = [anchor for anchor in profile["strong"] if anchor not in artifact_markers]
+            subject_hits = sum(_concept_present(anchor, record_concepts) for anchor in subject_anchors)
+            subject_minimum = min(2, len(subject_anchors)) if subject_anchors else 0
+        else:
+            subject_hits = 0
+            subject_minimum = 0
+        artifact_support = plan.artifact_role == "script" and req_strong_hits >= artifact_minimum
         sufficient = (
             (not profile["strong"] or req_strong_hits >= 1)
             and (not profile["topic"] or req_topic_hits >= 1 or artifact_support)
         )
+        if plan.artifact_role == "script" and profile["strong"]:
+            sufficient = sufficient and req_strong_hits >= artifact_minimum and subject_hits >= subject_minimum
         if sufficient:
             covered.append(requirement.identifier)
         else:
             missing.append(requirement.identifier)
-    version_ok = _candidate_version_compatible(record, plan)
+    if plan.artifact_role == "script" and not _is_script_record(record):
+        return {
+            "strong_anchors": [anchor for req in plan.requirements for anchor in _requirement_profile(req)["strong"]],
+            "detected_anchors": [],
+            "covered_requirements": [],
+            "missing_requirements": [req.identifier for req in plan.requirements],
+            "strong_hits": 0,
+            "topic_hits": 0,
+            "version_requested": plan.version or "",
+            "version_compatible": version_ok,
+            "accepted": False,
+            "reason": "artifact_kind_mismatch",
+        }
     accepted = bool(covered) and (not strong_required or strong_hits >= 1) and version_ok
     reason = "aceptado" if accepted else (
         "version_incompatible" if not version_ok else
@@ -458,12 +502,15 @@ def _selected_versions_compatible(selected: list[AIFirstCandidate], plan: QueryP
 
 
 def _candidate_version_compatible(record: dict, plan: QueryPlan) -> bool:
-    """Allow unknown identity for a caveated answer, but reject contradictions."""
+    """Require an explicit identity match whenever the question has a version.
+
+    An unversioned technical fragment can be useful to a human, but it cannot
+    be selected as evidence for a version-scoped AI-first answer: the local
+    validator must never turn an unknown identity into an implied match.
+    """
     if not plan.version:
         return True
-    if _record_version_matches(record, plan.version):
-        return True
-    return not _record_has_version_identity(record)
+    return _record_version_matches(record, plan.version)
 
 
 def _identity_contradicts_fragment_version(record: dict) -> bool:
@@ -750,6 +797,27 @@ def retrieve_ai_first_candidates(
         for record in safe_records:
             safe_by_document.setdefault(_document_key(record), []).append(record)
         selection_observations: list[dict[str, object]] = prefilter_observations
+        if _is_explicit_version_lookup(plan) and not plan.version:
+            identity_versions = {
+                version for record in safe_records for version in _identity_versions(record)
+            }
+            if len(identity_versions) > 1:
+                for record in safe_records:
+                    selection_observations.append({
+                        "candidate_id": str(record.get("id") or ""),
+                        "accepted": False,
+                        "retrieval_status": "discarded",
+                        "discard_reason": "ambiguous_version_identity",
+                        "version_requested": "",
+                        "version_detected": sorted(_identity_versions(record)),
+                    })
+                return AIFirstRetrieval(
+                    candidates=[],
+                    raw_candidate_count=len(records),
+                    rejected_reasons={"ambiguous_version_identity": len(safe_records)},
+                    candidate_observations=selection_observations,
+                    azure_calls=azure_calls,
+                )
         pool_records: list[dict] = []
         for record in safe_records:
             aggregate_text = " ".join(
@@ -760,7 +828,7 @@ def retrieve_ai_first_candidates(
             details["candidate_id"] = str(record.get("id") or "")
             details["retrieval_status"] = "eligible"
             selection_observations.append(details)
-            if details["selection_class"] in {"strong_anchor", "thematic"}:
+            if details.get("accepted") and details["selection_class"] in {"strong_anchor", "thematic"}:
                 pool_records.append(record)
         selected_records = _select_diverse_judge_records(
             pool_records, _rank_by_id, user_message, limit, plan
@@ -790,6 +858,10 @@ def retrieve_ai_first_candidates(
             candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
                 "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
                 "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
+                "document_group": details.get("document_group", ""),
+                "version_requested": plan.version or "",
+                "version_detected": sorted(_identity_versions(record)),
+                "discard_reason": details.get("discard_reason", ""),
                 "coverage": {
                     "selection_class": details["selection_class"],
                     "selection_score": details["selection_score"],
@@ -896,6 +968,29 @@ def retrieve_ai_first_candidates(
             continue
         sanitized_records.append(record)
 
+    # A "which version" question without an explicit release is ambiguous
+    # when Azure returns several versioned identities.  Do not let ranking or
+    # the LLM choose one arbitrarily; retain only a uniquely identifiable
+    # release and otherwise abstain with an auditable reason.
+    plan = build_query_plan(user_message)
+    if _is_explicit_version_lookup(plan) and not plan.version:
+        identity_versions = {
+            version
+            for record in sanitized_records
+            for version in _identity_versions(record)
+        }
+        if len(identity_versions) > 1:
+            rejected["ambiguous_version_identity"] = len(sanitized_records)
+            for record in sanitized_records:
+                observations.append({
+                    "candidate_id": str(record.get("id") or ""),
+                    "accepted": False,
+                    "reason": "ambiguous_version_identity",
+                    "version_requested": "",
+                    "version_detected": sorted(_identity_versions(record)),
+                })
+            sanitized_records = []
+
     records_by_document: dict[str, list[dict]] = {}
     for record in sanitized_records:
         records_by_document.setdefault(_document_key(record), []).append(record)
@@ -905,7 +1000,12 @@ def retrieve_ai_first_candidates(
             for item in records_by_document[_document_key(record)]
         )
         coverage = _record_coverage(record, plan, aggregate_text)
-        observation = {"candidate_id": str(record.get("id") or ""), **coverage}
+        details = _candidate_selection_details(record, plan, user_message, aggregate_text)
+        observation = {
+            "candidate_id": str(record.get("id") or ""),
+            **details,
+            "version_detected": sorted(_identity_versions(record)),
+        }
         observations.append(observation)
         if not coverage["accepted"]:
             reason = str(coverage["reason"])
@@ -968,6 +1068,10 @@ def retrieve_ai_first_candidates(
             "fragment": source.fragmento,
             "metadata": _bounded_text(record.get(CONTEXT_FIELD), MAX_AI_FIRST_CONTEXT_CHARS),
             "azure_rank": rank_by_id.get(str(record.get("id") or ""), 10_000),
+            "document_group": details.get("document_group", ""),
+            "version_requested": plan.version or "",
+            "version_detected": sorted(_identity_versions(record)),
+            "discard_reason": details.get("discard_reason", ""),
             "coverage": {
                 "selection_class": details.get("selection_class") if isinstance(details, dict) else "",
                 "selection_score": details.get("selection_score") if isinstance(details, dict) else 0,
@@ -1234,7 +1338,7 @@ def answer_ai_first_candidates(
         # prompts, credentials, or full source fragments.
         result.llm_payload = {
             key: payload.get(key)
-            for key in ("decision", "selected_candidate_ids", "requirements", "confidence")
+            for key in ("decision", "answer", "selected_candidate_ids", "requirements", "confidence")
             if key in payload
         }
 
@@ -1267,50 +1371,9 @@ def answer_ai_first_candidates(
         ):
             result.validator_rejections["contrato_invalido"] = 1
             return result
-        # A version-scoped question can legitimately retrieve a durable
-        # technical manual that has no release identity.  Do not discard that
-        # useful, safe evidence just because the model chooses to abstain: use
-        # the same explicit caveat as legacy and never assert version match.
-        unversioned = [
-            candidate for candidate in retrieval.candidates
-            if not _record_has_version_identity(candidate.record)
-        ]
-        if plan.version and unversioned:
-            # A useful technical source may lack release identity.  Select the
-            # strongest facet-supported candidate, while excluding incidental
-            # documents and all explicitly incompatible versions.
-            observations = {
-                item.get("candidate_id"): item for item in retrieval.candidate_observations
-            }
-            eligible = [
-                candidate for candidate in unversioned
-                if _evidence_covers_requested_facet(user_message, [candidate.source])
-            ]
-            eligible.sort(
-                key=lambda candidate: (
-                    int(observations.get(candidate.candidate_id, {}).get("strong_hits", 0)),
-                    int(observations.get(candidate.candidate_id, {}).get("topic_hits", 0)),
-                ),
-                reverse=True,
-            )
-        else:
-            eligible = []
-        if plan.version and eligible:
-            candidate = eligible[0]
-            selected_sources = [candidate.source]
-            fallback_answer = _ira_summary(candidate.source, plan.version) or (
-                "La documentación recuperada indica lo siguiente, pero no confirma "
-                f"explícitamente que corresponda a Evolution {plan.version}: "
-                f"{candidate.source.fragmento}"
-            )
-            result.decision = "answer"
-            result.answer = fallback_answer
-            result.selected = [candidate]
-            result.selected_requirements = {
-                candidate.candidate_id: tuple(plan.requirement_ids)
-            }
-            result.confidence = MIN_JUDGE_CONFIDENCE
-            return result
+        # A version-scoped question cannot be answered from an unversioned
+        # source.  The request is intentionally abstained instead of being
+        # converted into a caveated, potentially misleading answer.
         result.decision = decision
         result.confidence = float(confidence)
         return result
