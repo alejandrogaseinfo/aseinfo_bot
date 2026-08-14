@@ -108,12 +108,15 @@ def _run_legacy(question: str, config: Config, client: OpenAI, grounded: bool, c
 def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> dict:
     started = time.perf_counter()
     result = _result_base(case, started)
+    stage_started = started
+    stage_latency: dict[str, float] = {}
     if is_release_guidance_question(question) and not has_explicit_version_request(question):
         result.update(
             {
                 "response": _ambiguous_release_version_response(),
                 "requires_version_context": True,
                 "decision_state": "solicita_contexto",
+                "stage_latency_ms": {"intent_ms": 0.0, "retrieval_sanitize_ms": 0.0, "llm_validate_ms": 0.0},
             }
         )
         result["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
@@ -127,18 +130,23 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> 
         result["intent"] = intent.name if intent else "unavailable"
     except Exception:
         result["intent"] = "unavailable"
+    stage_latency["intent_ms"] = round((time.perf_counter() - stage_started) * 1000, 2)
+    stage_started = time.perf_counter()
     retrieval = retrieve_ai_first_candidates(
         question,
         config,
         client=client,
         limit=config.ai_first_candidate_limit,
     )
+    stage_latency["retrieval_sanitize_ms"] = round((time.perf_counter() - stage_started) * 1000, 2)
+    stage_started = time.perf_counter()
     direct = answer_ai_first_candidates(
         question,
         retrieval,
         client=client,
         model=config.ai_first_judge_model_name,
     )
+    stage_latency["llm_validate_ms"] = round((time.perf_counter() - stage_started) * 1000, 2)
     sources = mark_confirmed_versions(direct)
     result["judge_selected_sources"] = _source_titles(sources)
     result["selected_evidence_count"] = len(sources)
@@ -149,6 +157,9 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> 
             "retrieval_rejected": retrieval.rejected_reasons,
             "judge_abstained": direct.abstained,
             "validator_rejections": direct.validator_rejections,
+            "llm_payload": direct.llm_payload,
+            "candidate_observations": retrieval.candidate_observations,
+            "stage_latency_ms": stage_latency,
         }
     )
     if direct.decision == "answer" and sources:

@@ -49,8 +49,21 @@ _GENERIC_RANKING_TOKENS = {"evolution", "libras", "documento", "documentos", "ma
 _GENERIC_REQUIREMENT_CONCEPTS = {
     "cambio", "cambia", "incluye", "indica", "inform", "saber", "dice",
     "present", "tiene", "usar", "puede", "pued", "hacer",
-    "precauc", "instal", "actualiz", "respaldo", "prepar", "resolver", "cas", "tomo", "sabe",
+    "precauc", "instal", "actualiz", "respaldo", "prepar", "resolver", "cas", "tomo", "sabe", "version",
 }
+_GENERIC_AUXILIARY_CONCEPTS = {
+    "document", "documento", "documentos", "manual", "readme", "tema", "detalle", "ejemplo",
+    "alguno", "sabe", "inform", "indica", "dice", "hacer", "puede", "pued", "tiene",
+    "present", "necesit", "quier", "como", "cual", "que", "sobre", "evolution", "libras", "reviso",
+    "sensibl", "personal", "confidencial", "oficial", "nuevo", "actual",
+}
+_SEMANTIC_TOPIC_GROUPS = (
+    frozenset({"guarda", "almacen", "conserva", "contien", "registr"}),
+    frozenset({"campo", "relacion", "vincul", "une", "unir"}),
+    frozenset({"administr", "gestion", "gestiona", "maneja"}),
+    frozenset({"revisa", "validam", "verific", "comprueb"}),
+    frozenset({"cambio", "actualiz", "modific", "reemplaz"}),
+)
 logger = get_logger()
 
 
@@ -123,6 +136,7 @@ class AIFirstRetrieval:
     candidates: list[AIFirstCandidate] = field(default_factory=list)
     raw_candidate_count: int = 0
     rejected_reasons: dict[str, int] = field(default_factory=dict)
+    candidate_observations: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +157,7 @@ class AIFirstDirectResponse:
     selected_requirements: dict[str, tuple[str, ...]] = field(default_factory=dict)
     confidence: float = 0.0
     validator_rejections: dict[str, int] = field(default_factory=dict)
+    llm_payload: dict[str, object] = field(default_factory=dict)
 
     @property
     def abstained(self) -> bool:
@@ -234,38 +249,123 @@ def _concept_present(concept: str, concepts: set[str]) -> bool:
     )
 
 
-def _candidate_covers_plan(record: dict, plan: QueryPlan) -> bool:
-    """Require substantive question coverage before exposing a record to the LLM."""
-    text = " ".join(
-        str(record.get(field) or "")
-        for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)
-    )
-    record_concepts = set(concept_keys(text))
-    return any(_record_covers_requirement_concepts(record_concepts, requirement) for requirement in plan.requirements)
+def _requirement_profile(requirement) -> dict[str, tuple[str, ...]]:
+    """Split a requirement into strong anchors, topic/action, and auxiliaries."""
+    raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+    concepts = tuple(dict.fromkeys(requirement.concepts))
+    strong: list[str] = []
+    auxiliary: list[str] = []
+    for raw in raw_tokens:
+        raw = raw.strip(".,;:!?¿¡()[]")
+        raw_concepts = concept_keys(raw)
+        if (
+            "_" in raw or "." in raw or any(char.isdigit() for char in raw)
+            or (any(char.isupper() for char in raw[1:]) and len(raw) >= 4)
+            or raw.isupper() and len(raw) >= 3
+        ):
+            strong.extend(
+                concept for concept in raw_concepts
+                if concept != "version" and not concept.isdigit()
+            )
+    for concept in concepts:
+        if concept in _GENERIC_AUXILIARY_CONCEPTS or concept in _GENERIC_REQUIREMENT_CONCEPTS:
+            auxiliary.append(concept)
+    action_concepts = set(requirement.actions)
+    for concept in concepts:
+        if (
+            len(concept) >= 6
+            and concept not in auxiliary
+            and concept not in action_concepts
+            and concept not in _GENERIC_RANKING_TOKENS
+        ):
+            strong.append(concept)
+    # Keep structural identifiers even when tokenization split punctuation.
+    for identifier in re.findall(r"[A-Za-z][\w]*(?:_[\w]+)+", requirement.text):
+        for concept in concept_keys(identifier):
+            if concept not in strong:
+                strong.append(concept)
+    topic = [
+        concept for concept in concepts
+        if concept not in strong and concept not in auxiliary and concept not in _GENERIC_RANKING_TOKENS
+    ]
+    topic.extend(action for action in requirement.actions if action not in topic)
+    return {
+        "strong": tuple(dict.fromkeys(strong)),
+        "topic": tuple(dict.fromkeys(topic)),
+        "action": tuple(dict.fromkeys(requirement.actions)),
+        "auxiliary": tuple(dict.fromkeys(auxiliary)),
+    }
 
 
-def _record_covers_requirement_concepts(record_concepts: set[str], requirement) -> bool:
-    """Require substantive concept overlap, ignoring generic question verbs."""
-    required = tuple(
-        concept for concept in requirement.concepts
-        if concept not in _GENERIC_REQUIREMENT_CONCEPTS
-        and concept not in _GENERIC_RANKING_TOKENS
-    )
-    if not required:
-        # A genuinely generic question has no substantive entity to gate; keep
-        # the broad pool and let the local facet/claim validators decide.
+def _topic_signal_present(topic: str, record_concepts: set[str]) -> bool:
+    if _concept_present(topic, record_concepts):
         return True
-    covered = sum(_concept_present(concept, record_concepts) for concept in required)
-    return bool(covered == len(required))
+    return any(topic in group and bool(group.intersection(record_concepts)) for group in _SEMANTIC_TOPIC_GROUPS)
+
+
+def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None = None) -> dict[str, object]:
+    """Return auditable anchor/topic coverage without requiring literal completeness."""
+    text = aggregate_text or " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    record_concepts = set(concept_keys(text))
+    covered: list[str] = []
+    missing: list[str] = []
+    strong_hits = 0
+    topic_hits = 0
+    strong_required = False
+    for requirement in plan.requirements:
+        profile = _requirement_profile(requirement)
+        req_hits = 0
+        req_strong_hits = sum(_concept_present(anchor, record_concepts) for anchor in profile["strong"])
+        req_topic_hits = sum(_topic_signal_present(topic, record_concepts) for topic in profile["topic"])
+        strong_hits += req_strong_hits
+        topic_hits += req_topic_hits
+        strong_required = strong_required or bool(profile["strong"])
+        # A requirement is covered when its strong anchor is present (if one
+        # exists) and at least one topical/action signal is present. If no
+        # strong anchor exists, topical coverage alone is sufficient.
+        artifact_support = plan.artifact_role == "script" and req_strong_hits >= 1
+        sufficient = (
+            (not profile["strong"] or req_strong_hits >= 1)
+            and (not profile["topic"] or req_topic_hits >= 1 or artifact_support)
+        )
+        if sufficient:
+            covered.append(requirement.identifier)
+        else:
+            missing.append(requirement.identifier)
+    version_ok = _candidate_version_compatible(record, plan)
+    accepted = bool(covered) and (not strong_required or strong_hits >= 1) and version_ok
+    reason = "aceptado" if accepted else (
+        "version_incompatible" if not version_ok else
+        "sin_anclaje_fuerte" if strong_required and strong_hits == 0 else
+        "cobertura_temática_insuficiente"
+    )
+    return {
+        "strong_anchors": [anchor for req in plan.requirements for anchor in _requirement_profile(req)["strong"]],
+        "detected_anchors": [anchor for req in plan.requirements for anchor in _requirement_profile(req)["strong"] if _concept_present(anchor, record_concepts)],
+        "covered_requirements": covered,
+        "missing_requirements": missing,
+        "strong_hits": strong_hits,
+        "topic_hits": topic_hits,
+        "version_requested": plan.version or "",
+        "version_compatible": version_ok,
+        "accepted": accepted,
+        "reason": reason,
+    }
+
+
+def _candidate_covers_plan(record: dict, plan: QueryPlan, aggregate_text: str | None = None) -> bool:
+    return bool(_record_coverage(record, plan, aggregate_text)["accepted"])
 
 
 def _record_covers_requirements(record: dict, plan: QueryPlan, requirement_ids) -> bool:
     """Check every requirement claimed for a candidate against its own fragment."""
     text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
-    concepts = set(concept_keys(text))
     requested = set(requirement_ids)
     requirements = [req for req in plan.requirements if req.identifier in requested]
-    return bool(requirements) and all(_record_covers_requirement_concepts(concepts, req) for req in requirements)
+    if not requirements:
+        return False
+    scoped_plan = QueryPlan(plan.raw_message, tuple(requirements), plan.retrieval_queries, plan.product, plan.version, plan.artifact_role, plan.query_hash)
+    return _candidate_covers_plan(record, scoped_plan, text)
 
 
 def _selected_versions_compatible(selected: list[AIFirstCandidate], plan: QueryPlan) -> bool:
@@ -381,7 +481,7 @@ def _presentation_safe_answer(
 
 
 def _select_diverse_judge_records(
-    records: list[dict], rank_by_id: dict[str, int], user_message: str, limit: int
+    records: list[dict], rank_by_id: dict[str, int], user_message: str, limit: int, plan: QueryPlan | None = None
 ) -> list[dict]:
     """Keep high-coverage chunks while preserving several distinct pages per document.
 
@@ -396,10 +496,18 @@ def _select_diverse_judge_records(
     for record in records:
         grouped.setdefault(_document_key(record), []).append(record)
 
-    def rank_key(record: dict) -> tuple[int, int, int, str]:
+    def rank_key(record: dict) -> tuple[int, int, int, int, int, str]:
         record_id = str(record.get("id") or "")
+        anchor_score = 0
+        topic_score = 0
+        if plan is not None:
+            coverage = _record_coverage(record, plan)
+            anchor_score = int(coverage.get("strong_hits") or 0)
+            topic_score = int(coverage.get("topic_hits") or 0)
         return (
             int(_identity_contradicts_fragment_version(record)),
+            -anchor_score,
+            -topic_score,
             -_candidate_coverage_score(record, query_tokens),
             rank_by_id.get(record_id, 10_000),
             record_id,
@@ -470,6 +578,7 @@ def retrieve_ai_first_candidates(
             anchors = []
         if anchors:
             candidates = []
+            anchor_observations = []
             for index, source in enumerate(anchors[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))], start=1):
                 record = {
                     "id": f"anchor:{source.document_id or source.titulo}:{index}",
@@ -481,14 +590,16 @@ def retrieve_ai_first_candidates(
                     CONTENT_FIELD: source.fragmento,
                     CONTEXT_FIELD: source.descripcion,
                 }
-                if not _candidate_covers_plan(record, plan) or not _candidate_version_compatible(record, plan):
+                coverage = _record_coverage(record, plan)
+                anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
+                if not coverage["accepted"]:
                     continue
                 candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
                     "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
                     "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
                     "azure_rank": index,
                 }))
-            return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(anchors))
+            return AIFirstRetrieval(candidates=candidates, raw_candidate_count=len(anchors), candidate_observations=anchor_observations)
 
     search_client = SearchClient(
         endpoint=config.azure_search_endpoint,
@@ -566,32 +677,44 @@ def retrieve_ai_first_candidates(
         allowed_sources = tuple(getattr(config, "sharepoint_folder_paths", ()) or ())
     allowed_labels = tuple(getattr(config, "sharepoint_source_labels", ()) or ())
     eligible_records: list[dict] = []
+    observations: list[dict[str, object]] = []
+    sanitized_records: list[dict] = []
     ordered_records = sorted(records_by_id.values(), key=lambda item: rank_by_id.get(str(item.get("id") or ""), 10_000))
     for record in ordered_records:
         if not _record_has_authorized_provenance(record, allowed_sources, allowed_labels):
             rejected["provenance"] = rejected.get("provenance", 0) + 1
+            observations.append({"candidate_id": str(record.get("id") or ""), "accepted": False, "reason": "provenance"})
             continue
         if _record_contains_document_injection(record):
             rejected["document_injection"] = rejected.get("document_injection", 0) + 1
+            observations.append({"candidate_id": str(record.get("id") or ""), "accepted": False, "reason": "document_injection"})
             continue
-        if not _candidate_covers_plan(record, plan):
-            rejected["cobertura_insuficiente"] = rejected.get("cobertura_insuficiente", 0) + 1
-            continue
-        if not _candidate_version_compatible(record, plan):
-            rejected["version_incompatible"] = rejected.get("version_incompatible", 0) + 1
+        sanitized_records.append(record)
+
+    records_by_document: dict[str, list[dict]] = {}
+    for record in sanitized_records:
+        records_by_document.setdefault(_document_key(record), []).append(record)
+    for record in sanitized_records:
+        aggregate_text = " ".join(
+            " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+            for item in records_by_document[_document_key(record)]
+        )
+        coverage = _record_coverage(record, plan, aggregate_text)
+        observation = {"candidate_id": str(record.get("id") or ""), **coverage}
+        observations.append(observation)
+        if not coverage["accepted"]:
+            reason = str(coverage["reason"])
+            rejected[reason] = rejected.get(reason, 0) + 1
             continue
         source = _source_from_record(record)
         if not source.fragmento:
             rejected["empty_fragment"] = rejected.get("empty_fragment", 0) + 1
+            observation["accepted"] = False
+            observation["reason"] = "empty_fragment"
             continue
         eligible_records.append(record)
 
-    candidate_records = _select_diverse_judge_records(
-        eligible_records,
-        rank_by_id,
-        user_message,
-        limit,
-    )
+    candidate_records = _select_diverse_judge_records(eligible_records, rank_by_id, user_message, limit, plan)
     # The broad pool deliberately avoids legacy's relevance gates.  It can
     # therefore miss a direct Azure fragment below its top-N cutoff.  Merge a
     # bounded set of already authorized Azure evidence as recall anchors; this
@@ -602,8 +725,9 @@ def retrieve_ai_first_candidates(
             anchors = retrieve_azure_search_evidence(user_message, config, client=client)
         except Exception:
             anchors = []
-    anchor_records = [
-        {
+    anchor_records = []
+    for index, source in enumerate(anchors):
+        record = {
             "id": f"anchor:{source.document_id or source.titulo}:{index}",
             "title": source.titulo,
             "source_url": source.ubicacion,
@@ -613,21 +737,15 @@ def retrieve_ai_first_candidates(
             CONTENT_FIELD: source.fragmento,
             CONTEXT_FIELD: source.descripcion,
         }
-        for index, source in enumerate(anchors)
-        if source.fragmento and source.ubicacion
-        and _candidate_covers_plan({
-            "title": source.titulo,
-            CONTENT_FIELD: source.fragmento,
-            CONTEXT_FIELD: source.descripcion,
-            "document_version": source.document_version,
-        }, plan)
-        and _candidate_version_compatible({
-            "title": source.titulo,
-            CONTENT_FIELD: source.fragmento,
-            CONTEXT_FIELD: source.descripcion,
-            "document_version": source.document_version,
-        }, plan)
-    ]
+        if not source.fragmento or not source.ubicacion:
+            continue
+        coverage = _record_coverage(record, plan)
+        observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
+        if coverage["accepted"]:
+            anchor_records.append(record)
+        else:
+            reason = str(coverage["reason"])
+            rejected[reason] = rejected.get(reason, 0) + 1
     seen_titles = {str(record.get("title") or "") for record in anchor_records}
     candidate_records = anchor_records + [
         record for record in candidate_records if str(record.get("title") or "") not in seen_titles
@@ -656,6 +774,7 @@ def retrieve_ai_first_candidates(
         candidates=candidates,
         raw_candidate_count=len(records_by_id),
         rejected_reasons=rejected,
+        candidate_observations=observations,
     )
     logger.info(
         "ai_first_sanitization_end request_hash=%s outcome=success duration_ms=%s "
@@ -829,13 +948,7 @@ def judge_ai_first_candidates(
         seen_ids.add(candidate_id)
 
     if result.selected and not all(
-        any(
-            _record_covers_requirement_concepts(
-                set(concept_keys(" ".join(str(candidate.record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD)))),
-                requirement,
-            )
-            for candidate in result.selected
-        )
+        any(_record_covers_requirements(candidate.record, plan, (requirement.identifier,)) for candidate in result.selected)
         for requirement in plan.requirements
     ):
         result.selected.clear()
@@ -900,6 +1013,14 @@ def answer_ai_first_candidates(
     except Exception:
         result.validator_rejections["json_invalido"] = 1
         return result
+    if isinstance(payload, dict):
+        # Keep only the closed-contract fields for diagnostics; never persist
+        # prompts, credentials, or full source fragments.
+        result.llm_payload = {
+            key: payload.get(key)
+            for key in ("decision", "selected_candidate_ids", "requirements", "confidence")
+            if key in payload
+        }
 
     expected_keys = {"decision", "answer", "selected_candidate_ids", "requirements", "confidence"}
     if not isinstance(payload, dict) or set(payload) != expected_keys:
