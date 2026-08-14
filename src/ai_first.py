@@ -577,10 +577,21 @@ def retrieve_ai_first_candidates(
     # suitable for Teams.
     anchors = []
     if getattr(config, "ai_first_legacy_anchors", False) and getattr(config, "ai_first_anchor_only", False):
-        try:
-            anchors = retrieve_azure_search_evidence(user_message, config, client=client)
-        except Exception:
-            anchors = []
+        # Run the bounded planner queries rather than only the conversational
+        # wording.  This recovers procedures whose technical identifier is in
+        # an introductory/background clause, while retaining the same Azure,
+        # provenance and version gates.
+        seen_anchor_keys: set[tuple[str, str, str]] = set()
+        for query in plan.retrieval_queries[:3]:
+            try:
+                retrieved = retrieve_azure_search_evidence(query, config, client=client)
+            except Exception:
+                retrieved = []
+            for source in retrieved:
+                key = (str(source.titulo), str(source.ubicacion), str(source.fragmento))
+                if key not in seen_anchor_keys:
+                    seen_anchor_keys.add(key)
+                    anchors.append(source)
         if anchors:
             candidates = []
             anchor_observations = []
