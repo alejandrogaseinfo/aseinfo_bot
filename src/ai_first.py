@@ -52,6 +52,10 @@ _VERSION_PATTERN = re.compile(r"(?<![\d.])(\d+(?:\.\d+){2,})(?!\d|\.\d)")
 _UNCONFIRMED_COMPATIBILITY_CLAIM = re.compile(
     r"(?i)\b(?:compatible|compatibilidad|aplica|corresponde|pertenece)\b"
 )
+_VERSION_WARNING_CLAUSE = re.compile(
+    r"(?i)(?:sin embargo,?\s*)?(?:la|esta) fuente no confirma compatibilidad "
+    r"con la versión(?: consultada)?(?:\s+\d+(?:\.\d+){2,})?\.?"
+)
 _GENERIC_RANKING_TOKENS = {"evolution", "libras", "documento", "documentos", "manual", "readme"}
 _GENERIC_REQUIREMENT_CONCEPTS = {
     "cambio", "cambia", "incluye", "indica", "inform", "saber", "dice",
@@ -2282,7 +2286,11 @@ def answer_ai_first_candidates(
     if plan.version and any(_version_status(candidate.record, plan) == "no_confirmada" for candidate in selected):
         # The requested version may occur only inside the explicit caveat. It
         # must not be treated as a factual version claim about the source.
-        claims_answer = claims_answer.replace(result.version_warning or "", "")
+        claims_answer = _VERSION_WARNING_CLAUSE.sub("", claims_answer)
+        if result.version_warning:
+            claims_answer = re.sub(
+                re.escape(result.version_warning), "", claims_answer, flags=re.IGNORECASE
+            )
         if _UNCONFIRMED_COMPATIBILITY_CLAIM.search(claims_answer):
             result.validator_rejections["version_no_confirmada_claim"] = 1
             return result
