@@ -1004,14 +1004,26 @@ _RELATION_FACET_CONCEPTS = frozenset({
 def _requirement_facets(requirement, plan: QueryPlan) -> dict[str, tuple[str, ...]]:
     """Derive generic evidence facets from a requirement, without aliases."""
     profile = _requirement_profile(requirement)
+    # QueryPlan normalizes requirement text to lowercase.  Preserve the
+    # original user wording as an additional signal so nominal technical
+    # entities/acronyms remain identity anchors without introducing aliases.
     raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+    raw_tokens.extend(re.findall(r"[\w.-]+", plan.raw_message or "", flags=re.UNICODE))
     structural = tuple(dict.fromkeys(
         concept for raw in raw_tokens
-        if "_" in raw or "." in raw or any(char.isdigit() for char in raw)
+        if ("_" in raw or "." in raw or any(char.isdigit() for char in raw))
+        and not _VERSION_PATTERN.fullmatch(raw)
         for concept in concept_keys(raw)
-        if concept and concept != "version"
+        if concept and concept != "version" and not concept.isdigit()
     ))
-    identity = tuple(dict.fromkeys((*profile["strong"], *structural)))
+    # Uppercase technical entities (for example an acronym used as a table
+    # family) are identity anchors even when QueryPlan classifies them as a
+    # topic.  This remains generic and does not introduce document aliases.
+    nominal_entities = tuple(dict.fromkeys(
+        concept_key(raw) for raw in raw_tokens
+        if len(raw) >= 2 and raw.isupper() and concept_key(raw)
+    ))
+    identity = tuple(dict.fromkeys((*profile["strong"], *structural, *nominal_entities)))
     relation_terms = [
         concept for concept in (*profile["auxiliary"], *profile["topic"], *profile["strong"])
         if concept in _RELATION_FACET_CONCEPTS or "_" in concept or "." in concept
@@ -1032,6 +1044,15 @@ def _requirement_facets(requirement, plan: QueryPlan) -> dict[str, tuple[str, ..
     }
 
 
+def _uppercase_nominal_entities(plan: QueryPlan) -> frozenset[str]:
+    """Return acronym-like nouns from the original question generically."""
+    return frozenset(
+        concept_key(raw)
+        for raw in re.findall(r"[\w.-]+", plan.raw_message or "", flags=re.UNICODE)
+        if len(raw) >= 2 and raw.isupper() and concept_key(raw)
+    )
+
+
 def _structural_identifiers(plan: QueryPlan) -> tuple[tuple[str, str], ...]:
     """Return complete structural identifiers as (raw, normalized) pairs."""
     identifiers: list[tuple[str, str]] = []
@@ -1049,6 +1070,14 @@ def _structural_identifiers(plan: QueryPlan) -> tuple[tuple[str, str], ...]:
         if normalized:
             identifiers.append((raw, normalized))
     return tuple(dict.fromkeys(identifiers))
+
+
+def _record_has_structural_terms(record: dict) -> bool:
+    """Return whether a fragment carries technical identifiers/relations."""
+    text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    return bool(re.search(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b", text)) or bool(
+        re.search(r"\b(?:campo|campos|relaci[oó]n|relaciona|unir|une)\b", text, re.IGNORECASE)
+    )
 
 
 def _structural_identifier_covered(record: dict, plan: QueryPlan) -> bool:
@@ -1090,6 +1119,25 @@ def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = No
             structural_required = bool(_structural_identifiers(plan))
             if structural_required:
                 covered[facet] = _structural_identifier_exact_covered(record, plan)
+                continue
+            # For acronym-like nominal entities, identity means the entity is
+            # present in a technical identifier in the exact fragment.  A
+            # generic cover/title mentioning only the acronym must not outrank
+            # the fragment that carries the concrete table/component identity.
+            nominal_entities = _uppercase_nominal_entities(plan)
+            structural_text = " ".join(
+                match.group(0).casefold()
+                for match in re.finditer(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b", text)
+            )
+            if nominal_entities:
+                covered[facet] = all(
+                    any(
+                        target in identifier.split("_", 1)[0]
+                        for identifier in structural_text.split()
+                    )
+                    for target in nominal_entities
+                    if target in facet_targets
+                )
                 continue
             identity_hits = sum(_concept_present(target, concepts) for target in facet_targets)
             # Complete technical identifiers may be tokenized into several
@@ -1260,8 +1308,12 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
             or group_matrix.get("covered", {}).get(facet) is True
             for facet in ("identity", "purpose", "action", "relations", "version")
         )
-        # Complete groups and weak/incidental groups do not need recall.
-        if group_complete or details.get("selection_class") != "strong_anchor":
+        # Complete groups and weak/incidental groups do not need recall.  A
+        # thematic hit may still seed expansion when its fragment carries
+        # technical identifiers/relations; this is how identity and purpose
+        # split across chunks are recovered without admitting incidental docs.
+        expandable = details.get("selection_class") == "strong_anchor" or _record_has_structural_terms(record)
+        if group_complete or not expandable:
             continue
         seen_documents.add(key)
         expansion_keys.append(("document_id" if document_id else "source_url", key, _document_key(record), group_matrix))

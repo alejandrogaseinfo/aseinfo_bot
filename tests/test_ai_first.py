@@ -612,6 +612,45 @@ class AIFirstTests(unittest.TestCase):
         self.assertLessEqual(len(selected), 3)
         self.assertEqual({"p1", "p2"}, {record["id"] for record in selected[:2]})
 
+    def test_thematic_document_with_structural_terms_is_expandable(self):
+        generic = _record(
+            "generic", "Manual IRA", "La documentación describe una tabla de flujos.", document_id="manual"
+        )
+        direct = _record(
+            "direct", "Manual IRA", "wfl.ira_instancias_rutas_aut almacena flujos; ira_codrau e ira_codigo_entidad son relaciones.", document_id="manual"
+        )
+        self.assertTrue(ai_first._record_has_structural_terms(direct))
+        self.assertFalse(ai_first._record_has_structural_terms(generic))
+        plan = ai_first.build_query_plan("¿Qué se sabe de la tabla IRA?")
+        selected = ai_first._select_diverse_judge_records([generic, direct], {"generic": 1, "direct": 2}, "¿Qué se sabe de la tabla IRA?", 3, plan)
+        self.assertIn("direct", [record["id"] for record in selected])
+
+    def test_version_unconfirmed_direct_fragment_can_cover_without_contradiction(self):
+        plan = ai_first.build_query_plan("En la versión 1.24.1.3, ¿qué tabla IRA almacena flujos?")
+        record = _record("ira", "Manual IRA", "La tabla wfl.ira_instancias_rutas_aut almacena flujos.")
+        facets = ai_first._facet_matrix(record, plan)
+        self.assertEqual("no_confirmada", ai_first._version_status(record, plan))
+        self.assertTrue(facets["covered"]["identity"])
+        self.assertTrue(facets["covered"]["purpose"])
+
+    def test_document_group_uses_document_id_without_page_metadata(self):
+        first = _record("identity", "Manual IRA", "wfl.ira_instancias_rutas_aut almacena flujos.", document_id="manual-ira")
+        second = _record("relations", "Manual IRA", "Se relaciona mediante ira_codrau e ira_codigo_entidad.", document_id="manual-ira")
+        self.assertEqual("manual-ira", ai_first._document_key(first))
+        self.assertEqual(ai_first._document_key(first), ai_first._document_key(second))
+        plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?")
+        selected = ai_first._select_diverse_judge_records([second, first], {"identity": 2, "relations": 1}, plan.raw_message, 3, plan)
+        self.assertEqual({"identity", "relations"}, {record["id"] for record in selected})
+
+    def test_generic_same_topic_fragment_cannot_replace_structural_identity(self):
+        plan = ai_first.build_query_plan("¿Qué se sabe de la tabla IRA?")
+        generic = _record("generic", "Manual IRA", "La tabla describe procesos generales.", document_id="manual")
+        incidental = _record("oracle", "Oracle", "La tabla contiene relaciones genéricas.", document_id="oracle")
+        matrix = ai_first._facet_matrix(generic, plan)
+        self.assertFalse(matrix["covered"]["identity"])
+        selected = ai_first._select_diverse_judge_records([generic, incidental], {"generic": 1, "oracle": 2}, plan.raw_message, 3, plan)
+        self.assertEqual(["generic"], [record["id"] for record in selected])
+
     def test_incomplete_group_does_not_claim_complete_or_replace_with_incidental(self):
         question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
         plan = ai_first.build_query_plan(question)
