@@ -159,6 +159,7 @@ def _run_ai_first(question: str, config: Config, client: OpenAI, case: dict) -> 
             "validator_rejections": direct.validator_rejections,
             "llm_payload": direct.llm_payload,
             "candidate_observations": retrieval.candidate_observations,
+            "azure_calls": retrieval.azure_calls,
             "stage_latency_ms": stage_latency,
         }
     )

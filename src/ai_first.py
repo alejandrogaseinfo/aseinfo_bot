@@ -140,6 +140,7 @@ class AIFirstRetrieval:
     raw_candidate_count: int = 0
     rejected_reasons: dict[str, int] = field(default_factory=dict)
     candidate_observations: list[dict[str, object]] = field(default_factory=list)
+    azure_calls: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
@@ -609,7 +610,8 @@ def retrieve_ai_first_candidates(
         index_name=config.azure_search_index_name,
         credential=_credential(config),
     )
-    search_client = _install_search_observer(search_client, user_message, config)
+    azure_metrics: dict[str, object] = {"calls": []}
+    search_client = _install_search_observer(search_client, user_message, config, azure_metrics)
     correlation_id = request_hash(user_message)
     search_host = endpoint_host(getattr(config, "azure_search_endpoint", ""))
     logger.info(
@@ -632,7 +634,8 @@ def retrieve_ai_first_candidates(
     # Keep the second pass generic. The experimental route must not inherit
     # case-specific aliases or literal-coverage gates from legacy ranking.
     focused = " ".join(dict.fromkeys(tokenize(user_message)))
-    if focused and focused.casefold() != user_message.casefold():
+    query_signature = lambda value: tuple(sorted(tokenize(value)))
+    if focused and query_signature(focused) != query_signature(user_message):
         queries.append(focused)
     for query_rank, query in enumerate(queries):
         try:
@@ -723,7 +726,8 @@ def retrieve_ai_first_candidates(
     # bounded set of already authorized Azure evidence as recall anchors; this
     # does not use local fallback and the model still chooses opaque IDs.
     anchors = []
-    if getattr(config, "ai_first_legacy_anchors", False):
+    need_anchors = getattr(config, "ai_first_legacy_anchors", False) and len(candidate_records) < min(limit, 4)
+    if need_anchors:
         try:
             anchors = retrieve_azure_search_evidence(user_message, config, client=client)
         except Exception:
@@ -778,6 +782,7 @@ def retrieve_ai_first_candidates(
         raw_candidate_count=len(records_by_id),
         rejected_reasons=rejected,
         candidate_observations=observations,
+        azure_calls=list(azure_metrics.get("calls", [])),
     )
     logger.info(
         "ai_first_sanitization_end request_hash=%s outcome=success duration_ms=%s "

@@ -376,7 +376,7 @@ def _pipeline_retry_count(pipeline_response) -> int:
     return len(history or ())
 
 
-def _install_search_observer(search_client, user_message: str, config):
+def _install_search_observer(search_client, user_message: str, config, metrics: dict | None = None):
     """Observe Azure Search SDK calls while preserving the client contract.
 
     The SDK exposes retry history on ``PipelineResponse.context`` only when a
@@ -423,13 +423,16 @@ def _install_search_observer(search_client, user_message: str, config):
         except Exception as exc:
             response = getattr(exc, "response", None)
             retry_count["value"] += _pipeline_retry_count(response)
+            elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
+            if metrics is not None:
+                metrics.setdefault("calls", []).append({"index": call_index, "kind": query_kind, "duration_ms": elapsed_ms, "retries": retry_count["value"], "outcome": "error"})
             logger.warning(
                 "azure_search_query_end request_hash=%s query_index=%s outcome=error "
                 "duration_ms=%s retries=%s error=%s model=%s endpoint_host=%s "
                 "timeout_s=%.1f",
                 correlation_id,
                 call_index,
-                round((perf_counter() - started_at) * 1000, 2),
+                elapsed_ms,
                 retry_count["value"],
                 error_code(exc),
                 model,
@@ -437,12 +440,15 @@ def _install_search_observer(search_client, user_message: str, config):
                 SEARCH_TIMEOUT_SECONDS,
             )
             raise
+        elapsed_ms = round((perf_counter() - started_at) * 1000, 2)
+        if metrics is not None:
+            metrics.setdefault("calls", []).append({"index": call_index, "kind": query_kind, "duration_ms": elapsed_ms, "retries": retry_count["value"], "outcome": "success"})
         logger.info(
             "azure_search_query_end request_hash=%s query_index=%s outcome=success "
             "duration_ms=%s retries=%s model=%s endpoint_host=%s timeout_s=%.1f",
             correlation_id,
             call_index,
-            round((perf_counter() - started_at) * 1000, 2),
+            elapsed_ms,
             retry_count["value"],
             model,
             host,
