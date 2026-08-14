@@ -643,6 +643,15 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual("abstain", result.decision)
         self.assertEqual(1, result.validator_rejections["cobertura_insuficiente"])
 
+    def test_structural_recall_combines_identifier_with_related_terms(self):
+        plan = ai_first.build_query_plan(
+            "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        )
+        _artifact, combined = ai_first._query_plan_recall_queries(plan)
+        self.assertIn("ira_instancias_rutas_aut", combined)
+        self.assertIn("campo", combined)
+        self.assertNotEqual(combined, "ira_instancias_rutas_aut")
+
     def test_no_sufficient_candidate_abstains_without_substitution(self):
         _FakeSearchClient.records = [_record("oracle", "Oracle Readme 1.24.1.5", "Cambios del motor Oracle.")]
         with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):

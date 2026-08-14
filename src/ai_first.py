@@ -388,6 +388,19 @@ def _query_plan_recall_queries(plan: QueryPlan) -> tuple[str, str]:
         structural_terms.extend(
             anchor for anchor in profile["strong"] if "_" in anchor or "." in anchor or "-" in anchor
         )
+    # QueryRequirement text is normalized for linguistic scoring and may have
+    # split underscore identifiers.  Recover complete structural terms from
+    # the original user wording so related fields remain available to Search.
+    structural_terms.extend(
+        re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", plan.raw_message or "")
+    )
+    if structural_terms:
+        for requirement in plan.requirements:
+            profile = _requirement_profile(requirement)
+            structural_terms.extend(
+                concept for concept in (*profile["auxiliary"], *profile["topic"])
+                if concept in _RELATION_FACET_CONCEPTS
+            )
     # Preserve technical acronyms from the original casing even when the
     # normalized requirement text is lowercase and the token is only three
     # characters long.
@@ -946,6 +959,12 @@ def _structural_identifiers(plan: QueryPlan) -> tuple[tuple[str, str], ...]:
             normalized = re.sub(r"[^a-z0-9_./-]", "", normalized)
             if normalized:
                 identifiers.append((raw, normalized))
+    for raw in re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", plan.raw_message or ""):
+        normalized = unicodedata.normalize("NFKD", raw).casefold()
+        normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+        normalized = re.sub(r"[^a-z0-9_./-]", "", normalized)
+        if normalized:
+            identifiers.append((raw, normalized))
     return tuple(dict.fromkeys(identifiers))
 
 
