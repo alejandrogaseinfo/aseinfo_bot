@@ -740,21 +740,82 @@ def _select_diverse_judge_records(
             ranked_groups.append((rank_key(distinct[0]), document_key, distinct))
     ranked_groups.sort(key=lambda item: (item[0], item[1]))
 
-    # Reserve roughly two thirds of the pool for the best distinct documents,
-    # then use the remaining slots for supporting pages of those documents.
-    primary_documents = max(1, min(len(ranked_groups), (bounded_limit * 2 + 2) // 3))
-    selected_groups = ranked_groups[:primary_documents]
-    selected = [group[2][0] for group in selected_groups]
-    if len(selected) >= bounded_limit:
+    # Build the best document first, choosing fragments by newly covered
+    # facets.  The group matrix is deliberately computed from this exact
+    # selection, never from pages that will remain outside the LLM payload.
+    best_group = ranked_groups[0] if ranked_groups else None
+    selected: list[dict] = []
+    if best_group:
+        remaining = list(best_group[2])
+        while remaining and len(selected) < MAX_AI_FIRST_FRAGMENTS_PER_DOCUMENT:
+            before = _group_facet_matrix(selected, plan) if plan else {"covered": {}}
+            before_covered = before.get("covered", {})
+            def gain(record: dict) -> tuple[int, int, int, str]:
+                after = _group_facet_matrix(selected + [record], plan) if plan else {"covered": {}}
+                after_covered = after.get("covered", {})
+                new_facets = sum(
+                    after_covered.get(facet) is True and before_covered.get(facet) is not True
+                    for facet in ("identity", "purpose", "action", "relations", "version")
+                )
+                details = _candidate_selection_details(record, plan, user_message) if plan else {}
+                return (new_facets, int(details.get("selection_score", 0)), -rank_by_id.get(str(record.get("id") or ""), 10_000), str(record.get("id") or ""))
+            chosen = max(remaining, key=gain)
+            selected.append(chosen)
+            remaining.remove(chosen)
+            matrix = _group_facet_matrix(selected, plan) if plan else {"covered": {}}
+            covered = matrix.get("covered", {})
+            required = matrix.get("required", {})
+            complete = all(
+                not required.get(facet) or covered.get(facet) is True
+                for facet in ("identity", "purpose", "action", "relations", "version")
+            )
+            # A procedure/document group with multiple distinct pages keeps a
+            # second complementary page even when the coarse facet extractor
+            # already marks the first requirement as covered.
+            minimum_group_fragments = 2 if len(best_group[2]) > 1 and bounded_limit > 1 else 1
+            if complete and len(selected) >= minimum_group_fragments:
+                break
+
+    best_matrix = _group_facet_matrix(selected, plan) if plan else {"covered": {}}
+    best_complete = all(
+        not best_matrix.get("required", {}).get(facet)
+        or best_matrix.get("covered", {}).get(facet) is True
+        for facet in ("identity", "purpose", "action", "relations", "version")
+    )
+    # Keep complementary pages when the first page is not itself complete.  A
+    # group-level matrix may become complete after combining pages, but those
+    # pages are precisely the evidence the LLM must receive.  Also preserve
+    # distinct explicit versions for an unversioned question so the validator
+    # can reject an unsafe mixture rather than silently hiding it in ranking.
+    first_complete = False
+    if best_group and best_group[2]:
+        first_matrix = _facet_matrix(best_group[2][0], plan) if plan else {"required": {}, "covered": {}}
+        first_complete = all(
+            not first_matrix.get("required", {}).get(facet)
+            or first_matrix.get("covered", {}).get(facet) is True
+            for facet in ("identity", "purpose", "action", "relations", "version")
+        )
+    distinct_versions = {
+        version
+        for _group_rank, _document_key_value, fragments in ranked_groups
+        for fragment in fragments
+        for version in _identity_versions(fragment)
+    }
+    preserve_version_diversity = bool(plan and not plan.version and len(distinct_versions) > 1)
+    # Once one document supplies all required facets in a single fragment, do
+    # not spend the pool on incidental documents.  Otherwise preserve bounded
+    # document diversity and complementary fragments.
+    if (best_complete and (first_complete or len(selected) >= 2) and not preserve_version_diversity) or len(selected) >= bounded_limit:
         return selected[:bounded_limit]
 
-    for fragment_index in range(1, MAX_AI_FIRST_FRAGMENTS_PER_DOCUMENT):
-        for _group_rank, _document_key_value, fragments in selected_groups:
-            if fragment_index >= len(fragments):
-                continue
-            selected.append(fragments[fragment_index])
-            if len(selected) >= bounded_limit:
-                return selected
+    primary_documents = max(1, min(len(ranked_groups), (bounded_limit * 2 + 2) // 3))
+    selected_groups = ranked_groups[:primary_documents]
+    for _group_rank, _document_key_value, fragments in selected_groups[1:]:
+        for record in fragments:
+            if record not in selected:
+                selected.append(record)
+                if len(selected) >= bounded_limit:
+                    return selected
 
     # If fewer than the requested slots are available, continue with the best
     # remaining documents without exceeding the per-document bound.
@@ -851,19 +912,23 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     strong_query, action_query = _query_plan_lexical_queries(plan)
     artifact_action_query, structural_query = _query_plan_recall_queries(plan)
     query_specs = [
-        ("original", user_message),
-        ("anchor", strong_query),
-        ("action", action_query),
-        ("artifact_action", artifact_action_query),
-        ("structural", structural_query),
+        ("original", user_message, ("title", CONTENT_FIELD, "content_tokens")),
+        ("anchor", strong_query, ("title", CONTENT_FIELD, "content_tokens")),
+        ("action", action_query, ("title", CONTENT_FIELD, "content_tokens")),
+        ("artifact_action", artifact_action_query, ("title",)),
+        ("structural", structural_query, ("title", CONTENT_FIELD, "content_tokens")),
     ]
     queries = []
     seen_query_signatures: set[tuple[str, ...]] = set()
-    for kind, query in query_specs:
+    for kind, query, fields in query_specs:
         signature = tuple(tokenize(query))
+        # The structural query is redundant when the strong query already
+        # carries the complete identifier; avoid spending a Search call on it.
+        if kind == "structural" and structural_query and structural_query.casefold() in strong_query.casefold():
+            continue
         if query and signature not in seen_query_signatures:
             seen_query_signatures.add(signature)
-            queries.append((kind, query))
+            queries.append((kind, query, fields))
     search_args = {
         "top": min(CANDIDATE_POOL_SIZE, 20),
         "select": SEARCH_SELECT_FIELDS,
@@ -876,15 +941,15 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     calls: list[dict[str, object]] = []
 
     def lexical(query_rank_query):
-        query_rank, (kind, query) = query_rank_query
+        query_rank, (kind, query, fields) = query_rank_query
         started = perf_counter()
         local_search_args = dict(search_args)
         rows = list(search_client.search(
             search_text=query,
-            search_fields=["title", CONTENT_FIELD, "content_tokens"],
+            search_fields=list(fields),
             **local_search_args,
         ))
-        return query_rank, (kind, query, local_search_args["search_mode"]), rows, round((perf_counter() - started) * 1000, 2)
+        return query_rank, (kind, query, fields, local_search_args["search_mode"]), rows, round((perf_counter() - started) * 1000, 2)
 
     with ThreadPoolExecutor(max_workers=max(1, len(queries))) as pool:
         futures = [pool.submit(lexical, item) for item in enumerate(queries)]
@@ -894,13 +959,26 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
             except Exception as exc:
                 calls.append({"kind": "lexical", "query": "<redacted>", "duration_ms": 0.0, "result_count": 0, "error": error_code(exc)})
                 continue
-            query_kind, query, search_mode = query_kind_value
+            query_kind, query, fields, search_mode = query_kind_value
+            new_result_ids: list[str] = []
+            for rank, result in enumerate(rows, start=1):
+                record = dict(result)
+                record_id = str(record.get("id") or "")
+                if not record_id:
+                    continue
+                if record_id not in records_by_id:
+                    new_result_ids.append(record_id)
+                records_by_id.setdefault(record_id, {}).update(record)
+                rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), rank + query_rank * 100)
             calls.append({
                 "kind": f"lexical_{query_kind}",
                 "query": query,
+                "search_fields": list(fields),
                 "search_mode": search_mode,
                 "duration_ms": duration_ms,
                 "result_count": len(rows),
+                "new_result_ids": new_result_ids,
+                "contributed": bool(new_result_ids),
                 "top_results": [
                     {
                         "title": _bounded_text(row.get("title"), 300),
@@ -910,13 +988,6 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                     for row in rows[:20]
                 ],
             })
-            for rank, result in enumerate(rows, start=1):
-                record = dict(result)
-                record_id = str(record.get("id") or "")
-                if not record_id:
-                    continue
-                records_by_id.setdefault(record_id, {}).update(record)
-                rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), rank + query_rank * 100)
 
     # Vector retrieval is a bounded recall aid only when lexical retrieval is
     # sparse; it can never override local version/provenance validation.
@@ -930,11 +1001,18 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 fields=CONTENT_VECTOR_FIELD,
             )
             rows = list(search_client.search(search_text=None, vector_queries=[vector_query], **search_args))
+            new_result_ids: list[str] = []
+            for result in rows:
+                record_id = str(result.get("id") or "")
+                if record_id and record_id not in records_by_id:
+                    new_result_ids.append(record_id)
             calls.append({
                 "kind": "vector",
                 "query": "<embedding:user_message>",
                 "duration_ms": round((perf_counter() - started) * 1000, 2),
                 "result_count": len(rows),
+                "new_result_ids": new_result_ids,
+                "contributed": bool(new_result_ids),
                 "top_results": [
                     {"title": _bounded_text(row.get("title"), 300)} for row in rows[:20]
                 ],
