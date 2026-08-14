@@ -453,7 +453,16 @@ class AIFirstTests(unittest.TestCase):
         )
         strong_query, action_query = ai_first._query_plan_lexical_queries(plan)
         self.assertIn("ira_instancias_rutas_aut", strong_query)
-        self.assertTrue(action_query)
+        self.assertNotIn("campo", action_query)
+
+    def test_query_planning_adds_complete_artifact_action_recall_without_generic_root(self):
+        plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
+        artifact_action, structural = ai_first._query_plan_recall_queries(plan)
+        self.assertIn("ofuscan", artifact_action)
+        self.assertIn("datos", artifact_action)
+        self.assertIn("SQL", artifact_action)
+        self.assertNotEqual("campo", artifact_action)
+        self.assertEqual("", structural)
 
     def test_candidate_payload_contains_local_coverage_metadata(self):
         records = [_record(

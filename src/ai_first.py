@@ -58,6 +58,7 @@ _GENERIC_AUXILIARY_CONCEPTS = {
     "alguno", "sabe", "inform", "indica", "dice", "hacer", "puede", "pued", "tiene",
     "present", "necesit", "quier", "como", "cual", "que", "sobre", "evolution", "libras", "reviso",
     "sensibl", "personal", "confidencial", "oficial", "nuevo", "actual",
+    "campo", "hace",
 }
 _SEMANTIC_TOPIC_GROUPS = (
     frozenset({"guarda", "almacen", "conserva", "contien", "registr"}),
@@ -321,8 +322,47 @@ def _query_plan_lexical_queries(plan: QueryPlan) -> tuple[str, str]:
     if plan.version:
         strong.append(plan.version)
     strong_query = " ".join(dict.fromkeys(str(token).strip() for token in strong if str(token).strip()))
-    action_query = " ".join(dict.fromkeys(str(token).strip() for token in action_topic if str(token).strip()))
+    blocked_action_terms = _GENERIC_AUXILIARY_CONCEPTS | _GENERIC_REQUIREMENT_CONCEPTS | _GENERIC_RANKING_TOKENS
+    action_query = " ".join(dict.fromkeys(
+        str(token).strip() for token in action_topic
+        if str(token).strip() and str(token).strip() not in blocked_action_terms
+    ))
     return strong_query, action_query
+
+
+def _query_plan_recall_queries(plan: QueryPlan) -> tuple[str, str]:
+    """Build bounded, complete-term recall queries from the same QueryPlan.
+
+    The first query preserves the user's artifact/entity wording alongside the
+    requested action.  The second contains only complete structural
+    identifiers.  Neither query is a document- or case-specific alias.
+    """
+    artifact_terms: list[str] = []
+    structural_terms: list[str] = []
+    for requirement in plan.requirements:
+        profile = _requirement_profile(requirement)
+        if plan.artifact_role and not requirement.text.casefold().startswith("el calificador"):
+            artifact_terms.extend(re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE))
+        structural_terms.extend(
+            re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", requirement.text)
+        )
+        structural_terms.extend(
+            anchor for anchor in profile["strong"] if "_" in anchor or "." in anchor or "-" in anchor
+        )
+    # Preserve technical acronyms from the original casing even when the
+    # normalized requirement text is lowercase and the token is only three
+    # characters long.
+    if plan.artifact_role:
+        artifact_terms.append(plan.artifact_role)
+        artifact_terms.extend(re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", plan.raw_message))
+    cleaned_artifact_terms = []
+    for term in artifact_terms:
+        cleaned = term.strip(".,;:!?¿¡()[]")
+        if len(cleaned) >= 4 or cleaned.isupper():
+            cleaned_artifact_terms.append(cleaned)
+    artifact_action = " ".join(dict.fromkeys(cleaned_artifact_terms))
+    structural = " ".join(dict.fromkeys(term for term in structural_terms if term))
+    return artifact_action, structural
 
 
 def _concept_present(concept: str, concepts: set[str]) -> bool:
@@ -685,7 +725,14 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
         credential=_credential(config),
     )
     strong_query, action_query = _query_plan_lexical_queries(plan)
-    query_specs = [("original", user_message), ("anchor", strong_query), ("action", action_query)]
+    artifact_action_query, structural_query = _query_plan_recall_queries(plan)
+    query_specs = [
+        ("original", user_message),
+        ("anchor", strong_query),
+        ("action", action_query),
+        ("artifact_action", artifact_action_query),
+        ("structural", structural_query),
+    ]
     queries = []
     seen_query_signatures: set[tuple[str, ...]] = set()
     for kind, query in query_specs:
@@ -707,12 +754,13 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     def lexical(query_rank_query):
         query_rank, (kind, query) = query_rank_query
         started = perf_counter()
+        local_search_args = dict(search_args)
         rows = list(search_client.search(
             search_text=query,
             search_fields=["title", CONTENT_FIELD, "content_tokens"],
-            **search_args,
+            **local_search_args,
         ))
-        return query_rank, (kind, query), rows, round((perf_counter() - started) * 1000, 2)
+        return query_rank, (kind, query, local_search_args["search_mode"]), rows, round((perf_counter() - started) * 1000, 2)
 
     with ThreadPoolExecutor(max_workers=max(1, len(queries))) as pool:
         futures = [pool.submit(lexical, item) for item in enumerate(queries)]
@@ -722,8 +770,8 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
             except Exception as exc:
                 calls.append({"kind": "lexical", "query": "<redacted>", "duration_ms": 0.0, "result_count": 0, "error": error_code(exc)})
                 continue
-            query_kind, query = query_kind_value
-            calls.append({"kind": f"lexical_{query_kind}", "query": query, "duration_ms": duration_ms, "result_count": len(rows)})
+            query_kind, query, search_mode = query_kind_value
+            calls.append({"kind": f"lexical_{query_kind}", "query": query, "search_mode": search_mode, "duration_ms": duration_ms, "result_count": len(rows)})
             for rank, result in enumerate(rows, start=1):
                 record = dict(result)
                 record_id = str(record.get("id") or "")
