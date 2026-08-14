@@ -149,7 +149,8 @@ Reglas:
   advertencia explícita de que la fuente no confirma la versión indicada;
   incompatible => rechaza la selección. Devuelve "abstain" únicamente cuando
   la cobertura directa sea insuficiente; nunca conviertas una fuente sin
-  versión en una coincidencia implícita.
+  versión en una coincidencia implícita. La ausencia de versión, por sí sola,
+  no constituye cobertura insuficiente.
 - Si pregunta en qué versión ocurrió un cambio, indica la versión exacta que
   aparece en el candidato seleccionado. No uses un candidato cuyo título de
   versión contradiga el fragmento.
@@ -1961,7 +1962,10 @@ def judge_ai_first_candidates(
                             "question": user_message,
                             "version_policy": (
                                 "La pregunta solicita la versión " + plan.version
-                                + ". Si una fuente no tiene versión, responde con su contenido y di literalmente que no confirma la correspondencia con esa versión."
+                                + ". Política: compatible + cobertura suficiente = answer; "
+                                "no_confirmada + cobertura suficiente = answer con advertencia explícita "
+                                "de que la fuente no confirma esa versión; incompatible = rechazar; "
+                                "abstain solo si falta cobertura directa."
                                 if plan.version else ""
                             ),
                             "requirements": [
