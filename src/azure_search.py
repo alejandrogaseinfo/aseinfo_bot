@@ -3129,6 +3129,14 @@ def _v2_semantic_coverage_is_anchored(
             has_requested_action_coverage(requirement.text, window) for window in windows
         ):
             return False
+        # A topic heading and an action sentence must be locally connected;
+        # otherwise two unrelated passages can be mistaken for one procedure.
+        if non_action_anchors and requirement.actions and not any(
+            non_action_anchors.issubset(set(concept_keys(window)))
+            and has_requested_action_coverage(requirement.text, window)
+            for window in windows
+        ):
+            return False
         # A code artifact may be semantically summarized, but its named
         # operation must still appear in the title, reviewed operation or code.
         if is_code and requirement.actions and not set(requirement.actions).intersection(

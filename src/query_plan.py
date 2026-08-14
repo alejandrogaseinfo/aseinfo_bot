@@ -45,12 +45,17 @@ _STOP_CONCEPTS = {
     "relacion", "relacionan", "ambos", "confirmar", "confirmacion", "quedo",
     "funcionando", "funciona", "correctamente", "revisar", "revisa", "paga",
     "comunicacion", "comunic", "precaucion", "precauciones", "tomar",
+    "hace",
     # Libras is an Evolution-only knowledge base. Mentioning the platform is
     # useful for retrieval, but a page need not repeat that brand to directly
     # support a product-specific operation.
     "evolution",
     # Normalized forms emitted by ``concept_key``/the document tokenizer.
     "relacion", "ambo", "confirm", "quedo", "funcion", "correcta", "revis", "exist",
+    # Generic interrogative verbs do not identify the requested artifact or
+    # procedure.  Treating them as hard action anchors would reject otherwise
+    # valid evidence before the local validator can inspect it.
+    "indica", "validam", "sabe", "conoce", "contien", "parametr",
 }
 _BACKGROUND_PREFIX = re.compile(r"^(?:despues|luego|tras|al)\b[^,;?]{1,700}[,;]\s*", re.IGNORECASE)
 _MODAL_ACTIONS = {"puede", "pueden", "podria", "podrian", "debe", "deben"}
@@ -118,6 +123,18 @@ def _actions(text: str) -> tuple[str, ...]:
     for verb in re.findall(r"\b(?:como|cómo)\s+se\s+([a-záéíóúñ]+(?:an|en))\b", normalized):
         if verb not in _MODAL_ACTIONS:
             actions.append(concept_key(verb))
+    # Interrogative conjugations such as "qué guarda" or "qué contiene"
+    # do not carry an infinitive suffix.  Treat the verb immediately following
+    # "qué" as the requested action when it is not a noun/modal stopword.
+    for verb in re.findall(r"\b(?:que|qué)\s+([a-záéíóúñ]+)\b", normalized):
+        concept = concept_key(verb)
+        if (
+            concept not in _STOP_CONCEPTS
+            and concept not in {"document", "documento", "campo", "version", "dato"}
+            and not concept.endswith(("os", "as"))
+            and len(concept) >= 4
+        ):
+            actions.append(concept)
     return tuple(
         dict.fromkeys(
             action for action in actions if len(action) >= 4 and action not in _STOP_CONCEPTS

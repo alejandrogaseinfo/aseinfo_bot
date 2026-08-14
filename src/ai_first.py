@@ -266,7 +266,7 @@ def _candidate_selection_details(
     )
     concepts = set(concept_keys(text))
     action_hits = sum(
-        _concept_present(action, concepts)
+        _topic_signal_present(action, concepts)
         for requirement in plan.requirements
         for action in _requirement_profile(requirement)["action"]
     )
@@ -440,6 +440,7 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
     missing: list[str] = []
     strong_hits = 0
     topic_hits = 0
+    action_hits_total = 0
     strong_required = False
     version_ok = _candidate_version_compatible(record, plan)
     for requirement in plan.requirements:
@@ -447,8 +448,10 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
         req_hits = 0
         req_strong_hits = sum(_concept_present(anchor, record_concepts) for anchor in profile["strong"])
         req_topic_hits = sum(_topic_signal_present(topic, record_concepts) for topic in profile["topic"])
+        req_action_hits = sum(_topic_signal_present(action, record_concepts) for action in profile["action"])
         strong_hits += req_strong_hits
         topic_hits += req_topic_hits
+        action_hits_total += req_action_hits
         strong_required = strong_required or bool(profile["strong"])
         # A requirement is covered when its strong anchor is present (if one
         # exists) and at least one topical/action signal is present. If no
@@ -472,9 +475,15 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
             subject_hits = 0
             subject_minimum = 0
         artifact_support = plan.artifact_role == "script" and req_strong_hits >= artifact_minimum
+        # The principal action is required for a fragment to claim the whole
+        # requirement.  Complementary fragments may still be combined by the
+        # grouped-document path, but a page that only shares a topic cannot
+        # masquerade as direct evidence.
+        action_required = bool(profile["action"])
         sufficient = (
             (not profile["strong"] or req_strong_hits >= 1)
             and (not profile["topic"] or req_topic_hits >= 1 or artifact_support)
+            and (not action_required or req_action_hits >= 1)
         )
         if plan.artifact_role == "script" and profile["strong"]:
             sufficient = sufficient and req_strong_hits >= artifact_minimum and subject_hits >= subject_minimum
@@ -490,6 +499,7 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
             "missing_requirements": [req.identifier for req in plan.requirements],
             "strong_hits": 0,
             "topic_hits": 0,
+            "action_hits": 0,
             "version_requested": plan.version or "",
             "version_compatible": version_ok,
             "accepted": False,
@@ -508,6 +518,7 @@ def _record_coverage(record: dict, plan: QueryPlan, aggregate_text: str | None =
         "missing_requirements": missing,
         "strong_hits": strong_hits,
         "topic_hits": topic_hits,
+        "action_hits": action_hits_total,
         "version_requested": plan.version or "",
         "version_compatible": version_ok,
         "accepted": accepted,
@@ -1494,7 +1505,7 @@ def answer_ai_first_candidates(
     result.selected_requirements = {
         candidate.candidate_id: tuple(
             requirement_id for requirement_id in normalized_requirements
-            if _record_covers_requirements(candidate.record, plan, (requirement_id,))
+            if requirement_id in _record_coverage(candidate.record, plan).get("covered_requirements", ())
         )
         for candidate in selected
     }
