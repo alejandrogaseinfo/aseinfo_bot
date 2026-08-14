@@ -144,8 +144,12 @@ Reglas:
   el conjunto mínimo suficiente.
 - Si el usuario indicó una versión exacta, selecciona solamente documentos cuya
   identidad corresponda a esa versión.
-- Si la identidad de versión no puede confirmarse, devuelve "abstain"; no
-  conviertas una fuente sin versión en una coincidencia implícita.
+- Política ternaria de versión: compatible + cobertura suficiente =>
+  "answer"; no_confirmada + cobertura suficiente => "answer" con una
+  advertencia explícita de que la fuente no confirma la versión indicada;
+  incompatible => rechaza la selección. Devuelve "abstain" únicamente cuando
+  la cobertura directa sea insuficiente; nunca conviertas una fuente sin
+  versión en una coincidencia implícita.
 - Si pregunta en qué versión ocurrió un cambio, indica la versión exacta que
   aparece en el candidato seleccionado. No uses un candidato cuyo título de
   versión contradiga el fragmento.

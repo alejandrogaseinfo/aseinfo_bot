@@ -708,6 +708,13 @@ class AIFirstTests(unittest.TestCase):
         self.assertIn("incompatible debe rechazarse", ai_first.JUDGE_SYSTEM_PROMPT)
         self.assertIn("devuelve abstención", ai_first.JUDGE_SYSTEM_PROMPT)
 
+    def test_direct_prompt_distinguishes_unconfirmed_from_insufficient_coverage(self):
+        self.assertIn("compatible + cobertura suficiente", ai_first.DIRECT_RESPONSE_SYSTEM_PROMPT)
+        self.assertIn("no_confirmada + cobertura suficiente", ai_first.DIRECT_RESPONSE_SYSTEM_PROMPT)
+        self.assertIn('no_confirmada + cobertura suficiente =>', ai_first.DIRECT_RESPONSE_SYSTEM_PROMPT)
+        self.assertIn("incompatible => rechaza", ai_first.DIRECT_RESPONSE_SYSTEM_PROMPT)
+        self.assertIn("cobertura directa sea insuficiente", ai_first.DIRECT_RESPONSE_SYSTEM_PROMPT)
+
     def test_redundant_artifact_technical_query_is_omitted(self):
         _FakeSearchClient.records = [_record("artifact", "Ofuscación de datos SQL", "Ofuscan datos sensibles.")]
         plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
