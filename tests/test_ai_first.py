@@ -503,6 +503,32 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual(["direct-1", "direct-2"], [record["id"] for record in selected[:2]])
         self.assertLessEqual(sum(record["id"].startswith("inc-") for record in selected), 2)
 
+    def test_complete_group_excludes_incidental_group_from_llm_pool(self):
+        plan = ai_first.build_query_plan(
+            "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
+        )
+        direct = _record(
+            "direct", "Manual DB — Página 6",
+            "wfl.ira_instancias_rutas_aut guarda flujos y se relaciona con ira_codrau e ira_codigo_entidad.",
+            document_id="manual",
+        )
+        incidental = _record(
+            "oracle", "ORACLE proc.sql",
+            "Procedimiento Oracle incidental que consulta solicitudes.",
+            document_id="oracle",
+        )
+        selected = ai_first._select_diverse_judge_records(
+            [direct, incidental], {"direct": 1, "oracle": 2}, "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?", 12, plan
+        )
+        self.assertEqual(["direct"], [record["id"] for record in selected])
+
+    def test_equivalent_complete_groups_are_allowed_as_ties(self):
+        plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut?")
+        first = _record("a", "Manual A", "ira_instancias_rutas_aut guarda flujos.", document_id="a")
+        second = _record("b", "Manual B", "ira_instancias_rutas_aut guarda flujos.", document_id="b")
+        selected = ai_first._select_diverse_judge_records([first, second], {"a": 1, "b": 2}, "¿Qué guarda ira_instancias_rutas_aut?", 12, plan)
+        self.assertEqual({"a", "b"}, {record["id"] for record in selected})
+
     def test_candidate_payload_contains_local_coverage_metadata(self):
         records = [_record(
             "direct", "Gestion de documentos.pdf — Página 4",

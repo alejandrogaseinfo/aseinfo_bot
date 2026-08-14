@@ -881,6 +881,48 @@ def _select_diverse_judge_records(
         for version in _identity_versions(fragment)
     }
     preserve_version_diversity = bool(plan and not plan.version and len(distinct_versions) > 1)
+    if best_complete and not preserve_version_diversity and best_group and plan:
+        best_signature = tuple(
+            best_matrix.get("covered", {}).get(facet) is True
+            for facet in ("identity", "purpose", "action", "relations", "version")
+        )
+        tied_groups = [
+            group for group in ranked_groups
+            if tuple(
+                _group_facet_matrix(group[2], plan).get("covered", {}).get(facet) is True
+                for facet in ("identity", "purpose", "action", "relations", "version")
+            ) == best_signature
+        ]
+        if len(tied_groups) > 1:
+            tied = []
+            for group in tied_groups:
+                tied.extend(group[2])
+            return tied[:bounded_limit]
+    # Evaluate the complete bounded fragment set for every document group.
+    # This prevents a lower-ranked Oracle/Readme group from entering the LLM
+    # pool when the top document already covers every required facet.
+    best_group_full_matrix = _group_facet_matrix(best_group[2], plan) if best_group and plan else {"required": {}, "covered": {}}
+    best_group_full_complete = all(
+        not best_group_full_matrix.get("required", {}).get(facet)
+        or best_group_full_matrix.get("covered", {}).get(facet) is True
+        for facet in ("identity", "purpose", "action", "relations", "version")
+    )
+    if best_group_full_complete and not preserve_version_diversity:
+        best_signature = tuple(
+            best_group_full_matrix.get("covered", {}).get(facet) is True
+            for facet in ("identity", "purpose", "action", "relations", "version")
+        )
+        tied_groups = [
+            group for group in ranked_groups
+            if tuple(
+                _group_facet_matrix(group[2], plan).get("covered", {}).get(facet) is True
+                for facet in ("identity", "purpose", "action", "relations", "version")
+            ) == best_signature
+        ]
+        # Only a genuine facet tie is allowed to compete; otherwise the best
+        # group's exact fragments are the sole LLM candidates.
+        if len(tied_groups) <= 1:
+            return selected[:bounded_limit]
     # Once one document supplies all required facets in a single fragment, do
     # not spend the pool on incidental documents.  Otherwise preserve bounded
     # document diversity and complementary fragments.
