@@ -1182,6 +1182,13 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     expansion_keys: list[tuple[str, str]] = []
     seen_documents: set[str] = set()
     for record in sorted(records_by_id.values(), key=lambda item: rank_by_id.get(str(item.get("id") or ""), 10_000)):
+        # Expand only technically relevant records; broad thematic hits such
+        # as SSO or generic Readmes must not trigger document-wide retrieval.
+        if _structural_identifiers(plan):
+            if not _structural_identifier_covered(record, plan):
+                continue
+        elif not _candidate_selection_details(record, plan, user_message).get("accepted"):
+            continue
         document_id = str(record.get("document_id") or "").strip()
         source_url = str(record.get("source_url") or "").split("#", 1)[0].strip()
         key = document_id or source_url
