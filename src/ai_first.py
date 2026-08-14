@@ -427,15 +427,16 @@ def _query_plan_artifact_identity_queries(plan: QueryPlan) -> tuple[str, str]:
             # Qualifier scaffolding is not the artifact identity.  Its useful
             # concept may still participate in the technical fallback below.
             technical.extend(profile["auxiliary"])
+            nominal.extend(profile["auxiliary"])
             continue
         raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
         concept_tokens = set(requirement.concepts)
         for raw in raw_tokens:
             token = raw.strip(".,;:!?¿¡()[]'")
             concept = concept_key(token)
-            if not token or concept in action_terms or concept not in concept_tokens:
+            if not token or concept not in concept_tokens:
                 continue
-            if concept in generic or concept in {"dato", "datos", "sql", "script"}:
+            if concept in generic or concept in {"sql", "script"}:
                 continue
             if len(token) >= 4 or token.isupper() or any(ch.isdigit() for ch in token):
                 nominal.append(token)
