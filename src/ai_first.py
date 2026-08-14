@@ -1193,26 +1193,41 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     # fallback when the index does not expose one.  These are recall-only
     # queries and cannot bypass provenance, injection, version, or identity
     # validation later in the pipeline.
-    expansion_keys: list[tuple[str, str]] = []
+    expansion_keys: list[tuple[str, str, str, dict[str, object]]] = []
     seen_documents: set[str] = set()
     for record in sorted(records_by_id.values(), key=lambda item: rank_by_id.get(str(item.get("id") or ""), 10_000)):
         # Expand only technically relevant records; broad thematic hits such
         # as SSO or generic Readmes must not trigger document-wide retrieval.
+        details = _candidate_selection_details(record, plan, user_message)
         if _structural_identifiers(plan):
             if not _structural_identifier_covered(record, plan):
                 continue
-        elif not _candidate_selection_details(record, plan, user_message).get("accepted"):
+        elif not details.get("accepted"):
             continue
         document_id = str(record.get("document_id") or "").strip()
         source_url = str(record.get("source_url") or "").split("#", 1)[0].strip()
         key = document_id or source_url
         if not key or key in seen_documents:
             continue
+        group = [item for item in records_by_id.values() if _document_key(item) == _document_key(record)]
+        group_matrix = _group_facet_matrix(group, plan)
+        group_complete = all(
+            not group_matrix.get("required", {}).get(facet)
+            or group_matrix.get("covered", {}).get(facet) is True
+            for facet in ("identity", "purpose", "action", "relations", "version")
+        )
+        # Complete groups and weak/incidental groups do not need recall.
+        if group_complete or details.get("selection_class") != "strong_anchor":
+            continue
         seen_documents.add(key)
-        expansion_keys.append(("document_id" if document_id else "source_url", key))
+        expansion_keys.append(("document_id" if document_id else "source_url", key, _document_key(record), group_matrix))
         if len(expansion_keys) >= 3:
             break
-    for field, value in expansion_keys:
+    expanded_documents: set[str] = set()
+    for field, value, document_key, before_matrix in expansion_keys:
+        if document_key in expanded_documents:
+            continue
+        expanded_documents.add(document_key)
         escaped = value.replace("'", "''")
         started = perf_counter()
         try:
@@ -1232,6 +1247,13 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                     new_result_ids.append(record_id)
                 records_by_id.setdefault(record_id, {}).update(record)
                 rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), 500 + len(new_result_ids))
+            after_group = [item for item in records_by_id.values() if _document_key(item) == document_key]
+            after_matrix = _group_facet_matrix(after_group, plan)
+            new_facets = [
+                facet for facet in ("identity", "purpose", "action", "relations", "version")
+                if after_matrix.get("covered", {}).get(facet) is True
+                and before_matrix.get("covered", {}).get(facet) is not True
+            ]
             calls.append({
                 "kind": "document_expand",
                 "query": "*",
@@ -1242,6 +1264,8 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 "result_count": len(rows),
                 "new_result_ids": new_result_ids,
                 "contributed": bool(new_result_ids),
+                "new_facets": new_facets,
+                "stopped": not new_result_ids or not new_facets,
                 "top_results": [
                     {"title": _bounded_text(row.get("title"), 300), "page": (re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE).group(1) if re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE) else "")}
                     for row in rows[:20]

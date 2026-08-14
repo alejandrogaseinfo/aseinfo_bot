@@ -623,7 +623,7 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual(["incomplete"], [record["id"] for record in selected])
         self.assertFalse(ai_first._group_facet_matrix(selected[:1], plan)["missing"] == [])
 
-    def test_hybrid_retrieval_expands_authorized_document_group(self):
+    def test_hybrid_retrieval_skips_complete_authorized_document_group(self):
         _FakeSearchClient.records = [
             _record("p1", "Manual DB — Página 1", "ira_instancias_rutas_aut guarda flujos.", document_id="manual-doc"),
             _record("p2", "Manual DB — Página 2", "Relaciones con ira_codrau e ira_codigo_entidad.", document_id="manual-doc"),
@@ -631,7 +631,7 @@ class AIFirstTests(unittest.TestCase):
         plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?")
         with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
             records, _ranks, calls = ai_first._retrieve_hybrid_records("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?", plan, _config())
-        self.assertTrue(any(call.get("kind") == "document_expand" for call in calls))
+        self.assertFalse(any(call.get("kind") == "document_expand" for call in calls))
         self.assertEqual({"manual-doc"}, {record.get("document_id") for record in records})
 
     def test_facet_matrix_does_not_use_hidden_metadata_for_identity(self):
