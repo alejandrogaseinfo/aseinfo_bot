@@ -403,6 +403,48 @@ def _query_plan_recall_queries(plan: QueryPlan) -> tuple[str, str]:
     return artifact_action, structural
 
 
+def _query_plan_artifact_identity_queries(plan: QueryPlan) -> tuple[str, str]:
+    """Build nominal and technical title-only queries for requested artifacts.
+
+    Identity is deliberately separated from the action/topic query.  Terms
+    that only describe an operation or a generic medium (for example SQL or
+    ``datos``) must not drown out the nominal artifact identity in title
+    ranking.  The source terms still come exclusively from QueryPlan.
+    """
+    if not plan.artifact_role:
+        return "", ""
+    action_terms = {
+        concept
+        for requirement in plan.requirements
+        for concept in _requirement_profile(requirement)["action"]
+    }
+    generic = _GENERIC_AUXILIARY_CONCEPTS | _GENERIC_REQUIREMENT_CONCEPTS | _GENERIC_RANKING_TOKENS
+    nominal: list[str] = []
+    technical: list[str] = []
+    for requirement in plan.requirements:
+        profile = _requirement_profile(requirement)
+        raw_tokens = re.findall(r"[\w.-]+", requirement.text, flags=re.UNICODE)
+        for raw in raw_tokens:
+            token = raw.strip(".,;:!?¿¡()[]'")
+            concept = concept_key(token)
+            if not token or concept in action_terms:
+                continue
+            if concept in generic:
+                continue
+            if len(token) >= 4 or token.isupper() or any(ch.isdigit() for ch in token):
+                nominal.append(token)
+        for anchor in (*profile["strong"], *profile["auxiliary"]):
+            if anchor and anchor not in generic and anchor not in action_terms:
+                technical.append(anchor)
+    # Preserve the artifact role only as a fallback discriminator; it is not
+    # a file name or a case-specific alias.
+    if not nominal:
+        nominal.extend(token for token in technical if token)
+    nominal_query = " ".join(dict.fromkeys(nominal))
+    technical_query = " ".join(dict.fromkeys(technical or nominal))
+    return nominal_query, technical_query
+
+
 def _concept_present(concept: str, concepts: set[str]) -> bool:
     return concept in concepts or any(
         len(concept) >= 5 and len(candidate) >= 5
@@ -808,8 +850,19 @@ def _select_diverse_judge_records(
     if (best_complete and (first_complete or len(selected) >= 2) and not preserve_version_diversity) or len(selected) >= bounded_limit:
         return selected[:bounded_limit]
 
-    primary_documents = max(1, min(len(ranked_groups), (bounded_limit * 2 + 2) // 3))
-    selected_groups = ranked_groups[:primary_documents]
+    # If the best group is incomplete, retain only a small number of genuinely
+    # competitive alternatives.  This prevents many Readme/Oracle variants
+    # with generic token overlap from crowding out complementary evidence.
+    best_score = int(_candidate_selection_details(best_group[2][0], plan, user_message).get("selection_score", 0)) if best_group and plan else 0
+    alternative_groups = []
+    for group in ranked_groups[1:]:
+        group_score = int(_candidate_selection_details(group[2][0], plan, user_message).get("selection_score", 0)) if plan else 0
+        if group_score >= max(0, best_score - 160):
+            alternative_groups.append(group)
+        if len(alternative_groups) >= 2:
+            break
+    selected_groups = [best_group] if best_group else []
+    selected_groups.extend(alternative_groups)
     for _group_rank, _document_key_value, fragments in selected_groups[1:]:
         for record in fragments:
             if record not in selected:
@@ -817,13 +870,9 @@ def _select_diverse_judge_records(
                 if len(selected) >= bounded_limit:
                     return selected
 
-    # If fewer than the requested slots are available, continue with the best
-    # remaining documents without exceeding the per-document bound.
-    for _group_rank, _document_key_value, fragments in ranked_groups[primary_documents:]:
-        for record in fragments:
-            selected.append(record)
-            if len(selected) >= bounded_limit:
-                return selected
+    # Deliberately stop after the bounded alternatives.  Remaining groups are
+    # diagnostic-only; filling every free slot would reintroduce the generic
+    # Readme/Oracle contamination this ranking is designed to prevent.
     return selected
 
 
@@ -911,11 +960,13 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
     )
     strong_query, action_query = _query_plan_lexical_queries(plan)
     artifact_action_query, structural_query = _query_plan_recall_queries(plan)
+    artifact_nominal_query, artifact_technical_query = _query_plan_artifact_identity_queries(plan)
     query_specs = [
         ("original", user_message, ("title", CONTENT_FIELD, "content_tokens")),
         ("anchor", strong_query, ("title", CONTENT_FIELD, "content_tokens")),
         ("action", action_query, ("title", CONTENT_FIELD, "content_tokens")),
-        ("artifact_action", artifact_action_query, ("title",)),
+        ("artifact_nominal", artifact_nominal_query, ("title",)),
+        ("artifact_technical", artifact_technical_query, ("title",)),
         ("structural", structural_query, ("title", CONTENT_FIELD, "content_tokens")),
     ]
     queries = []
@@ -1331,11 +1382,20 @@ def retrieve_ai_first_candidates(
         record for record in candidate_records if str(record.get("title") or "") not in seen_titles
     ]
     candidate_records = candidate_records[: max(1, min(limit, MAX_AI_FIRST_CANDIDATES))]
+    selected_groups: dict[str, list[dict]] = {}
+    for selected_record in candidate_records:
+        selected_groups.setdefault(_document_key(selected_record), []).append(selected_record)
     candidates: list[AIFirstCandidate] = []
     for record in candidate_records:
         source = _source_from_record(record)
         candidate_id = f"c{len(candidates) + 1:02d}"
-        details = _candidate_selection_details(record, plan, user_message)
+        exact_group = selected_groups.get(_document_key(record), [record])
+        exact_group_text = " ".join(
+            " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+            for item in exact_group
+        )
+        details = _candidate_selection_details(record, plan, user_message, exact_group_text)
+        exact_group_facets = _group_facet_matrix(exact_group, plan)
         payload = {
             "candidate_id": candidate_id,
             "title": _bounded_text(record.get("title"), 300),
@@ -1354,7 +1414,7 @@ def retrieve_ai_first_candidates(
                 "covered_requirements": details.get("covered_requirements") if isinstance(details, dict) else [],
                 "missing_requirements": details.get("missing_requirements") if isinstance(details, dict) else [],
                 "facets": _facet_matrix(record, plan),
-                "group_facets": details.get("facets", {}) if isinstance(details, dict) else {},
+                "group_facets": exact_group_facets,
             },
         }
         candidates.append(

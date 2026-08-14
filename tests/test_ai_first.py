@@ -464,6 +464,36 @@ class AIFirstTests(unittest.TestCase):
         self.assertNotEqual("campo", artifact_action)
         self.assertEqual("", structural)
 
+    def test_artifact_identity_queries_separate_nominal_and_technical_title_terms(self):
+        plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
+        nominal, technical = ai_first._query_plan_artifact_identity_queries(plan)
+        self.assertTrue(nominal)
+        self.assertTrue(technical)
+        self.assertNotIn("hace", nominal)
+        self.assertNotIn("sql", nominal.casefold())
+        self.assertNotEqual(nominal, "ofusc dato sql")
+
+    def test_best_document_group_first_limits_incidental_alternatives(self):
+        question = "¿Qué procedimiento valida firewall y LOCAL DTC en ambos servidores?"
+        plan = ai_first.build_query_plan(question)
+        direct = [
+            _record("direct-1", "Manual DTC — Página 4", "Firewall y DTC permitido en ambos servidores.", document_id="direct"),
+            _record("direct-2", "Manual DTC — Página 5", "Reglas DTC y LOCAL DTC en ambos servidores.", document_id="direct"),
+        ]
+        incidental = [
+            _record(f"inc-{i}", f"Readme {i}.pdf", "Manual general de Oracle y configuración.", document_id=f"inc-{i}")
+            for i in range(1, 6)
+        ]
+        selected = ai_first._select_diverse_judge_records(
+            direct + incidental,
+            {record["id"]: index for index, record in enumerate(direct + incidental)},
+            question,
+            12,
+            plan,
+        )
+        self.assertEqual(["direct-1", "direct-2"], [record["id"] for record in selected[:2]])
+        self.assertLessEqual(sum(record["id"].startswith("inc-") for record in selected), 2)
+
     def test_candidate_payload_contains_local_coverage_metadata(self):
         records = [_record(
             "direct", "Gestion de documentos.pdf — Página 4",
