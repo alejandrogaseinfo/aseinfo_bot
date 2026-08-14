@@ -651,6 +651,34 @@ class AIFirstTests(unittest.TestCase):
         selected = ai_first._select_diverse_judge_records([generic, incidental], {"generic": 1, "oracle": 2}, plan.raw_message, 3, plan)
         self.assertEqual(["generic"], [record["id"] for record in selected])
 
+    def test_schema_qualified_identity_uses_content_when_tokens_are_incomplete(self):
+        plan = ai_first.build_query_plan("¿Qué se sabe de la tabla IRA?")
+        record = _record(
+            "direct",
+            "Manual IRA",
+            "Flujos wfl.ira_instancias_rutas_aut y campos ira_codrau, ira_codigo_entidad.",
+            document_id="manual",
+        )
+        record["content_tokens"] = "flujos y campos"
+        self.assertTrue(ai_first._facet_matrix(record, plan)["covered"]["identity"])
+        self.assertTrue(ai_first._candidate_selection_details(record, plan, plan.raw_message)["identity_in_content"])
+        self.assertFalse(ai_first._candidate_selection_details(record, plan, plan.raw_message)["identity_in_content_tokens"])
+
+    def test_same_document_id_fragments_have_distinct_signatures(self):
+        first = _record("p1", "Manual IRA", "Identidad wfl.ira_instancias_rutas_aut.", document_id="manual")
+        second = _record("p2", "Manual IRA", "Relaciones ira_codrau e ira_codigo_entidad.", document_id="manual")
+        self.assertEqual(ai_first._document_key(first), ai_first._document_key(second))
+        self.assertNotEqual(ai_first._fragment_signature(first), ai_first._fragment_signature(second))
+
+    def test_direct_fragment_outranks_generic_same_document_fragment(self):
+        plan = ai_first.build_query_plan("¿Qué se sabe de la tabla IRA?")
+        generic = _record("generic", "Manual IRA", "La documentación describe una tabla de flujos.", document_id="manual")
+        direct = _record("direct", "Manual IRA", "wfl.ira_instancias_rutas_aut almacena flujos.", document_id="manual")
+        selected = ai_first._select_diverse_judge_records(
+            [generic, direct], {"generic": 1, "direct": 2}, plan.raw_message, 3, plan
+        )
+        self.assertEqual("direct", selected[0]["id"])
+
     def test_incomplete_group_does_not_claim_complete_or_replace_with_incidental(self):
         question = "¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?"
         plan = ai_first.build_query_plan(question)

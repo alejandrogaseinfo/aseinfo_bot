@@ -9,6 +9,7 @@ evidence.  The local validator remains authoritative for the judge contract.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -303,7 +304,10 @@ def _candidate_selection_details(
     if _identity_contradicts_fragment_version(record):
         generic_penalty += 60
     facet_penalty = 80 if facets["required"].get("identity") and not facets["covered"].get("identity") else 0
-    total = strong_score + action_score + topic_score + content_component + version_score - generic_penalty - facet_penalty
+    identity_content = " ".join(str(record.get(field) or "") for field in (CONTENT_FIELD, CONTEXT_FIELD))
+    identity_in_content = bool(_content_structural_identifiers(identity_content, plan))
+    identity_content_score = 240 if identity_in_content else 0
+    total = identity_content_score + strong_score + action_score + topic_score + content_component + version_score - generic_penalty - facet_penalty
     selection_class = (
         "strong_anchor" if coverage["strong_hits"]
         else "thematic" if coverage["topic_hits"]
@@ -315,6 +319,7 @@ def _candidate_selection_details(
         "selection_score": total,
         "score_components": {
             "strong_anchor": strong_score,
+            "identity_content": identity_content_score,
             "action": action_score,
             "topic": topic_score,
             "content": content_component,
@@ -324,6 +329,9 @@ def _candidate_selection_details(
         },
         "action_hits": action_hits,
         "facets": facets,
+        "identity_in_content": identity_in_content,
+        "identity_in_content_tokens": bool(_content_structural_identifiers(str(record.get("content_tokens") or ""), plan)),
+        "fragment_signature": _fragment_signature(record),
         "document_group": _document_key(record),
         "discard_reason": "incidental" if selection_class == "incidental" else "",
     }
@@ -356,7 +364,7 @@ def _visible_fragment_for_plan(record: dict, plan: QueryPlan) -> str:
     # in the bounded payload when QueryPlan only carried the family name.
     for entity in _uppercase_nominal_entities(plan):
         match = re.search(
-            rf"\b(?:[A-Za-z][\w]*\.)?[A-Za-z][A-Za-z0-9]*_{re.escape(entity)}[A-Za-z0-9_]*\b",
+            rf"\b(?:[A-Za-z][\w]*\.)?{re.escape(entity)}_[A-Za-z0-9_]+\b",
             raw,
             re.IGNORECASE,
         )
@@ -946,6 +954,7 @@ def _select_diverse_judge_records(
                 _group_facet_matrix(group[2], plan).get("covered", {}).get(facet) is True
                 for facet in ("identity", "purpose", "action", "relations", "version")
             ) == best_signature
+            and _document_groups_identity_compatible(best_group[2], group[2])
         ]
         if len(tied_groups) > 1:
             tied = []
@@ -972,6 +981,7 @@ def _select_diverse_judge_records(
                 _group_facet_matrix(group[2], plan).get("covered", {}).get(facet) is True
                 for facet in ("identity", "purpose", "action", "relations", "version")
             ) == best_signature
+            and _document_groups_identity_compatible(best_group[2], group[2])
         ]
         # Only a genuine facet tie is allowed to compete; otherwise the best
         # group's exact fragments are the sole LLM candidates.
@@ -1088,9 +1098,51 @@ def _structural_identifiers(plan: QueryPlan) -> tuple[tuple[str, str], ...]:
 def _record_has_structural_terms(record: dict) -> bool:
     """Return whether a fragment carries technical identifiers/relations."""
     text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
-    return bool(re.search(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b", text)) or bool(
+    return bool(_content_structural_identifiers(text)) or bool(
         re.search(r"\b(?:campo|campos|relaci[oó]n|relaciona|unir|une)\b", text, re.IGNORECASE)
     )
+
+
+def _normalize_structural_identifier(raw: str) -> str:
+    normalized = unicodedata.normalize("NFKD", raw).casefold()
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9_./-]", "", normalized)
+
+
+def _content_structural_identifiers(text: str, plan: QueryPlan | None = None) -> tuple[tuple[str, str], ...]:
+    """Extract complete identifiers from content, including schema-qualified forms."""
+    found = re.findall(
+        r"(?<![A-Za-z0-9_])(?:[A-Za-z][\w]*\.)?[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])",
+        text or "",
+    )
+    identifiers = [(raw, _normalize_structural_identifier(raw)) for raw in found]
+    if plan is not None:
+        requested = {identifier for _raw, identifier in _structural_identifiers(plan)}
+        nominal = _uppercase_nominal_entities(plan)
+        identifiers = [
+            item for item in identifiers
+            if item[1] in requested
+            or any(item[1].split(".")[-1].split("_", 1)[0] == entity for entity in nominal)
+        ]
+    return tuple(dict.fromkeys(item for item in identifiers if item[1]))
+
+
+def _fragment_signature(record: dict) -> str:
+    """Stable, non-sensitive signature distinguishing same-ID fragments."""
+    page = str(record.get("page") or record.get("chunk_id") or "")
+    title = str(record.get("title") or "")
+    content = " ".join(str(record.get(field) or "") for field in (CONTENT_FIELD, CONTEXT_FIELD))
+    payload = "|".join((page, title, " ".join(content.casefold().split())))
+    return hashlib.sha256(payload.encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def _document_groups_identity_compatible(left: list[dict], right: list[dict]) -> bool:
+    """Allow equivalent alternatives only when their artifact class agrees."""
+    if not left or not right:
+        return False
+    left_scripts = {_is_script_record(record) for record in left}
+    right_scripts = {_is_script_record(record) for record in right}
+    return left_scripts == right_scripts
 
 
 def _structural_identifier_covered(record: dict, plan: QueryPlan) -> bool:
@@ -1138,15 +1190,12 @@ def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = No
             # generic cover/title mentioning only the acronym must not outrank
             # the fragment that carries the concrete table/component identity.
             nominal_entities = _uppercase_nominal_entities(plan)
-            structural_text = " ".join(
-                match.group(0).casefold()
-                for match in re.finditer(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b", text)
-            )
+            structural_text = _content_structural_identifiers(text, plan)
             if nominal_entities:
                 covered[facet] = all(
                     any(
-                        target in identifier.split("_", 1)[0]
-                        for identifier in structural_text.split()
+                        target == identifier.split(".")[-1].split("_", 1)[0]
+                        for _raw, identifier in structural_text
                     )
                     for target in nominal_entities
                     if target in facet_targets
@@ -1347,6 +1396,12 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 **search_args,
             ))
             new_result_ids: list[str] = []
+            known_signatures = {
+                _fragment_signature(item)
+                for item in records_by_id.values()
+                if _document_key(item) == document_key
+            }
+            new_fragment_signatures: list[str] = []
             for result in rows:
                 record = dict(result)
                 record_id = str(record.get("id") or "")
@@ -1354,6 +1409,10 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                     continue
                 if record_id not in records_by_id:
                     new_result_ids.append(record_id)
+                signature = _fragment_signature(record)
+                if signature not in known_signatures:
+                    new_fragment_signatures.append(signature)
+                    known_signatures.add(signature)
                 records_by_id.setdefault(record_id, {}).update(record)
                 rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), 500 + len(new_result_ids))
             after_group = [item for item in records_by_id.values() if _document_key(item) == document_key]
@@ -1372,15 +1431,17 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 "duration_ms": round((perf_counter() - started) * 1000, 2),
                 "result_count": len(rows),
                 "new_result_ids": new_result_ids,
-                "contributed": bool(new_result_ids),
+                "new_fragment_signatures": new_fragment_signatures,
+                "new_fragment_count": len(new_fragment_signatures),
+                "contributed": bool(new_result_ids or new_fragment_signatures),
                 "new_facets": new_facets,
-                "stopped": not new_result_ids or not new_facets,
+                "stopped": not (new_result_ids or new_fragment_signatures) or not new_facets,
                 "top_results": [
                     {"title": _bounded_text(row.get("title"), 300), "page": (re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE).group(1) if re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE) else "")}
                     for row in rows[:20]
                 ],
             })
-            if not new_result_ids or not new_facets:
+            if not (new_result_ids or new_fragment_signatures) or not new_facets:
                 break
         except Exception as exc:
             calls.append({"kind": "document_expand", "query": "*", "filter_field": field, "filter_value": "<redacted>", "duration_ms": round((perf_counter() - started) * 1000, 2), "result_count": 0, "new_result_ids": [], "contributed": False, "error": error_code(exc)})
@@ -1550,6 +1611,10 @@ def retrieve_ai_first_candidates(
                     "detected_anchors": details["detected_anchors"],
                     "covered_requirements": details["covered_requirements"],
                     "missing_requirements": details["missing_requirements"],
+                    "document_id": str(record.get("document_id") or ""),
+                    "fragment_signature": details.get("fragment_signature", _fragment_signature(visible_record)),
+                    "identity_in_content": details.get("identity_in_content", False),
+                    "identity_in_content_tokens": details.get("identity_in_content_tokens", False),
                     "facets": _facet_matrix(visible_record, plan),
                     "group_facets": details.get("facets", {}),
                 },
@@ -1796,6 +1861,10 @@ def retrieve_ai_first_candidates(
                 "detected_anchors": details.get("detected_anchors") if isinstance(details, dict) else [],
                 "covered_requirements": details.get("covered_requirements") if isinstance(details, dict) else [],
                 "missing_requirements": details.get("missing_requirements") if isinstance(details, dict) else [],
+                "document_id": str(record.get("document_id") or ""),
+                "fragment_signature": details.get("fragment_signature", _fragment_signature(record)) if isinstance(details, dict) else _fragment_signature(record),
+                "identity_in_content": details.get("identity_in_content", False) if isinstance(details, dict) else False,
+                "identity_in_content_tokens": details.get("identity_in_content_tokens", False) if isinstance(details, dict) else False,
                 "facets": _facet_matrix(record, plan),
                 "group_facets": exact_group_facets,
             },
