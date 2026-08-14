@@ -717,12 +717,46 @@ def _record_identity_versions(record: dict) -> set[str]:
             "product_version",
             "release_version",
             "metadata_version",
+            "_document_identity_versions",
         )
     ).casefold()
     return {
         match.group(1).casefold()
         for match in _VERSION_PATTERN.finditer(searchable_text)
     }
+
+
+def _propagate_document_identity_versions(records: list[dict]) -> None:
+    """Share stable version identity across fragments of the same document.
+
+    PDF/Word extraction can put the release identity on a cover page while
+    the requested fact lives on a later page.  The identity remains scoped to
+    the indexed document key; fragments from another document never inherit
+    it.
+    """
+    versions_by_document: dict[str, set[str]] = {}
+    for record in records:
+        key = str(record.get("document_id") or record.get("source_url") or record.get("title") or "")
+        if not key:
+            continue
+        versions = _record_identity_versions(record)
+        # Some extractors put the release identity in the cover fragment
+        # instead of metadata. Treat only an introductory page as document
+        # identity; later factual pages must not broaden version scope.
+        page_match = re.search(r"(?:p[aá]gina|page)\s*(\d+)", str(record.get("title") or ""), re.IGNORECASE)
+        if not versions and page_match and int(page_match.group(1)) <= 2:
+            versions.update(
+                match.group(1).casefold()
+                for match in _VERSION_PATTERN.finditer(
+                    str(record.get(CONTENT_FIELD) or "")
+                )
+            )
+        versions_by_document.setdefault(key, set()).update(versions)
+    for record in records:
+        key = str(record.get("document_id") or record.get("source_url") or record.get("title") or "")
+        versions = versions_by_document.get(key, set())
+        if versions:
+            record["_document_identity_versions"] = tuple(sorted(versions))
 
 
 _STRUCTURAL_QUERY_TERMS = {
@@ -891,6 +925,16 @@ def _deduplicate_equivalent_sources(
     groups: list[list[EvidenceSource]] = []
     anchor_terms = _technical_anchor_tokens(user_message)
 
+    def page_identity(source: EvidenceSource) -> str:
+        text = f"{source.titulo} {source.ubicacion}"
+        match = re.search(r"(?:p[aá]gina|page)[^0-9]{0,4}(\d+)|[#&](?:page|p)=?(\d+)", text, re.IGNORECASE)
+        return next((value for value in match.groups() if value), "") if match else ""
+
+    def document_identity(source: EvidenceSource) -> str:
+        if source.document_id:
+            return str(source.document_id)
+        return str(source.ubicacion or "").split("#", 1)[0].casefold()
+
     def comparable_text(source: EvidenceSource) -> str:
         text = str(source.fragmento or "").casefold()
         if not anchor_terms:
@@ -908,8 +952,19 @@ def _deduplicate_equivalent_sources(
             re.sub(_VERSION_PATTERN, "", comparable_text(source)).split()
         )
         for group in groups:
+            representative = group[0]
+            same_document = bool(
+                document_identity(source)
+                and document_identity(source) == document_identity(representative)
+            )
+            if same_document and page_identity(source) and page_identity(representative):
+                # Distinct pages from one document can be complementary
+                # evidence (cover/version plus the factual detail). Only
+                # collapse duplicate fragments from the same page.
+                if page_identity(source) != page_identity(representative):
+                    continue
             representative_tokens = set(
-                re.sub(_VERSION_PATTERN, "", comparable_text(group[0])).split()
+                re.sub(_VERSION_PATTERN, "", comparable_text(representative)).split()
             )
             union = source_tokens | representative_tokens
             overlap = len(source_tokens & representative_tokens) / len(union) if union else 1
@@ -2084,6 +2139,34 @@ def _retrieve_legacy_azure_search_evidence(
                 existing["_focused_keyword_rank"] = rank
             pass_counts["focused_keyword"] = focused_count
 
+        # A versioned question can have its release identity on the cover and
+        # its factual answer on a later page. Query the strong technical
+        # anchors separately so Azure's top result for the version does not
+        # monopolize the document pool. This is bounded to one additional
+        # lexical pass and is independent of any product or case name.
+        anchor_query = " ".join(sorted(_technical_anchor_tokens(user_message)))
+        if requested_versions and anchor_query and anchor_query != focused_query:
+            anchor_count = 0
+            for rank, result in enumerate(
+                search_client.search(
+                    search_text=anchor_query,
+                    search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                    **keyword_search_args,
+                ),
+                start=1,
+            ):
+                anchor_count += 1
+                record = dict(result)
+                record_id = str(record.get("id", ""))
+                existing = records_by_id.get(record_id)
+                if existing is None:
+                    existing = record
+                    records_by_id[record_id] = existing
+                else:
+                    _merge_candidate_record(existing, record)
+                existing["_technical_anchor_rank"] = rank
+            pass_counts["technical_anchor"] = anchor_count
+
         # Administration and consultation are different intents.  A compact
         # management-only lexical pass keeps the operational manual in the
         # union even when a natural-language question ranks a Portal download
@@ -2388,6 +2471,7 @@ def _retrieve_legacy_azure_search_evidence(
     if diagnostics is not None:
         diagnostics["stage_counts"]["authorized"] = len(authorized_records)
     country_scoped_records = _filter_records_for_requested_country(authorized_records, user_message)
+    _propagate_document_identity_versions(country_scoped_records)
     if diagnostics is not None and len(country_scoped_records) < len(authorized_records):
         rejected_reasons["country"] = len(authorized_records) - len(country_scoped_records)
     if diagnostics is not None:
@@ -2705,6 +2789,24 @@ def _retrieve_legacy_azure_search_evidence(
     relevant_records = [
         item for item in ranked_records if item[0] >= best_score * relevance_floor
     ][:limit]
+
+    # Prefer fragments with a strong technical anchor over a cover/index page
+    # that wins only because it repeats the requested release version. Keep
+    # the existing relevance band behind them so a version/product fragment
+    # can still accompany the factual detail when the global limit permits.
+    anchored_relevant = [
+        item
+        for item in ranked_records
+        if _record_matches_technical_anchor(item[1], user_message)
+    ]
+    if anchored_relevant:
+        selected_ids = {id(record) for _, record in anchored_relevant}
+        ordered = anchored_relevant + [
+            item for item in relevant_records if id(item[1]) not in selected_ids
+        ]
+        relevant_records = ordered[:limit]
+        if diagnostics is not None:
+            diagnostics["stage_counts"]["technical_anchor_priority"] = len(anchored_relevant)
 
     # A manual often splits one procedure across consecutive pages. The page
     # that repeats the full heading can score much higher than its continuation

@@ -38,6 +38,9 @@ from azure_search import (
     _records_supported_by_index,
     _entra_credential,
     _excerpt_around_query,
+    _deduplicate_equivalent_sources,
+    _propagate_document_identity_versions,
+    _record_matches_requested_version,
     _rerank_records,
     retrieve_azure_search_evidence,
     index_directory,
@@ -64,6 +67,50 @@ from sharepoint_sync import (
 
 
 class DocumentQuestionTests(unittest.TestCase):
+    def test_same_document_keeps_cover_and_detail_fragments(self):
+        sources = [
+            EvidenceSource(
+                tipo="sharepoint", titulo="Manual 2.0 — Página 1",
+                ubicacion="https://contoso.example/manual.pdf#page=1",
+                document_id="manual-2", fragmento="Evolution 2.0 identifica el producto y la versión.",
+            ),
+            EvidenceSource(
+                tipo="sharepoint", titulo="Manual 2.0 — Página 5",
+                ubicacion="https://contoso.example/manual.pdf#page=5",
+                document_id="manual-2", fragmento="El procedimiento actualiza la biblioteca solicitada.",
+            ),
+        ]
+        kept = _deduplicate_equivalent_sources(sources, "¿Qué procedimiento actualiza la biblioteca?")
+        self.assertEqual(["Manual 2.0 — Página 1", "Manual 2.0 — Página 5"], [source.titulo for source in kept])
+
+    def test_version_identity_on_cover_allows_detail_page(self):
+        records = [
+            {
+                "id": "cover", "document_id": "readme-12412",
+                "title": "Readme Evolution — Página 1",
+                "source_url": "https://contoso.example/readme.pdf#page=1",
+                "source_system": "sharepoint", "folder_path": "", "drive_id": "drive-readme",
+                "content": "Evolution 1.24.1.2. Índice de cambios.",
+                "content_tokens": "evolution 1.24.1.2 indice cambios",
+            },
+            {
+                "id": "detail", "document_id": "readme-12412",
+                "title": "Readme Evolution — Página 5",
+                "source_url": "https://contoso.example/readme.pdf#page=5",
+                "source_system": "sharepoint", "folder_path": "", "drive_id": "drive-readme",
+                "content": "La actualización de la biblioteca jQuery pasa a 3.7.2 y reemplaza 1.12.4.",
+                "content_tokens": "actualizacion biblioteca jquery pasa 3.7.2 reemplaza 1.12.4",
+            },
+        ]
+        _propagate_document_identity_versions(records)
+        self.assertTrue(_record_matches_requested_version(records[1], ("1.24.1.2",)))
+        self.assertIn("3.7.2", records[1]["content"])
+        incompatible = [
+            {"document_id": "readme-12414", "title": "Readme 1.24.1.4 — Página 1", "content": "Incluye cambios previos de Evolution 1.24.1.2."},
+            {"document_id": "readme-12414", "title": "Readme 1.24.1.4 — Página 5", "content": "Detalle incidental."},
+        ]
+        _propagate_document_identity_versions(incompatible)
+        self.assertFalse(_record_matches_requested_version(incompatible[1], ("1.24.1.2",)))
     def test_generic_queries_are_marked_for_context_before_retrieval(self):
         self.assertTrue(is_underspecified_query("¿Qué se debe revisar?"))
         self.assertTrue(is_underspecified_query("No funciona."))
