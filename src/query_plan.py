@@ -160,6 +160,15 @@ class QueryPlan:
 
 def build_query_plan(user_message: str) -> QueryPlan:
     raw_message = " ".join((user_message or "").strip().split())
+    # Preserve technical identifiers from a background clause (for example an
+    # acronym named before a comma).  The clause itself may be contextual, but
+    # its identifier is still a strong retrieval anchor and must not disappear
+    # merely because the requested action follows it.
+    background_anchors = tuple(dict.fromkeys(
+        concept_key(token)
+        for token in re.findall(r"\b(?:[A-Z][A-Z0-9_-]{2,}|[A-Za-z][\w.-]*[_.-][\w.-]+)\b", raw_message)
+        if concept_key(token)
+    ))
     normalized = unicodedata.normalize("NFKD", raw_message).lower()
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
     # A temporal/background clause narrows the user's situation but is not
@@ -193,6 +202,15 @@ def build_query_plan(user_message: str) -> QueryPlan:
                 )
             )
             requirement_number += 1
+    if background_anchors and requirements_list:
+        first = requirements_list[0]
+        merged_concepts = tuple(dict.fromkeys((*first.concepts, *background_anchors)))
+        requirements_list[0] = QueryRequirement(
+            identifier=first.identifier,
+            text=f"{first.text} ({' '.join(background_anchors)})",
+            concepts=merged_concepts,
+            actions=first.actions,
+        )
     requirements = tuple(requirements_list)
     all_concepts = tuple(dict.fromkeys(concept for requirement in requirements for concept in requirement.concepts))
     all_actions = tuple(dict.fromkeys(action for requirement in requirements for action in requirement.actions))

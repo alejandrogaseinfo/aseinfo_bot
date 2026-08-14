@@ -101,8 +101,9 @@ Devuelve solamente JSON con este contrato exacto:
 Reglas:
 - Para "answer", selecciona uno o más candidate_id y los requirement_id que
   realmente sustentan la respuesta. La confianza debe ser entre 0.80 y 1.
-- Para "request_context" o "abstain", devuelve answer vacío, listas vacías y
-  confianza entre 0 y 1.
+- Para "request_context" o "abstain", devuelve answer vacío y listas de
+  candidatos vacías. Puedes incluir los requirement_id que evaluaste como
+  metadato diagnóstico; no inventes IDs.
 - Usa exclusivamente candidate_id y requirement_id recibidos.
 - Si el usuario indicó una versión exacta, selecciona solamente documentos cuya
   identidad corresponda a esa versión.
@@ -1053,7 +1054,10 @@ def answer_ai_first_candidates(
 
     normalized_answer = " ".join(answer.split())
     if decision != "answer":
-        if normalized_answer or selected_ids or requirements:
+        allowed_requirements = set(plan.requirement_ids)
+        if normalized_answer or selected_ids or any(
+            not isinstance(item, str) or item not in allowed_requirements for item in requirements
+        ):
             result.validator_rejections["contrato_invalido"] = 1
             return result
         # A version-scoped question can legitimately retrieve a durable
@@ -1064,25 +1068,42 @@ def answer_ai_first_candidates(
             candidate for candidate in retrieval.candidates
             if not _record_has_version_identity(candidate.record)
         ]
-        if plan.version and len(unversioned) == 1:
-            candidate = unversioned[0]
+        if plan.version and unversioned:
+            # A useful technical source may lack release identity.  Select the
+            # strongest facet-supported candidate, while excluding incidental
+            # documents and all explicitly incompatible versions.
+            observations = {
+                item.get("candidate_id"): item for item in retrieval.candidate_observations
+            }
+            eligible = [
+                candidate for candidate in unversioned
+                if _evidence_covers_requested_facet(user_message, [candidate.source])
+            ]
+            eligible.sort(
+                key=lambda candidate: (
+                    int(observations.get(candidate.candidate_id, {}).get("strong_hits", 0)),
+                    int(observations.get(candidate.candidate_id, {}).get("topic_hits", 0)),
+                ),
+                reverse=True,
+            )
+        else:
+            eligible = []
+        if plan.version and eligible:
+            candidate = eligible[0]
             selected_sources = [candidate.source]
             fallback_answer = _ira_summary(candidate.source, plan.version) or (
                 "La documentación recuperada indica lo siguiente, pero no confirma "
                 f"explícitamente que corresponda a Evolution {plan.version}: "
                 f"{candidate.source.fragmento}"
             )
-            if (
-                _evidence_covers_requested_facet(user_message, selected_sources)
-            ):
-                result.decision = "answer"
-                result.answer = fallback_answer
-                result.selected = [candidate]
-                result.selected_requirements = {
-                    candidate.candidate_id: tuple(plan.requirement_ids)
-                }
-                result.confidence = MIN_JUDGE_CONFIDENCE
-                return result
+            result.decision = "answer"
+            result.answer = fallback_answer
+            result.selected = [candidate]
+            result.selected_requirements = {
+                candidate.candidate_id: tuple(plan.requirement_ids)
+            }
+            result.confidence = MIN_JUDGE_CONFIDENCE
+            return result
         result.decision = decision
         result.confidence = float(confidence)
         return result
@@ -1107,7 +1128,22 @@ def answer_ai_first_candidates(
         return result
 
     selected = [allowed_candidates[candidate_id] for candidate_id in normalized_ids]
-    if not all(_record_covers_requirements(candidate.record, plan, normalized_requirements) for candidate in selected):
+    # Requirements may be distributed across complementary fragments.  Each
+    # declared requirement must be covered by at least one selected candidate;
+    # no single fragment is required to repeat every secondary term.
+    combined_record = dict(selected[0].record)
+    combined_record[CONTENT_FIELD] = " ".join(
+        str(candidate.record.get(CONTENT_FIELD) or candidate.record.get(CONTEXT_FIELD) or "")
+        for candidate in selected
+    )
+    covered_by_selection = {
+        requirement_id for requirement_id in normalized_requirements
+        if any(
+            _record_covers_requirements(candidate.record, plan, (requirement_id,))
+            for candidate in selected
+        ) or _record_covers_requirements(combined_record, plan, (requirement_id,))
+    }
+    if set(normalized_requirements) - covered_by_selection:
         result.validator_rejections["cobertura_insuficiente"] = 1
         return result
     if not _selected_versions_compatible(selected, plan):
@@ -1138,7 +1174,11 @@ def answer_ai_first_candidates(
     result.selected = selected
     result.confidence = float(confidence)
     result.selected_requirements = {
-        candidate.candidate_id: normalized_requirements for candidate in selected
+        candidate.candidate_id: tuple(
+            requirement_id for requirement_id in normalized_requirements
+            if _record_covers_requirements(candidate.record, plan, (requirement_id,))
+        )
+        for candidate in selected
     }
     return result
 

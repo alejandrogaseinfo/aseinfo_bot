@@ -350,6 +350,61 @@ class AIFirstTests(unittest.TestCase):
         self.assertIn("ira_codrau", result.answer)
         self.assertNotIn("rau_rutas_autorizacion", result.answer)
 
+    def test_version_warning_chooses_facet_supported_source_among_unversioned_candidates(self):
+        _FakeSearchClient.records = [
+            _record("ira", "Manual de Relacion DB", "La tabla IRA almacena los flujos y sus campos de relación."),
+            _record("incidental", "Script operativo", "El script registra cambios de auditoría sin describir tablas."),
+        ]
+        question = "En la 1.24.1.3, ¿qué se sabe de la tabla IRA?"
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates(question, _config())
+
+        class FakeClient:
+            chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "abstain", "answer": "", "selected_candidate_ids": [], "requirements": [], "confidence": 0.3,
+            }))) ])))
+
+        result = answer_ai_first_candidates(question, retrieval, FakeClient(), "answer-model")
+        self.assertEqual("answer", result.decision)
+        self.assertEqual("ira", result.selected[0].record["id"])
+        self.assertIn("no confirma", result.answer)
+
+    def test_abstention_may_report_valid_requirement_metadata(self):
+        _FakeSearchClient.records = [_record("generic", "Readme", "Información general de servidores.")]
+        question = "¿Qué validamos en ambos servidores?"
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            retrieval = retrieve_ai_first_candidates(question, _config())
+
+        class FakeClient:
+            chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "abstain", "answer": "", "selected_candidate_ids": [], "requirements": ["r1"], "confidence": 0.2,
+            }))) ])))
+
+        result = answer_ai_first_candidates(question, retrieval, FakeClient(), "answer-model")
+        self.assertEqual("abstain", result.decision)
+        self.assertNotIn("contrato_invalido", result.validator_rejections)
+
+    def test_direct_response_allows_requirements_distributed_across_selected_sources(self):
+        records = [
+            _record("p1", "Manual IRA — Página 1", "La tabla IRA guarda los flujos existentes.", document_id="ira-doc"),
+            _record("p2", "Manual IRA — Página 2", "Sus relaciones usan los campos ira_codrau e ira_codigo_entidad.", document_id="ira-doc"),
+        ]
+        candidates = []
+        for index, record in enumerate(records, start=1):
+            source = EvidenceSource("SharePoint", record["title"], record["source_url"], record["content"])
+            candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {"candidate_id": f"c{index:02d}", "title": record["title"], "fragment": record["content"], "metadata": ""}))
+        retrieval = AIFirstRetrieval(candidates=candidates)
+
+        class FakeClient:
+            chat = SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "decision": "answer", "answer": "La tabla IRA almacena flujos y se relaciona mediante ira_codrau e ira_codigo_entidad.", "selected_candidate_ids": ["c01", "c02"], "requirements": ["r1"], "confidence": 0.95,
+            }))) ])))
+
+        result = answer_ai_first_candidates("¿Qué guarda la tabla IRA y con qué campos se relaciona?", retrieval, FakeClient(), "answer-model")
+        self.assertEqual("answer", result.decision)
+        self.assertEqual(("r1",), result.selected_requirements["c01"])
+        self.assertEqual((), result.selected_requirements["c02"])
+
     def test_direct_response_redacts_sql_implementation_from_user_summary(self):
         _FakeSearchClient.records = [_record(
             "obfuscation",
