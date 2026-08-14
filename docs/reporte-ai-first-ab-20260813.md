@@ -142,3 +142,15 @@ AI-first consumió 4.49× los tokens observados, 1.58× las llamadas de chat y a
 No activar AI-first ni cambiar producción. En esta matriz, AI-first no supera a legacy: reduce ligeramente el p95, pero aumenta el tiempo medio, hace tres consultas por pregunta, multiplica el consumo de tokens y reduce la calidad de 9/12 a 3/12. Antes de otra medición deben resolverse de forma general el contrato de IDs/requisitos del juez, la selección de evidencia para abstenciones y la validación de pertinencia/versiones; no se recomienda añadir reglas por OPS.
 
 Artefactos: [JSON A/B](../tmp/evaluacion-ai-first-ab-20260813.json) · [log sanitizado](../tmp/evaluacion-ai-first-ab-20260813.log) · [evaluador](../tmp/evaluate_ai_first_ab.py).
+
+## Actualización r13 — propagación de advertencia de versión (2026-08-14)
+
+La revisión corrigió únicamente el transporte de `version_warning` desde el
+contrato JSON del juez hasta `AIFirstDirectResponse`, `BotDecision` y el
+formateo final. El validador continúa exigiendo una advertencia para
+`version_status=no_confirmada`; no se modificaron el modelo ni la recuperación.
+
+La A/B de 12 casos confirmó OPS-02 como respuesta válida con la advertencia
+explícita de que la fuente no confirma compatibilidad con la versión
+consultada. Suite: 418 pruebas OK. El artefacto JSON vigente es
+`output/evaluacion-ai-first-version-warning-20260814.json`.
