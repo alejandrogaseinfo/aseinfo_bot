@@ -116,6 +116,16 @@ class ConfigTests(unittest.TestCase):
             config.sharepoint_source_labels,
         )
 
+    def test_soluciones_is_an_explicit_approved_folder_for_documentos(self):
+        config = Config(
+            {
+                "SHAREPOINT_DRIVE_IDS": "drive-documentos",
+                "SHAREPOINT_FOLDER_PATHS": "SOLUCIONES",
+            }
+        )
+        self.assertEqual(("SOLUCIONES",), config.sharepoint_folder_paths)
+        self.assertEqual((("SOLUCIONES", "drive-documentos"),), config.sharepoint_sources)
+
     def test_local_document_fallback_is_disabled_in_production(self):
         local_config = Config({"LIBRAS_ENV": "local"})
         production_config = Config(
