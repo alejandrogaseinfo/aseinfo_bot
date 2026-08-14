@@ -1173,6 +1173,62 @@ def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=
                 ],
             })
 
+    # Expand a bounded number of authorized-document groups before ranking so
+    # identity and procedure details split across chunks can participate in
+    # set-cover.  The stable document_id is preferred; source_url is the
+    # fallback when the index does not expose one.  These are recall-only
+    # queries and cannot bypass provenance, injection, version, or identity
+    # validation later in the pipeline.
+    expansion_keys: list[tuple[str, str]] = []
+    seen_documents: set[str] = set()
+    for record in sorted(records_by_id.values(), key=lambda item: rank_by_id.get(str(item.get("id") or ""), 10_000)):
+        document_id = str(record.get("document_id") or "").strip()
+        source_url = str(record.get("source_url") or "").split("#", 1)[0].strip()
+        key = document_id or source_url
+        if not key or key in seen_documents:
+            continue
+        seen_documents.add(key)
+        expansion_keys.append(("document_id" if document_id else "source_url", key))
+        if len(expansion_keys) >= 3:
+            break
+    for field, value in expansion_keys:
+        escaped = value.replace("'", "''")
+        started = perf_counter()
+        try:
+            rows = list(search_client.search(
+                search_text="*",
+                search_fields=["title", CONTENT_FIELD, "content_tokens"],
+                filter=f"{field} eq '{escaped}'",
+                **search_args,
+            ))
+            new_result_ids: list[str] = []
+            for result in rows:
+                record = dict(result)
+                record_id = str(record.get("id") or "")
+                if not record_id:
+                    continue
+                if record_id not in records_by_id:
+                    new_result_ids.append(record_id)
+                records_by_id.setdefault(record_id, {}).update(record)
+                rank_by_id[record_id] = min(rank_by_id.get(record_id, 10_000), 500 + len(new_result_ids))
+            calls.append({
+                "kind": "document_expand",
+                "query": "*",
+                "filter_field": field,
+                "filter_value": "<redacted>",
+                "search_fields": ["title", CONTENT_FIELD, "content_tokens"],
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "result_count": len(rows),
+                "new_result_ids": new_result_ids,
+                "contributed": bool(new_result_ids),
+                "top_results": [
+                    {"title": _bounded_text(row.get("title"), 300), "page": (re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE).group(1) if re.search(r"(?:p[aá]gina|page)\s+(\d+)", str(row.get("title") or ""), re.IGNORECASE) else "")}
+                    for row in rows[:20]
+                ],
+            })
+        except Exception as exc:
+            calls.append({"kind": "document_expand", "query": "*", "filter_field": field, "filter_value": "<redacted>", "duration_ms": round((perf_counter() - started) * 1000, 2), "result_count": 0, "new_result_ids": [], "contributed": False, "error": error_code(exc)})
+
     # Vector retrieval is a bounded recall aid only when lexical retrieval is
     # sparse; it can never override local version/provenance validation.
     if len(records_by_id) < 4:
@@ -1301,16 +1357,26 @@ def retrieve_ai_first_candidates(
         by_document: dict[str, list[dict]] = {}
         for _source, record in anchor_records:
             by_document.setdefault(_document_key(record), []).append(record)
+        visible_by_document: dict[str, list[dict]] = {}
+        visible_records: dict[str, dict] = {}
+        for source, record in anchor_records:
+            visible = dict(record)
+            visible[CONTENT_FIELD] = source.fragmento
+            visible[CONTEXT_FIELD] = _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS)
+            visible_records[str(record.get("id") or "")] = visible
+            visible_by_document.setdefault(_document_key(record), []).append(visible)
         for index, (source, record) in enumerate(anchor_records, start=1):
+            visible_record = visible_records[str(record.get("id") or "")]
+            visible_group = visible_by_document[_document_key(record)]
             aggregate_text = " ".join(
                 " ".join(str(item.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
-                for item in by_document[_document_key(record)]
+                for item in visible_group
             )
-            coverage = _record_coverage(record, plan, aggregate_text)
+            coverage = _record_coverage(visible_record, plan, aggregate_text)
             anchor_observations.append({"candidate_id": record["id"], **coverage, "origin": "anchor"})
             if not coverage["accepted"]:
                 continue
-            details = _candidate_selection_details(record, plan, user_message, aggregate_text)
+            details = _candidate_selection_details(visible_record, plan, user_message, aggregate_text)
             candidates.append(AIFirstCandidate(f"c{index:02d}", source, record, {
                 "candidate_id": f"c{index:02d}", "title": _bounded_text(source.titulo, 300),
                 "fragment": source.fragmento, "metadata": _bounded_text(source.descripcion, MAX_AI_FIRST_CONTEXT_CHARS),
@@ -1325,7 +1391,7 @@ def retrieve_ai_first_candidates(
                     "detected_anchors": details["detected_anchors"],
                     "covered_requirements": details["covered_requirements"],
                     "missing_requirements": details["missing_requirements"],
-                    "facets": _facet_matrix(record, plan),
+                    "facets": _facet_matrix(visible_record, plan),
                     "group_facets": details.get("facets", {}),
                 },
                 "azure_rank": index,

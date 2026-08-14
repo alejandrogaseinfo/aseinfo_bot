@@ -623,6 +623,25 @@ class AIFirstTests(unittest.TestCase):
         self.assertEqual(["incomplete"], [record["id"] for record in selected])
         self.assertFalse(ai_first._group_facet_matrix(selected[:1], plan)["missing"] == [])
 
+    def test_hybrid_retrieval_expands_authorized_document_group(self):
+        _FakeSearchClient.records = [
+            _record("p1", "Manual DB — Página 1", "ira_instancias_rutas_aut guarda flujos.", document_id="manual-doc"),
+            _record("p2", "Manual DB — Página 2", "Relaciones con ira_codrau e ira_codigo_entidad.", document_id="manual-doc"),
+        ]
+        plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?")
+        with patch("ai_first.SearchClient", _FakeSearchClient), patch("ai_first._embed_texts", side_effect=RuntimeError("no vector")):
+            records, _ranks, calls = ai_first._retrieve_hybrid_records("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?", plan, _config())
+        self.assertTrue(any(call.get("kind") == "document_expand" for call in calls))
+        self.assertEqual({"manual-doc"}, {record.get("document_id") for record in records})
+
+    def test_facet_matrix_does_not_use_hidden_metadata_for_identity(self):
+        plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut?")
+        record = _record("hidden", "Manual DB", "La tabla guarda flujos.", document_id="manual")
+        record["document_context"] = "ira_instancias_rutas_aut aparece en una nota no visible."
+        visible = dict(record)
+        visible["document_context"] = ""
+        self.assertFalse(ai_first._facet_matrix(visible, plan)["covered"]["identity"])
+
     def test_artifact_identity_query_preserves_substantive_terms(self):
         plan = ai_first.build_query_plan("¿Cómo se ofuscan datos sensibles en SQL?")
         artifact_action, _ = ai_first._query_plan_recall_queries(plan)
