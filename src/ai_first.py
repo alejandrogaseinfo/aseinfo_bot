@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -421,6 +422,9 @@ def _query_plan_artifact_identity_queries(plan: QueryPlan) -> tuple[str, str]:
     generic = _GENERIC_AUXILIARY_CONCEPTS | _GENERIC_REQUIREMENT_CONCEPTS | _GENERIC_RANKING_TOKENS
     nominal: list[str] = []
     technical: list[str] = []
+    raw_tokens = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ][\w.-]*", plan.raw_message or "")
+    raw_stop = {"como", "cómo", "se", "en", "de", "del", "la", "el", "los", "las", "que", "qué", "para", "un", "una"}
+    raw_nominal = [token for token in raw_tokens if token.casefold() not in raw_stop and len(token) >= 3]
     for requirement in plan.requirements:
         profile = _requirement_profile(requirement)
         if requirement.text.casefold().startswith("el calificador"):
@@ -450,6 +454,16 @@ def _query_plan_artifact_identity_queries(plan: QueryPlan) -> tuple[str, str]:
         # action (e.g. ofuscación), retain that single identity stem as the
         # nominal fallback; do not append auxiliary verbs or media terms.
         nominal.extend(action_terms)
+    # Keep the user-facing nominal wording for title search.  When a question
+    # uses a conjugated action, add a morphology-only nominal form alongside
+    # it; this is generic and does not name any document or file.
+    nominal.extend(raw_nominal)
+    for token in raw_nominal:
+        concept = concept_key(token)
+        if concept in action_terms and token.casefold().endswith(("an", "en")):
+            stem = re.sub(r"(?:an|en)$", "", token, flags=re.IGNORECASE)
+            if len(stem) >= 4:
+                nominal.append(stem + "ación")
     nominal_query = " ".join(dict.fromkeys(nominal))
     technical_query = " ".join(dict.fromkeys((*technical, *action_terms) or tuple(nominal)))
     return nominal_query, technical_query
@@ -922,6 +936,30 @@ def _requirement_facets(requirement, plan: QueryPlan) -> dict[str, tuple[str, ..
     }
 
 
+def _structural_identifiers(plan: QueryPlan) -> tuple[tuple[str, str], ...]:
+    """Return complete structural identifiers as (raw, normalized) pairs."""
+    identifiers: list[tuple[str, str]] = []
+    for requirement in plan.requirements:
+        for raw in re.findall(r"[A-Za-z][\w]*(?:[_./-][\w.-]+)+", requirement.text):
+            normalized = unicodedata.normalize("NFKD", raw).casefold()
+            normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+            normalized = re.sub(r"[^a-z0-9_./-]", "", normalized)
+            if normalized:
+                identifiers.append((raw, normalized))
+    return tuple(dict.fromkeys(identifiers))
+
+
+def _structural_identifier_covered(record: dict, plan: QueryPlan) -> bool:
+    identifiers = _structural_identifiers(plan)
+    if not identifiers:
+        return True
+    text = " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
+    normalized = unicodedata.normalize("NFKD", text).casefold()
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = re.sub(r"[^a-z0-9_./-]", "", normalized)
+    return any(identifier in normalized for _raw, identifier in identifiers)
+
+
 def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = None) -> dict[str, object]:
     """Return required/covered/missing facets for one fragment or group."""
     text = aggregate_text or " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
@@ -936,6 +974,10 @@ def _facet_matrix(record: dict, plan: QueryPlan, aggregate_text: str | None = No
         if facet == "version":
             covered[facet] = "not_required" if not facet_targets else bool(_candidate_version_compatible(record, plan))
         elif facet == "identity":
+            structural_required = bool(_structural_identifiers(plan))
+            if structural_required:
+                covered[facet] = _structural_identifier_covered(record, plan)
+                continue
             identity_hits = sum(_concept_present(target, concepts) for target in facet_targets)
             # Complete technical identifiers may be tokenized into several
             # stems. Require a bounded strong-anchor quorum, not a literal
@@ -958,7 +1000,14 @@ def _group_facet_matrix(records: list[dict], plan: QueryPlan) -> dict[str, objec
         " ".join(str(record.get(field) or "") for field in ("title", CONTENT_FIELD, CONTEXT_FIELD))
         for record in records
     )
-    return _facet_matrix(records[0] if records else {}, plan, combined)
+    matrix = _facet_matrix(records[0] if records else {}, plan, combined)
+    if _structural_identifiers(plan):
+        matrix["covered"]["identity"] = any(_structural_identifier_covered(record, plan) for record in records)
+        matrix["missing"] = [
+            facet for facet, required in matrix["required"].items()
+            if required and matrix["covered"].get(facet) is not True
+        ]
+    return matrix
 
 
 def _retrieve_hybrid_records(user_message: str, plan: QueryPlan, config, client=None):

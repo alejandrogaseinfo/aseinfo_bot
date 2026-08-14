@@ -470,8 +470,17 @@ class AIFirstTests(unittest.TestCase):
         self.assertTrue(nominal)
         self.assertTrue(technical)
         self.assertNotIn("hace", nominal)
-        self.assertNotIn("sql", nominal.casefold())
+        self.assertIn("sql", nominal.casefold())
         self.assertNotEqual(nominal, "ofusc dato sql")
+
+    def test_structural_identifier_requires_complete_anchor_not_partial_tokens(self):
+        plan = ai_first.build_query_plan("¿Qué guarda ira_instancias_rutas_aut y con qué campos se relaciona?")
+        partial = _record(
+            "partial", "Manual IRA", "La ruta y los campos se relacionan con otras tablas.", document_id="partial-doc"
+        )
+        matrix = ai_first._facet_matrix(partial, plan)
+        self.assertFalse(matrix["covered"]["identity"])
+        self.assertIn("identity", matrix["missing"])
 
     def test_best_document_group_first_limits_incidental_alternatives(self):
         question = "¿Qué procedimiento valida firewall y LOCAL DTC en ambos servidores?"
