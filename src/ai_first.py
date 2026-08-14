@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import re
-from copy import copy
 from dataclasses import dataclass, field
 from time import perf_counter
 
@@ -583,13 +582,9 @@ def retrieve_ai_first_candidates(
         # an introductory/background clause, while retaining the same Azure,
         # provenance and version gates.
         seen_anchor_keys: set[tuple[str, str, str]] = set()
-        hybrid_config = copy(config)
-        # Semantic ranking is a retrieval aid only; it does not alter the
-        # caller's configuration or bypass the local provenance/coverage gates.
-        hybrid_config.azure_search_use_semantic = True
         for query in plan.retrieval_queries[:3]:
             try:
-                retrieved = retrieve_azure_search_evidence(query, hybrid_config, client=client)
+                retrieved = retrieve_azure_search_evidence(query, config, client=client)
             except Exception:
                 retrieved = []
             for source in retrieved:
