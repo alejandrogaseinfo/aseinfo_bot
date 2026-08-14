@@ -1943,7 +1943,11 @@ def answer_ai_first_candidates(
     plan = build_query_plan(user_message)
     result = AIFirstDirectResponse(plan=plan)
     if not retrieval.candidates or client is None:
-        if retrieval.rejected_reasons.get("ambiguous_version_identity"):
+        if retrieval.rejected_reasons.get("ambiguous_version_identity") or (
+            _is_explicit_version_lookup(plan)
+            and not plan.version
+            and retrieval.raw_candidate_count > 0
+        ):
             result.decision = "request_context"
             result.answer = "Indica la versión exacta que deseas consultar para revisar la evidencia correcta."
             result.llm_payload = {"decision": "request_context", "reason": "ambiguous_version_identity"}
